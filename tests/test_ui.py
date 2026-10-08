@@ -180,6 +180,14 @@ class ServerTests(unittest.TestCase):
         self.assertNotIn(b"__NONCE__", body)
         self.assertNotIn(self.server.token.encode(), body)
 
+    def test_mascot_is_inlined_without_extra_requests(self):
+        response, body = self.get("/")
+        self.assertIn("img-src 'self' data:", response.getheader("Content-Security-Policy"))
+        self.assertNotIn(b"__RONDO", body)
+        self.assertEqual(body.count(b'url("data:image/webp;base64,'), 3)
+        self.assertIn(b'<link rel="icon" href="data:image/webp;base64,', body)
+        self.assertEqual(self.get("/static/rondo.webp")[0].status, 404)
+
     def test_api_requires_session_token(self):
         self.assertEqual(self.get("/api/overview")[0].status, 401)
         self.assertEqual(self.get("/api/overview", "wrong")[0].status, 401)

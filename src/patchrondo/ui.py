@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import base64
 from importlib import resources
 import json
 import os
@@ -39,6 +40,8 @@ SUMMARY_FIELDS = ("id", "title", "status", "phase", "iteration", "developer",
                   "reviewer", "created_at", "updated_at")
 DOCUMENTS = {"task": "task.md", "handoff": "handoff.md", "feedback": "feedback.md",
              "report": "report.md", "log": RUN_LOG}
+# Mascot images inlined as data: URIs, so the page needs no extra routes.
+MASCOT = {"__RONDO__": "static/rondo.webp", "__RONDO_HEAD__": "static/rondo-head.webp"}
 CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
        "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; "
        "frame-ancestors 'none'")
@@ -239,7 +242,11 @@ class DashboardServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", port), DashboardHandler)
         self.home = home
         self.token = secrets.token_urlsafe(24)
-        self.page = resources.files("patchrondo").joinpath("static/dashboard.html").read_text(encoding="utf-8")
+        package = resources.files("patchrondo")
+        self.page = package.joinpath("static/dashboard.html").read_text(encoding="utf-8")
+        for placeholder, asset in MASCOT.items():
+            data = base64.b64encode(package.joinpath(asset).read_bytes()).decode("ascii")
+            self.page = self.page.replace(placeholder, f"data:image/webp;base64,{data}")
         self.children: list[subprocess.Popen] = []
         self.closing = False
         self.starting = 0

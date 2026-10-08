@@ -44,9 +44,14 @@ below.
 ```bash
 git clone https://github.com/luigiggigo/patchrondo.git
 cd patchrondo
-./init.sh /absolute/path/to/your/repository   # venv, install, init, doctor
-./main.sh                                     # open the dashboard
+./init.sh /path/to/your/repository   # venv, install, init, doctor
+./main.sh                            # open the dashboard
 ```
+
+Without a path, `init.sh` uses the Git repository containing the directory you
+run it from, so `cd /path/to/your/repository && /path/to/patchrondo/init.sh`
+works too; relative paths are resolved from that directory. It refuses to pick
+PatchRondo's own checkout implicitly; pass that path explicitly if intended.
 
 `init.sh` is safe to run again: it keeps an existing configuration. Both scripts
 run on Linux, macOS, WSL2 and Git Bash. Setup and opening the dashboard make no
@@ -369,8 +374,8 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 9, 2026 ran **65 tests** on Windows:
-**64 passed and 1 POSIX process-group test was skipped**. Tests use temporary Git
+The latest local validation on October 9, 2026 ran **66 tests** on Windows:
+**65 passed and 1 POSIX process-group test was skipped**. Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Full package checks are documented in

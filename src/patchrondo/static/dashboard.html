@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="dark">
 <meta name="referrer" content="no-referrer">
 <title>PatchRondo</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a84ff'/%3E%3Cpath d='M21 7l4 4-4 4M7 15v-1a3 3 0 0 1 3-3h15M11 25l-4-4 4-4M25 17v1a3 3 0 0 1-3 3H7' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="icon" href="__RONDO_HEAD__">
 <style nonce="__NONCE__">
 :root {
   color-scheme: dark;
@@ -64,11 +64,12 @@ svg.icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-w
 }
 .brand { display: flex; align-items: center; gap: 11px; padding: 22px 18px 14px; cursor: pointer; }
 .brand-mark {
-  width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: #fff;
-  background: linear-gradient(160deg, #3d9bff, #0a6cff 55%, #5e3dff);
+  width: 38px; height: 38px; border-radius: 11px; flex: none; overflow: hidden;
+  background: url("__RONDO_HEAD__") center 30% / 118% no-repeat, linear-gradient(160deg, #3d9bff, #0a6cff 55%, #5e3dff);
   box-shadow: 0 6px 18px rgba(10, 132, 255, 0.35), inset 0 0.5px 0 rgba(255, 255, 255, 0.4);
+  transition: transform .3s var(--ease);
 }
-.brand-mark svg.icon { width: 19px; height: 19px; stroke-width: 2.3; }
+.brand:hover .brand-mark { transform: rotate(-6deg) scale(1.06); }
 .brand-name { font-size: 15px; font-weight: 650; letter-spacing: -0.02em; }
 .brand-tag { font-size: 12px; color: var(--label-2); }
 
@@ -252,11 +253,31 @@ h2 { margin: 0; font-size: 20px; font-weight: 680; letter-spacing: -0.02em; }
 .tile-label { font-size: 13px; color: var(--label-2); font-weight: 550; }
 .badge-on { color: var(--green); font-weight: 600; } .badge-off { color: var(--label-3); font-weight: 600; }
 .welcome { padding: 40px 24px; text-align: center; color: var(--label-2); }
-.welcome .brand-mark { width: 64px; height: 64px; border-radius: 16px; margin: 0 auto 16px; }
-.welcome .brand-mark svg.icon { width: 34px; height: 34px; }
+.welcome .rondo { width: 150px; height: 150px; margin: 0 auto 10px; }
 .welcome h2 { color: var(--label); margin-bottom: 6px; }
 .welcome .btn { margin-top: 18px; }
 .welcome pre { display: inline-block; text-align: left; margin-top: 16px; padding: 12px 16px; border-radius: 10px; background: rgba(0, 0, 0, 0.35); font: 12.5px/1.6 var(--mono); color: var(--label); }
+
+/* Rondo, the mascot */
+.rondo { background: url("__RONDO__") center / contain no-repeat; filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.35)) drop-shadow(0 12px 22px rgba(0, 0, 0, 0.5)); flex: none; }
+.rondo-face { width: 40px; height: 40px; border-radius: 50%; flex: none; background: url("__RONDO_HEAD__") center 30% / 118% no-repeat, radial-gradient(circle at 50% 30%, #3a3a40, #1c1c1e); box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.18); }
+.bob { animation: bob 2.4s ease-in-out infinite; }
+@keyframes bob { 0%, 100% { transform: translateY(0) rotate(0); } 50% { transform: translateY(-4px) rotate(-3deg); } }
+.hop { animation: hop .9s var(--ease) 2; }
+@keyframes hop { 0%, 100% { transform: none; } 35% { transform: translateY(-9px) rotate(6deg); } 65% { transform: translateY(0) rotate(-4deg); } }
+.hero-row { display: flex; align-items: flex-end; gap: 18px; }
+.hero-row > :first-child { flex: 1; min-width: 0; }
+.hero .rondo { width: 112px; height: 112px; margin-bottom: -10px; }
+.bubble {
+  position: relative; max-width: 300px; margin-bottom: 52px; padding: 10px 14px; border-radius: 16px 16px 4px 16px;
+  background: var(--card-2); color: var(--label); font-size: 13px; box-shadow: 0 8px 22px rgba(0, 0, 0, 0.3);
+}
+.note { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 10px 16px 10px 10px; }
+.note .item-sub { margin: 0; }
+.note-who { font-size: 12px; font-weight: 600; color: var(--label-3); }
+.list-empty .rondo { width: 72px; height: 72px; margin: 0 auto 10px; opacity: .8; }
+.loading { padding: 64px 24px; display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--label-2); }
+.loading .rondo-face { width: 56px; height: 56px; }
 
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 16px); opacity: 0; pointer-events: none;
@@ -361,6 +382,8 @@ textarea.input.mono { font-family: var(--mono); font-size: 12.5px; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stepper { padding: 16px 8px 14px; }
   .tool-btn .mono { display: none; }
+  .hero .rondo { width: 76px; height: 76px; }
+  .bubble { display: none; }
   .field-row { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
@@ -371,7 +394,7 @@ textarea.input.mono { font-family: var(--mono); font-size: 12.5px; }
   <aside class="sidebar" aria-label="Tasks">
     <div class="brand-row">
       <div class="brand" id="brand" role="button" tabindex="0" title="Overview">
-        <div class="brand-mark"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg></div>
+        <div class="brand-mark" role="img" aria-label="Rondo, the PatchRondo raccoon"></div>
         <div><div class="brand-name">PatchRondo</div><div class="brand-tag">Code. Review. Repeat.</div></div>
       </div>
       <button class="icon-btn" id="new-task" type="button" title="New task (N)" aria-label="New task"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg></button>
@@ -464,6 +487,47 @@ function h(tag, attrs, ...children) {
     el.append(child instanceof Node ? child : String(child));
   }
   return el;
+}
+
+function rondo(className = "") { return h("div", { class: `rondo ${className}`.trim(), "aria-hidden": "true" }); }
+function plural(count, word) { return `${count} ${word}${count === 1 ? "" : "s"}`; }
+
+// What Rondo says about the whole board.
+function boardMessage(counts, total, cfg) {
+  if (!cfg) return "I can't read the configuration yet. Run patchrondo init in your repository.";
+  if (!total) return "Nothing to patch yet. Give me a task!";
+  if (counts.running) return `${plural(counts.running, "task")} in the loop. I'm keeping an eye on ${counts.running === 1 ? "it" : "them"}.`;
+  const attention = counts.paused + counts.blocked;
+  if (attention) return `${plural(attention, "task")} ${attention === 1 ? "needs" : "need"} your attention.`;
+  if (counts.ready) return `${plural(counts.ready, "task")} ready. Press Run when you are.`;
+  return "Everything is patched up. Nice work!";
+}
+
+// What Rondo says about one task.
+function taskMessage(detail) {
+  const task = detail.state;
+  const dev = agentName(task.developer), rev = agentName(task.reviewer);
+  const verdict = task.review?.verdict;
+  if (task.status === "done") return `All patched up! ${rev} approved the work.`;
+  if (task.status === "blocked") return "I'm stuck on this one. Check the details below before trying again.";
+  if (task.status === "paused") return verdict === "CHANGES_REQUESTED"
+    ? `Paused after ${rev} asked for changes. Resume to send the feedback back to ${dev}.`
+    : "Paused. Resume picks up from the last checkpoint.";
+  if (task.status === "running" && !detail.locked) return "This run stopped unexpectedly. Resume continues from the last checkpoint.";
+  if (task.status === "running") {
+    if (task.phase === "review") return `${rev} is reviewing ${dev}'s changes…`;
+    if (task.phase === "test") return "Running the project tests…";
+    return `${dev} is working on iteration ${task.iteration || 1}…`;
+  }
+  return `Ready when you are. ${dev} develops, ${rev} reviews.`;
+}
+
+function rondoNote(detail) {
+  const status = detail.state.status;
+  const motion = status === "running" && detail.locked ? " bob" : status === "done" ? " hop" : "";
+  return h("div", { class: "card note", role: "status" },
+    h("div", { class: `rondo-face${motion}`, "aria-hidden": "true" }),
+    h("div", { class: "item-main" }, h("div", { class: "note-who" }, "Rondo"), h("div", { class: "item-sub" }, taskMessage(detail))));
 }
 
 function statusOf(name) { return STATUS[name] || { label: name || "Unknown", tone: "gray", icon: "clock" }; }
@@ -777,7 +841,7 @@ function renderList() {
       h("span", { class: "row-time" }, ago(task.updated_at, true)));
   });
   const label = h("div", { class: "list-label" }, state.filter === "all" ? "Recent" : FILTERS.find(([k]) => k === state.filter)[1]);
-  const empty = h("div", { class: "list-empty" }, state.overview ? (state.query ? "No matching tasks" : "No tasks") : "Loading…");
+  const empty = h("div", { class: "list-empty" }, state.overview ? [rondo(), state.query ? "No matching tasks" : "No tasks"] : "Loading…");
   $("list").replaceChildren(label, ...(rows.length ? rows : [empty]));
 }
 
@@ -843,15 +907,15 @@ function renderOverview() {
         h("div", { class: "alert-body" }, overview?.config_error || "Waiting for data…")));
 
   const welcome = tasks.length ? null : h("div", { class: "card welcome" },
-    h("div", { class: "brand-mark" }, icon("repeat")),
+    rondo("bob"),
     h("h2", {}, "No tasks yet"),
     h("div", {}, "Describe what to build; Claude and Codex take turns developing and reviewing."),
     h("button", { type: "button", class: "btn primary", onclick: newTaskSheet }, "New Task"));
 
   return h("div", { class: "content fade-in" },
-    h("div", { class: "hero" },
-      h("div", { class: "eyebrow" }, "Dashboard"),
-      h("h1", {}, "Overview")),
+    h("div", { class: "hero hero-row" },
+      h("div", {}, h("div", { class: "eyebrow" }, "Dashboard"), h("h1", {}, "Overview")),
+      tasks.length ? [h("div", { class: "bubble", role: "status" }, boardMessage(counts, tasks.length, cfg)), rondo(counts.running ? "bob" : "")] : null),
     welcome,
     h("div", { class: "tiles" }, tiles),
     section("Configuration", cfg ? h("button", { type: "button", class: "link-btn", onclick: testsSheet }, "Edit tests") : null, settings));
@@ -992,6 +1056,7 @@ function renderTask(detail) {
         h("div", { class: "agents" },
           agentChip(task.developer, "Developer"), h("span", { class: "arrow" }, icon("arrow")), agentChip(task.reviewer, "Reviewer"))),
       stepper(task),
+      rondoNote(detail),
       h("div", { class: "stats" },
         statTile("Iteration", "repeat", [String(iteration), max ? h("small", {}, ` / ${max}`) : null],
           max ? h("div", { class: `meter tone-${status.tone}` }, h("span", { style: `width:${Math.min(100, iteration / max * 100)}%` })) : null),
@@ -1019,7 +1084,7 @@ function renderDetail() {
     return;
   }
   if (!state.detail) {
-    main.replaceChildren(toolbar(""), h("div", { class: "content" }, h("div", { class: "welcome" }, "Loading…")));
+    main.replaceChildren(toolbar(""), h("div", { class: "content" }, h("div", { class: "loading" }, h("div", { class: "rondo-face bob", "aria-hidden": "true" }), "Loading…")));
     return;
   }
   const scroll = main.scrollTop;

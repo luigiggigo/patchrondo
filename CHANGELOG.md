@@ -9,15 +9,21 @@
   create tasks, start or resume runs as separate CLI processes after confirmation,
   and edit test settings with explicit trust consent.
 - Add `init.sh` (environment, install, configuration and CLI check) and `main.sh`
-  (dashboard or `--demo` with sample data) for a two-command start.
+  (dashboard or `--demo` with sample data) for a two-command start. Without a
+  path, `init.sh` uses the Git repository of the current directory; relative
+  paths resolve from where it is run.
 - Keep demo tests disabled until explicit user consent. Preserve demo files when
   runs are active, starts are pending, locks exist or shutdown is interrupted.
 - Track run starts during dashboard shutdown, reject new starts once closing,
   bound the startup wait and prevent idle connections from delaying exit.
+- Feature Rondo, the mascot, across the dashboard: favicon, sidebar brand, an
+  overview greeting summarizing the board, empty and loading states, and a
+  per-task status note. Two small WebP images ship in the package and are inlined
+  as `data:` URIs at startup, so the page makes no extra requests.
 - Support child runs from source-only checkouts and report immediate startup errors.
 - Preserve command arguments through the test editor using Windows or POSIX
   quoting rules, including embedded quotes and trailing backslashes.
-- Extend local simulated-provider validation to 65 tests; native Windows skips
+- Extend local simulated-provider validation to 66 tests; native Windows skips
   the POSIX process-group test. Authenticated provider workflows remain unvalidated.
 
 ## 0.1.0 — initial public MVP (source published October 8, 2026)

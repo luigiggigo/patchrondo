@@ -81,8 +81,8 @@ The GitHub Actions CI workflow has been disabled and removed from the current
 checkout. Future validation is local; the initial CI results remain a historical
 record of the published snapshot.
 
-The current development suite contains **65 tests**. Local execution on Windows
-with Python 3.13 completed with **64 passing tests and 1 skipped POSIX
+The current development suite contains **66 tests**. Local execution on Windows
+with Python 3.13 completed with **65 passing tests and 1 skipped POSIX
 process-group test**. These tests use simulated providers and synthetic
 repositories. No authenticated provider calls were made. This result applies
 to the local working tree; the initial GitHub CI matrix above covers the
@@ -90,6 +90,7 @@ published snapshot, not these newer changes.
 
 Dashboard review and regression coverage include:
 
+- Mascot images inlined as `data:` URIs with no placeholder left in the page.
 - Token-protected API access, Host checks, Origin checks on writes and JSON-only writes.
 - Disabled demo tests by default and explicit boolean consent before enabling host tests.
 - Source-only child imports and reporting immediate run-start failures.

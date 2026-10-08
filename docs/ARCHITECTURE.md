@@ -12,7 +12,7 @@
 | `storage.py` | Atomic JSON state, private directories, locks and process PID checks |
 | `report.py` | Auditable reports with files, tests, reviews and events |
 | `rag.py` | Optional incremental SQLite FTS5 index and retrieval of repository excerpts |
-| `ui.py`, `static/dashboard.html` | Loopback dashboard; token-protected JSON API to read state, create tasks, start `patchrondo run` processes and edit test settings |
+| `ui.py`, `static/dashboard.html`, `static/*.webp` | Loopback dashboard; token-protected JSON API to read state, create tasks, start `patchrondo run` processes and edit test settings; mascot images inlined into the page at startup |
 
 Models do not call each other directly. The orchestrator invokes each model and
 stores state, feedback and evidence.
