@@ -1,16 +1,24 @@
-# Preparing the public repository
+# Publishing updates
 
-The source is ready for an initial **alpha/MVP** publication, subject to the
-limitations in the [review](REVIEW.md). It has not yet been validated with real
-Claude/Codex accounts. These steps publish the code on GitHub; publishing to
-PyPI is a separate task.
+## Current publication status
 
-PatchRondo is public at [github.com/luigiggigo/patchrondo](https://github.com/luigiggigo/patchrondo).
-The initial GitHub CI run passed all test jobs and package checks. Private
-vulnerability reporting is enabled. The steps below document the publication
-process and checks to repeat for future updates.
+PatchRondo's initial **0.1.0 alpha/MVP source** was published on GitHub on
+October 8, 2026, at
+[github.com/luigiggigo/patchrondo](https://github.com/luigiggigo/patchrondo).
+The initial CI run passed the test matrix and package checks, and private
+vulnerability reporting is enabled. The original review and subsequent local
+validation are recorded in [REVIEW.md](REVIEW.md).
 
-## Local checks
+The GitHub repository has no version tags or GitHub Releases as checked on
+October 9, 2026. Source publication and a versioned release are separate steps;
+publishing to PyPI is also a separate task. Changes in the current working tree,
+including the dashboard and startup scripts, are listed under **Unreleased** in
+[CHANGELOG.md](../CHANGELOG.md). They are not part of the initial public snapshot.
+
+The repository is already initialized and has an `origin` remote. Future updates
+do not require `git init` or creating another GitHub repository.
+
+## Validate an update
 
 Run from the directory containing `pyproject.toml`:
 
@@ -22,75 +30,71 @@ python -m build
 python -m twine check dist/*
 ```
 
-The publication check looks for credential patterns and state/log files in the
-working tree without printing sensitive values. It excludes virtual environments,
-builds and local agent instruction files. It does not inspect Git history or
-guarantee the absence of every secret: also review the file list and first-commit
-diff. These checks do not call models.
+For source-only tests, set `PYTHONPATH=src`. Automated checks use synthetic or
+mocked providers and do not call models. Tests of repositories managed by
+PatchRondo remain subject to explicit `tests.trust_acknowledged=true` consent.
+
+The publication check scans the working tree for credential patterns, private
+state and logs without printing sensitive values. It excludes build environments
+and local agent instructions. It does not inspect Git history or guarantee that
+every secret is absent. Resolve or review each finding, including expected binary
+assets, before publishing; a failed scan is not a clean result.
+
+Build the wheel and sdist from the intended release revision, inspect their file
+lists and verify that the wheel includes the dashboard HTML when publishing that
+feature. Install the wheel in a separate environment and exercise `--help` and
+the relevant commands without making provider calls.
 
 The MIT license is already included. The generic contributor name does not
 certify code ownership: before publishing, verify that you can distribute all
 sources and retain any required third-party attribution.
 
-## First commit
+## Review and publish source changes
 
-The original project did not contain `.git`, so there is no previous history to
-clean in the supplied source. Initialize from the project root:
+Review tracked and untracked files before staging:
 
 ```bash
-git init -b main
-git add .
 git status --short
-git diff --cached --stat
-git diff --cached
-git commit -m "Initial public MVP"
+git diff --stat
+git diff
 ```
 
-Use the Git name/email you want to make public; GitHub also provides `noreply`
-addresses. Keep `.patchrondo`, credentials, logs and virtual environments out of
-the commit. `.gitignore` does not remove files that are already tracked.
+Stage the intended files, then inspect the staged content:
+
+```bash
+git diff --cached --stat
+git diff --cached
+```
+
+Keep credentials, private task state, logs and generated environments out of the
+commit. `.gitignore` does not remove files already tracked.
 
 `AGENTS.md` contains local working instructions and is intentionally ignored by
 Git. It is also excluded from public ZIP archives and package distributions.
 Keep it in your local checkout; it is not part of the published source.
 
-## Create the GitHub repository
+When the update is approved for publication, commit with a descriptive message
+and push through the repository's normal review process. Inspect the new CI run
+for Python 3.11-3.14 on Linux, macOS and Windows, plus package and installed-wheel
+checks. The historical initial CI result does not validate newer revisions.
 
-Repository: [`luigiggigo/patchrondo`](https://github.com/luigiggigo/patchrondo).
+## Create a versioned release
 
-Suggested description:
-> Local, resumable Claude Code / Codex development and review loop with Git worktrees and opt-in tests.
+When a versioned release is intended:
 
-Suggested topics: `python`, `cli`, `ai-agents`, `code-review`, `claude-code`, `codex`, `git-worktree`.
+- Agree on the version and update both `pyproject.toml` and the package version.
+- Move the changes being released from **Unreleased** to a dated changelog entry.
+- Ensure the release commit has passed the relevant tests and package checks.
+- Create the version tag and GitHub Release from that reviewed commit.
+- Keep the release identified as an alpha/prerelease while the documented
+  authenticated-provider compatibility checks remain incomplete.
 
-In your chosen account or organization, create an empty **Public** repository
-without generating another README, `.gitignore` or license. Copy the URL GitHub
-provides:
+Tagging, pushing, creating a GitHub Release and publishing packages are explicit
+publication actions. They are not performed by PatchRondo or its CI workflow.
 
-```bash
-git remote add origin REPOSITORY_URL
-git push -u origin main
-```
+## Authenticated-provider validation
 
-Replace the `REPOSITORY_URL` placeholder. Alternatively, with GitHub CLI already
-authenticated, replace `OWNER` with your account/organization:
-
-```bash
-gh repo create OWNER/patchrondo --public --source=. --remote=origin --push
-```
-
-Creating the repository and pushing makes the files public.
-
-## After the first push
-
-- Wait for CI results on Python 3.11-3.14, Linux, macOS and Windows.
-- Enable private vulnerability reporting so `SECURITY.md` has a private channel.
-- Enable the available GitHub secret scanning and push protection checks.
-- Keep the repository and issue-tracker URLs in `pyproject.toml` up to date.
-- Protect `main` by requiring CI and review before merging, if your plan supports it.
-- Keep the initial release marked as a prerelease until testing with authorized accounts is complete.
-
-## Real smoke test still required
+A complete workflow with real Claude/Codex accounts remains unvalidated.
 
 Use a test repository without private data and a small change with a deterministic
 test. Record the OS, CLI versions and login method, without tokens or private

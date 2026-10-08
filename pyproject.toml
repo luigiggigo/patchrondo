@@ -39,5 +39,8 @@ Issues = "https://github.com/luigiggigo/patchrondo/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+patchrondo = ["static/*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

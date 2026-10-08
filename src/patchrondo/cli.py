@@ -43,6 +43,9 @@ def parser() -> argparse.ArgumentParser:
     for cmd in (index, search):
         cmd.add_argument("--task", help="Use a task worktree instead of the configured repository")
     sub.add_parser("doctor", help="Check CLI availability and authentication without model calls")
+    ui = sub.add_parser("ui", help="Open the local dashboard to create, run and inspect tasks")
+    ui.add_argument("--port", type=int, default=8765, help="Loopback port (0 picks a free port)")
+    ui.add_argument("--no-browser", action="store_true", help="Print the URL without opening a browser")
     return p
 
 
@@ -93,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     context = rag.render(index.search(root, opts.query, opts.limit), 10**9)
                     print(context or "No matches.")
+        elif opts.command == "ui":
+            from .ui import serve
+            serve(home, opts.port, open_browser=not opts.no_browser)
         elif opts.command == "doctor":
             for name, auth in (("claude", ["claude", "auth", "status"]),
                                ("codex", ["codex", "login", "status"])):

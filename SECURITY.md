@@ -19,6 +19,22 @@ disk until the timeout. Apply disk quotas in isolated runners. On native Windows
 process cleanup terminates the direct child only, and stale-lock recovery is
 conservative. Use WSL2 for POSIX process-group cleanup.
 
+## Local dashboard
+
+The dashboard in the current development checkout binds to `127.0.0.1`, checks
+Host headers, checks Origin headers on writes and requires a per-session token
+for its API. Keep the printed URL private; it contains that token. API writes
+require JSON. Starting or resuming a task requires confirmation in the interface
+and invokes the real provider CLIs; opening the dashboard makes no model calls.
+Enabling target-project tests requires explicit boolean trust consent.
+
+Runs continue independently of the dashboard. Closing it rejects new run starts
+and waits up to 30 seconds for starts already in progress. The demo preserves
+its repository, worktrees and private state whenever runs may still be active,
+including pending starts, existing run locks and interrupted or failed shutdown.
+Demo tests are disabled by default. These controls preserve task state; the host
+test execution and provider sandbox limitations above still apply.
+
 ## Reporting a vulnerability
 
 Use [private vulnerability reporting](https://github.com/luigiggigo/patchrondo/security/advisories/new)

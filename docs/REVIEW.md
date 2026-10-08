@@ -1,24 +1,30 @@
-# Technical review and publication preparation
+# Technical review and validation record
 
-Date: October 8, 2026. Scope: all Python sources, tests, examples, documentation
-and metadata supplied in the project directory. No `AGENTS.md` or existing Git
-repository was present in the original directories reviewed. A local, ignored
-`AGENTS.md` was subsequently added during publication preparation.
+Initial review: October 8, 2026. Local follow-up: October 9, 2026.
+The initial scope covered the Python sources, tests, examples, documentation
+and metadata supplied before source publication. No `AGENTS.md` or existing Git
+repository was present in those original directories. A local, ignored
+`AGENTS.md` was added during publication preparation. The source is now public;
+the dashboard and startup-script follow-up covers the current, unreleased
+working tree.
 
 ## Assessment
 
-The project is suitable for a public **alpha/MVP** release. Responsibilities are
-clearly separated between the CLI, state machine, adapters, process handling,
-Git and persistence. There are no Python runtime dependencies. Explicit test
+The initial **0.1.0 alpha/MVP source** is public on
+[GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026.
+Responsibilities are clearly separated between the CLI, state machine,
+adapters, process handling, Git and persistence. There are no Python runtime
+dependencies. Explicit test
 consent, atomic checkpoints and the absence of automatic merges are useful
 foundations.
 
-Preparation fixes the defects below. Validation with authenticated real CLIs is
-still required before promising complete compatibility or production readiness.
+The initial preparation fixed the defects recorded below. Validation with
+authenticated real CLIs is still required before promising complete compatibility
+or production readiness.
 The MIT license already existed; this review cannot certify ownership or the
 provenance of every contribution.
 
-## Findings and fixes
+## Initial review findings and fixes
 
 | Priority | Original problem and consequence | Fix / evidence |
 |---|---|---|
@@ -56,11 +62,12 @@ compatibility with every distributed CLI version.
 - Added a tested heuristic publication check; no recognized credentials were found in the examined public files. This is not an exhaustive guarantee that secrets are absent.
 - Translated documentation, CLI messages, task templates, generated reports and examples into English. Local `AGENTS.md` is excluded from Git and public archives/distributions.
 
-## Validation and remaining limitations
+## Initial publication validation (October 8, 2026)
 
-The updated suite contains **45 tests**. Local execution on Windows with Python
-3.13.3 produced **44 passing tests and 1 skipped test**, which requires POSIX
-process groups. [GitHub CI](https://github.com/luigiggigo/patchrondo/actions/runs/37834267237)
+At initial publication the suite contained **45 tests**. Local execution on
+Windows with Python 3.13.3 produced **44 passing tests and 1 skipped test**, which
+requires POSIX process groups.
+[GitHub CI](https://github.com/luigiggigo/patchrondo/actions/runs/37834267237)
 passed all 12 combinations of Python 3.11-3.14 and Linux, macOS and Windows,
 plus the package build, metadata and installed-wheel checks.
 
@@ -68,14 +75,45 @@ Initial sandbox restrictions on temporary directories and Git's ownership checks
 on a filesystem without ownership were addressed by running local tests with
 normal temporary directories. Global Git configuration was not changed.
 
+## Current local validation (October 9, 2026)
+
+The current development suite contains **65 tests**. Local execution on Windows
+with Python 3.13 completed with **64 passing tests and 1 skipped POSIX
+process-group test**. These tests use simulated providers and synthetic
+repositories. No authenticated provider calls were made. This result applies
+to the local working tree; the initial GitHub CI matrix above covers the
+published snapshot, not these newer changes.
+
+Dashboard review and regression coverage include:
+
+- Token-protected API access, Host checks, Origin checks on writes and JSON-only writes.
+- Disabled demo tests by default and explicit boolean consent before enabling host tests.
+- Source-only child imports and reporting immediate run-start failures.
+- Windows and POSIX command round-trips, including embedded quotes, empty
+  arguments and trailing backslashes, plus 3,000 deterministic random commands.
+- Immediate process registration, refusal of new Run requests while closing,
+  waiting for admitted starts and prompt shutdown with idle connections.
+- Reporting pending starts after the shutdown timeout and retaining demo files
+  for active runs, pending starts, existing locks, `--keep` and interrupted exit.
+- A second Ctrl+C during shutdown returns 130 and preserves demo files; deletion
+  is allowed only after a confirmed clean shutdown.
+
+The latest heuristic publication check still reports two items: an ignored local
+`debug.log` and the binary mascot asset `docs/assets/rondo-mascot-v1.png`.
+These require review; the scan does not report a clean result. The checked
+documentation, changed Python files and startup scripts use LF line endings.
+
+## Remaining limitations
+
 The remaining limitations are explicit:
 
-1. No workflow with real Claude/Codex accounts was run. Claude is not installed in the review environment. `doctor` checks availability/login and does not guarantee flag compatibility for every release.
+1. No workflow with real Claude/Codex accounts was run. The initial review environment did not have Claude installed. `doctor` checks availability/login and does not guarantee flag compatibility for every release.
 2. Target-project tests execute on the host. Codex can run commands allowed by its sandbox and load personal configuration. Untrusted code requires a dedicated environment.
 3. Capture bounds RAM use but not disk space until timeout. Use disk quotas in isolated runners.
 4. Native Windows terminates only direct children; private ACLs and stale-lock recovery do not have POSIX guarantees. WSL2 remains recommended.
 5. Fingerprints exclude ignored files, submodule contents and external dependencies/services. They do not eliminate every concurrent-edit race. Avoid other writers during a task and do not run multiple `--unlock` operations simultaneously.
 6. There was no original Git history to inspect. The review covers the supplied source, not other copies or external repositories.
 
-Publishing the code as an MVP is reasonable with these limitations documented.
-Commands for the first commit and push are in [PUBLISHING.md](PUBLISHING.md).
+Source publication does not establish production readiness or authenticated-CLI
+compatibility. [PUBLISHING.md](PUBLISHING.md) describes validation and publication
+of future updates and versioned releases.

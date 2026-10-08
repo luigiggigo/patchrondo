@@ -28,3 +28,11 @@ secret scanner or a substitute for reviewing the Git diff.
 
 Contributions are distributed under the project's MIT license. Only submit code
 you are entitled to contribute. Report security issues through `SECURITY.md`.
+
+## Documentation and version history
+
+The initial 0.1.0 alpha/MVP source is already public. Record changes made after
+publication under **Unreleased** in `CHANGELOG.md` until they are published.
+Keep the README, architecture and security notes consistent with the code, and
+label validation results with their date and scope. Historical CI results do not
+verify newer local changes. Follow `docs/PUBLISHING.md` for subsequent updates.

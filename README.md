@@ -8,7 +8,8 @@
 
 **Code. Review. Repeat.**
 
-Experimental MVP 0.1.0.
+**Published alpha/MVP:** 0.1.0. Source available on
+[GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026.
 
 A **local**, **resumable** Python orchestrator that delegates development to
 **Claude Code** or **OpenAI Codex CLI** and asks the other agent to review the
@@ -24,8 +25,11 @@ This is an independent project, not affiliated with or sponsored by Anthropic or
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance and
 [SECURITY.md](SECURITY.md) for security limitations. The
-[technical review](docs/REVIEW.md) and [publishing guide](docs/PUBLISHING.md)
-document the checks completed before publication.
+[technical review](docs/REVIEW.md) records the initial publication checks and
+subsequent local validation. The [publishing guide](docs/PUBLISHING.md) covers
+future updates; [CHANGELOG.md](CHANGELOG.md) separates published changes from
+unreleased development. This README describes the current source checkout,
+including the dashboard and startup scripts under **Unreleased**.
 
 ## Requirements
 
@@ -36,6 +40,36 @@ document the checks completed before publication.
 - CLI usage limits, versions and flags may vary or require updates. The implementation has been tested with simulated adapters, **not** with real accounts.
 
 > **Billing:** if `ANTHROPIC_API_KEY` is set, Claude Code may use API billing instead of your subscription. The runner removes common API environment variables from child processes, but cannot control your personal CLI settings. Run `patchrondo doctor` and check your account login and configuration.
+
+## Quick start (published MVP)
+
+```bash
+git clone https://github.com/luigiggigo/patchrondo.git
+cd patchrondo
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+patchrondo init --repo /absolute/path/to/your/repository
+patchrondo doctor
+```
+
+Then authorize your project's tests and create a task using the steps below.
+Initialization and `doctor` make no model calls.
+
+### Development checkout shortcuts
+
+The unreleased checkout containing `init.sh`, `main.sh` and `patchrondo ui`
+also supports:
+
+```bash
+./init.sh /absolute/path/to/your/repository   # venv, install, init, doctor
+./main.sh                                     # open the dashboard
+./main.sh --demo                              # or try it with sample data
+```
+
+`init.sh` is safe to run again: it keeps an existing configuration. Both scripts
+run on Linux, macOS, WSL2 and Git Bash, make no model calls and leave tests
+disabled until you authorize them (step 2 below).
 
 ## Installation
 
@@ -142,6 +176,49 @@ Phases: `develop`, `test`, `review`, `complete`.
 `blocked` means the review returned `BLOCKED` or the iteration limit was reached:
 human intervention and a new task, or a carefully controlled manual state edit,
 are required.
+
+### 5. Dashboard (optional, unreleased)
+
+```bash
+patchrondo ui              # opens http://127.0.0.1:8765/#token=… in your browser
+patchrondo ui --port 0 --no-browser
+```
+
+Run `patchrondo init` first: `ui` refuses to start without a valid configuration.
+To try it without any setup, run `python tools/demo_dashboard.py` from a source
+checkout: it creates a throwaway repository and sample tasks, then opens the
+dashboard with tests disabled. Sample tasks illustrate the interface; create a
+new task to try a real run. The demo deletes its files only after a normal exit
+confirms there are no active runs, pending starts or run locks. It keeps them
+after an uncertain or interrupted shutdown, or with `--keep`, and prints their
+location. A second Ctrl+C during shutdown keeps the files and exits with code 130.
+
+The dark-themed dashboard shows tasks with live status, the phase pipeline,
+review verdict and issues, test results, the event timeline and the task,
+handoff, feedback, report and run-log documents, refreshing every few seconds.
+From it you can:
+
+- **create tasks** (`+` or `N`): same as `patchrondo new`, no model calls;
+- **run or resume** a task: after a confirmation, starts `patchrondo run` as a
+  separate process. This **calls the real CLIs and uses your plan quota**. The
+  run keeps going if the dashboard stops; its output is saved as `ui-run.log` in
+  the task directory. A task stuck in `running` after a crash still needs
+  `patchrondo resume <task-id> --unlock` from the terminal;
+- **edit project tests** (*Edit tests*): enabling them requires ticking the
+  explicit trust checkbox, exactly like `trust_acknowledged` in `config.json`.
+  Enter one command per line. On Windows, use double quotes around arguments
+  containing spaces; single quotes are literal characters. On Linux and macOS,
+  commands use POSIX quoting rules. Commands are saved as argument arrays and
+  executed without a shell.
+
+Stopping the dashboard refuses new runs and waits up to 30 seconds for run
+starts already in progress. Active runs continue in their separate processes;
+a start still pending when that wait expires also causes the demo to keep its
+files. Idle HTTP connections do not delay shutdown.
+
+The server uses only the standard library, listens on `127.0.0.1` only, rejects
+foreign `Host` and `Origin` headers, accepts writes only as JSON and requires the
+per-session token printed in the URL; keep that URL private.
 
 ## Loop behavior
 
@@ -303,7 +380,7 @@ replace an end-to-end test with authenticated accounts.
 - Optional embedding-based reranking and decision-log indexing, if lexical retrieval proves insufficient.
 - Dedicated OS sandbox for tests (Docker/VM with minimal privileges).
 - End-to-end suite with authorized accounts and CLI version compatibility checks.
-- Approval requests for risky tools, a dashboard and notifications.
+- Approval requests for risky tools and notifications.
 - Stall detection based on Git/test changes and support for multiple projects in one state directory.
 
 ## Official documentation

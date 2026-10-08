@@ -4,7 +4,7 @@
 
 | Module | Responsibility |
 |---|---|
-| `cli.py` | CLI parsing, user input validation, `init/new/run/resume/status/report/list/doctor` commands |
+| `cli.py` | CLI parsing, user input validation, `init/new/run/resume/status/report/list/index/search/ui/doctor` commands |
 | `core.py` | Deterministic state machine and completion criteria |
 | `providers.py` | Claude/Codex CLI adapters and structured JSON output |
 | `process.py` | Process stdin/stdout, timeouts, group cleanup and filtered environment |
@@ -12,6 +12,7 @@
 | `storage.py` | Atomic JSON state, private directories, locks and process PID checks |
 | `report.py` | Auditable reports with files, tests, reviews and events |
 | `rag.py` | Optional incremental SQLite FTS5 index and retrieval of repository excerpts |
+| `ui.py`, `static/dashboard.html` | Loopback dashboard; token-protected JSON API to read state, create tasks, start `patchrondo run` processes and edit test settings |
 
 Models do not call each other directly. The orchestrator invokes each model and
 stores state, feedback and evidence.
@@ -96,3 +97,31 @@ tests must not be enabled for untrusted code.
 Vector embeddings are deliberately absent: they would add runtime dependencies
 or network calls. Consider them as a reranking stage only after measuring that
 lexical search is insufficient.
+
+## 7. Dashboard and demo lifecycle
+
+`ui.py` serves the bundled dashboard with `ThreadingHTTPServer` on `127.0.0.1`.
+The API checks Host headers and a per-session token; writes additionally check
+Origin when supplied and require JSON. Task creation delegates to `create_task`;
+test settings retain the core's explicit boolean consent validation. The editor
+round-trips argv arrays using Windows C runtime quoting on Windows and POSIX
+quoting elsewhere. Neither form invokes a shell.
+
+Each Run/Resume launches a separate `python -m patchrondo ... run` process with
+absolute import paths, so source-only checkouts work after changing the child's
+working directory to the state directory. Existing task locks and phase
+checkpoints remain authoritative. The dashboard registers the process immediately
+and reports startup failures detected during the first 1.5 seconds.
+
+A condition variable guards `closing`, the count of pending starts and the
+registered processes. Once closing begins, new Run requests return 409. Shutdown
+waits at most 30 seconds for admitted starts, then returns `RunsAtExit(active,
+pending)`. Request threads are daemon threads; silent connections have a
+30-second timeout and do not delay shutdown. Started runs continue independently.
+
+`tools/demo_dashboard.py` initializes a temporary repository with tests disabled.
+It deletes the demo only after `serve()` returns normally and no active process,
+pending start or `.run.lock` remains, unless `--keep` was requested. A timeout,
+interruption or shutdown error preserves the files and prints their location.
+A second Ctrl+C during shutdown returns exit code 130. Preparation failures can
+be cleaned up because the dashboard has not yet admitted any runs.
