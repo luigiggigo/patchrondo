@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "repository": "/home/you/src/my-project",
+  "workflow": {
+    "max_iterations": 6,
+    "agent_timeout_seconds": 900,
+    "test_timeout_seconds": 180,
+    "claude_max_turns": 12,
+    "allow_no_changes": false
+  },
+  "tests": {
+    "enabled": true,
+    "trust_acknowledged": true,
+    "commands": [
+      ["python", "-m", "pytest", "-q"],
+      ["python", "-m", "compileall", "-q", "."]
+    ]
+  },
+  "rag": {
+    "enabled": true,
+    "max_chunks": 8,
+    "max_chars": 12000
+  }
+}
