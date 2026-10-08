@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Remove the GitHub Actions CI workflow, its README badge and its Dependabot
+  action updates; retain local test, publication and package checks.
 - Add `patchrondo ui`, a token-protected local dashboard (standard library only,
   loopback-bound) with live task status, reviews, tests, history and documents. It can
   create tasks, start or resume runs as separate CLI processes after confirmation,

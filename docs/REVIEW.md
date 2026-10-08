@@ -77,6 +77,10 @@ normal temporary directories. Global Git configuration was not changed.
 
 ## Current local validation (October 9, 2026)
 
+The GitHub Actions CI workflow has been disabled and removed from the current
+checkout. Future validation is local; the initial CI results remain a historical
+record of the published snapshot.
+
 The current development suite contains **65 tests**. Local execution on Windows
 with Python 3.13 completed with **64 passing tests and 1 skipped POSIX
 process-group test**. These tests use simulated providers and synthetic

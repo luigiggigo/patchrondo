@@ -4,8 +4,6 @@
   <img src="docs/assets/rondo-mascot-v1.png" alt="Rondo, the PatchRondo raccoon mascot, with a blue patch and a loop-shaped tail" width="240">
 </p>
 
-[![CI](https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml/badge.svg)](https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml)
-
 **Code. Review. Repeat.**
 
 **Published alpha/MVP:** 0.1.0. Source available on
@@ -27,9 +25,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance and
 [SECURITY.md](SECURITY.md) for security limitations. The
 [technical review](docs/REVIEW.md) records the initial publication checks and
 subsequent local validation. The [publishing guide](docs/PUBLISHING.md) covers
-future updates; [CHANGELOG.md](CHANGELOG.md) separates published changes from
-unreleased development. This README describes the current source checkout,
-including the dashboard and startup scripts under **Unreleased**.
+future updates, and [CHANGELOG.md](CHANGELOG.md) records the version history.
+The published source includes the local dashboard and startup scripts described
+below.
 
 ## Requirements
 
@@ -41,37 +39,30 @@ including the dashboard and startup scripts under **Unreleased**.
 
 > **Billing:** if `ANTHROPIC_API_KEY` is set, Claude Code may use API billing instead of your subscription. The runner removes common API environment variables from child processes, but cannot control your personal CLI settings. Run `patchrondo doctor` and check your account login and configuration.
 
-## Quick start (published MVP)
+## Quick start
 
 ```bash
 git clone https://github.com/luigiggigo/patchrondo.git
 cd patchrondo
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-patchrondo init --repo /absolute/path/to/your/repository
-patchrondo doctor
-```
-
-Then authorize your project's tests and create a task using the steps below.
-Initialization and `doctor` make no model calls.
-
-### Development checkout shortcuts
-
-The unreleased checkout containing `init.sh`, `main.sh` and `patchrondo ui`
-also supports:
-
-```bash
 ./init.sh /absolute/path/to/your/repository   # venv, install, init, doctor
 ./main.sh                                     # open the dashboard
-./main.sh --demo                              # or try it with sample data
 ```
 
 `init.sh` is safe to run again: it keeps an existing configuration. Both scripts
-run on Linux, macOS, WSL2 and Git Bash, make no model calls and leave tests
-disabled until you authorize them (step 2 below).
+run on Linux, macOS, WSL2 and Git Bash. Setup and opening the dashboard make no
+model calls. Tests remain disabled until you authorize them (step 2 below).
 
-## Installation
+To try the dashboard with sample data after setup:
+
+```bash
+./main.sh --demo
+```
+
+Create a task in the dashboard, enable trusted project tests through **Edit
+tests**, then use **Run** when ready. Run/Resume invokes the real Claude/Codex
+CLIs and consumes your account quota. The manual CLI steps follow.
+
+## Manual installation
 
 ```bash
 git clone https://github.com/luigiggigo/patchrondo.git
@@ -106,7 +97,11 @@ of project files.
 
 ### 2. Explicitly authorize tests
 
-Edit `~/.patchrondo/config.json` (or your `PATCHRONDO_HOME/config.json`). The `tests`
+In the dashboard, choose **Edit tests**, enable **Run project tests**, enter your
+commands and tick the explicit trust checkbox before saving.
+
+For manual configuration, edit `~/.patchrondo/config.json` (or your
+`PATCHRONDO_HOME/config.json`). The `tests`
 section must contain commands **as argument arrays** (no shell), chosen by you
 for your project:
 
@@ -177,7 +172,7 @@ Phases: `develop`, `test`, `review`, `complete`.
 human intervention and a new task, or a carefully controlled manual state edit,
 are required.
 
-### 5. Dashboard (optional, unreleased)
+### 5. Dashboard (optional)
 
 ```bash
 patchrondo ui              # opens http://127.0.0.1:8765/#token=… in your browser
@@ -365,15 +360,21 @@ git merge patchrondo/T-a1b2c3d4e5f6
 
 ## Project tests (no provider quota usage)
 
+Validation is run locally; the GitHub Actions CI workflow is disabled. Pushes
+and pull requests do not run that CI.
+
 ```bash
 python -m unittest discover -s tests -v
 # Or without installing the package:
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-Tests use temporary Git repositories, simulated providers, state checks and mocked
-CLI arguments. They do not call Claude or Codex, validate real model output, or
-replace an end-to-end test with authenticated accounts.
+The latest local validation on October 9, 2026 ran **65 tests** on Windows:
+**64 passed and 1 POSIX process-group test was skipped**. Tests use temporary Git
+repositories, simulated providers, state checks and mocked CLI arguments. They
+do not call Claude or Codex, validate real model output, or replace an end-to-end
+test with authenticated accounts. Full package checks are documented in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Roadmap
 

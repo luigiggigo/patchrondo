@@ -22,7 +22,8 @@ Windows is recommended through WSL2; native Windows tests use synthetic CLI scri
 
 Keep changes small and explain the behavior before and after. Add regression tests
 for changes to state transitions, consent, provider arguments and process handling.
-Never invoke real agents in CI or commit credentials, prompts from private projects,
+Run validation locally with simulated providers; there is no active GitHub Actions
+CI workflow. Never commit credentials, prompts from private projects,
 transcripts or task state. The publication check is a heuristic, not a complete
 secret scanner or a substitute for reviewing the Git diff.
 

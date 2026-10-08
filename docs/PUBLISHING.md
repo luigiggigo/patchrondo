@@ -18,6 +18,10 @@ including the dashboard and startup scripts, are listed under **Unreleased** in
 The repository is already initialized and has an `origin` remote. Future updates
 do not require `git init` or creating another GitHub repository.
 
+The GitHub Actions CI workflow was disabled on October 9, 2026 and removed from
+the current checkout. Validation of future updates is performed locally; the
+initial CI results above are historical.
+
 ## Validate an update
 
 Run from the directory containing `pyproject.toml`:
@@ -74,9 +78,9 @@ Git. It is also excluded from public ZIP archives and package distributions.
 Keep it in your local checkout; it is not part of the published source.
 
 When the update is approved for publication, commit with a descriptive message
-and push through the repository's normal review process. Inspect the new CI run
-for Python 3.11-3.14 on Linux, macOS and Windows, plus package and installed-wheel
-checks. The historical initial CI result does not validate newer revisions.
+and push through the repository's normal review process. Record the local test,
+publication, package and installed-wheel results for the revision being published.
+Include OS and Python versions; historical CI results do not validate newer revisions.
 
 ## Create a versioned release
 
@@ -90,7 +94,7 @@ When a versioned release is intended:
   authenticated-provider compatibility checks remain incomplete.
 
 Tagging, pushing, creating a GitHub Release and publishing packages are explicit
-publication actions. They are not performed by PatchRondo or its CI workflow.
+publication actions. They are not performed automatically by PatchRondo.
 
 ## Authenticated-provider validation
 
@@ -101,9 +105,4 @@ test. Record the OS, CLI versions and login method, without tokens or private
 logs. Try both role combinations: Claude developer / Codex reviewer, and Codex
 developer / Claude reviewer. Verify the worktree, tests, review and resumption
 after an interruption. Calls may consume account quota; this remains a manual
-test outside CI.
-
-Workflows use only the official [checkout](https://github.com/actions/checkout)
-and [setup-python](https://github.com/actions/setup-python) actions, pinned to
-commits and updated through Dependabot. CI contains no provider credentials or
-automatic publication workflow.
+test separate from the simulated local checks.
