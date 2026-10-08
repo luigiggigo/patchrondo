@@ -1,5 +1,7 @@
 # PatchRondo
 
+[![CI](https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml/badge.svg)](https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml)
+
 **Code. Review. Repeat.**
 
 Experimental MVP 0.1.0.

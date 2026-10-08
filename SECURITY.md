@@ -21,8 +21,8 @@ conservative. Use WSL2 for POSIX process-group cleanup.
 
 ## Reporting a vulnerability
 
-Once this repository is hosted on GitHub, use **Security → Report a vulnerability**
-when private vulnerability reporting is enabled. Do not include credentials or
+Use [private vulnerability reporting](https://github.com/luigiggigo/patchrondo/security/advisories/new)
+or **Security → Report a vulnerability** on GitHub. Do not include credentials or
 private project logs in public issues. If that option is unavailable, open an
 issue requesting a private contact without disclosing the vulnerability details.
 

@@ -5,6 +5,11 @@ limitations in the [review](REVIEW.md). It has not yet been validated with real
 Claude/Codex accounts. These steps publish the code on GitHub; publishing to
 PyPI is a separate task.
 
+PatchRondo is public at [github.com/luigiggigo/patchrondo](https://github.com/luigiggigo/patchrondo).
+The initial GitHub CI run passed all test jobs and package checks. Private
+vulnerability reporting is enabled. The steps below document the publication
+process and checks to repeat for future updates.
+
 ## Local checks
 
 Run from the directory containing `pyproject.toml`:

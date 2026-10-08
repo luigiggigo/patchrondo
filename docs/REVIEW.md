@@ -60,8 +60,9 @@ compatibility with every distributed CLI version.
 
 The updated suite contains **45 tests**. Local execution on Windows with Python
 3.13.3 produced **44 passing tests and 1 skipped test**, which requires POSIX
-process groups. Full CI is prepared but has yet to run on GitHub. Parsing with
-Python 3.11 grammar does not replace execution on a Python 3.11 interpreter.
+process groups. [GitHub CI](https://github.com/luigiggigo/patchrondo/actions/runs/37834267237)
+passed all 12 combinations of Python 3.11-3.14 and Linux, macOS and Windows,
+plus the package build, metadata and installed-wheel checks.
 
 Initial sandbox restrictions on temporary directories and Git's ownership checks
 on a filesystem without ownership were addressed by running local tests with
