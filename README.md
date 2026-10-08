@@ -1,5 +1,9 @@
 # PatchRondo
 
+<p align="center">
+  <img src="docs/assets/rondo-mascot-v1.png" alt="Rondo, the PatchRondo raccoon mascot, with a blue patch and a loop-shaped tail" width="240">
+</p>
+
 [![CI](https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml/badge.svg)](https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml)
 
 **Code. Review. Repeat.**
