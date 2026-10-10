@@ -304,13 +304,16 @@ class Index:
         if not terms or limit < 1:
             return []
         match = " OR ".join(f'"{term}"' for term in terms)
+        # The index is shared: restrict candidates to this worktree before limiting them,
+        # or better-ranked chunks of other worktrees crowd its own out. CROSS JOIN keeps
+        # the full-text scan outermost.
         rows = self.db.execute("""
             SELECT m.path, m.start_line, m.end_line, c.symbol, c.body, c.rank
-            FROM (SELECT rowid, symbol, body, rank FROM chunks_fts
-                  WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?) AS c
-            JOIN chunk_map m ON m.id = c.rowid
-            JOIN files f ON f.root = ? AND f.path = m.path AND f.sha = m.sha
-            ORDER BY c.rank""", (match, max(CANDIDATES, limit * 20), str(root.resolve())))
+            FROM chunks_fts AS c
+            CROSS JOIN chunk_map m ON m.id = c.rowid
+            CROSS JOIN files f ON f.root = ? AND f.path = m.path AND f.sha = m.sha
+            WHERE c.chunks_fts MATCH ?
+            ORDER BY c.rank LIMIT ?""", (str(root.resolve()), match, max(CANDIDATES, limit * 20)))
         hits: list[Hit] = []
         per_file: dict[str, int] = {}
         for path, first, last, symbol, body, rank in rows:

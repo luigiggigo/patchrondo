@@ -376,9 +376,9 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 10, 2026 ran **73 tests**: on Windows
-(Python 3.13) **72 passed and 1 POSIX process-group test was skipped**; on WSL2
-(Python 3.12) all 73 passed. Tests use temporary Git
+The latest local validation on October 10, 2026 ran **74 tests**: on Windows
+(Python 3.13) **73 passed and 1 POSIX process-group test was skipped**; on WSL2
+(Python 3.12) all 74 passed. Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Full package checks are documented in

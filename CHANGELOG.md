@@ -27,7 +27,10 @@
   CLIs on a throwaway repository with both pairings. It makes no model calls
   without `--authorize-provider-calls`, keeps the fixture's tests disabled unless
   `--run-fixture-tests` is also given, and stops on quota or login failures.
-- Extend local simulated-provider validation to 73 tests; native Windows skips
+- Fix retrieval in a shared index: restrict matches to the searched worktree
+  before taking the top candidates. Previously, more than 300 better-ranked
+  chunks from other worktrees could hide relevant excerpts or return none.
+- Extend local simulated-provider validation to 74 tests; native Windows skips
   the POSIX process-group test.
 - Run the real-provider check once, on October 10, 2026: both pairings passed
   on WSL2 with Claude Code 2.1.291 and codex-cli 0.160.1, with fixture tests

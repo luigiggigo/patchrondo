@@ -117,6 +117,24 @@ class IndexTests(unittest.TestCase):
             left = index.db.execute("SELECT count(*) FROM blobs WHERE path='auth.py'").fetchone()[0]
             self.assertEqual(left, 1)
 
+    def test_candidate_limit_applies_within_the_searched_worktree(self):
+        body = "    needle = needle + 1\n" * rag.MIN_CHUNK_LINES
+        (self.repo / "many.py").write_text(
+            "".join(f"def needle_{i}():\n{body}" for i in range(rag.CANDIDATES + 20)), encoding="utf-8")
+        self._git("add", "-A")
+        self._git("-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "init")
+        tree = Path(self.tmp.name) / "tree"
+        self._git("worktree", "add", "-q", str(tree))
+        (tree / "many.py").write_text("def unrelated():\n    pass\n", encoding="utf-8")
+        (tree / "target.py").write_text(
+            "def lookup(value):\n" + "    value = value + 1\n" * 20 + "    return needle\n", encoding="utf-8")
+        with rag.Index(rag.index_path(self.home)) as index:
+            index.update(self.repo)
+            index.update(tree)
+            # More than CANDIDATES better-ranked chunks belong only to the other worktree.
+            self.assertEqual([h.path for h in index.search(tree, "needle")], ["target.py"])
+            self.assertEqual([h.path for h in index.search(self.repo, "needle")], ["many.py"] * rag.PER_FILE)
+
 
 class WorkflowRetrievalTests(unittest.TestCase):
     def setUp(self):

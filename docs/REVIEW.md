@@ -170,6 +170,22 @@ quota handling with real error messages, native Windows, macOS or other CLI
 versions. Whether a reviewer's sandbox would block an attempted edit was not
 tested: the reviewers did not change files.
 
+## Retrieval candidate fix (October 10, 2026)
+
+`Index.search` limited the full-text candidates to the top 300 of the shared
+index and only then kept those of the searched worktree. It now restricts
+matches to that worktree before the limit.
+
+- A new regression test indexes more than 300 better-ranked chunks that exist
+  only in the main checkout and searches a worktree whose single match ranks
+  lower. Against the previous query it returned no excerpts and failed.
+- The suite grew to **74 tests**. Windows with Python 3.13.3: 73 passed and 1
+  POSIX process-group test skipped. WSL2 with Python 3.12.3: 74 passed. No
+  provider calls were made.
+- A synthetic index of 24,000 chunks across six roots took about 40 ms for a
+  45-term query on Windows; larger indexes were not measured. The publication
+  and package checks were not rerun for this change.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:
