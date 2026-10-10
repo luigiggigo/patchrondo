@@ -6,6 +6,32 @@
 
 **Code. Review. Repeat.**
 
+<p align="center">
+  <a href="https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml">
+    <img src="https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml/badge.svg?branch=main&amp;event=push" alt="CI status on main">
+  </a>
+  <a href="#requirements">
+    <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white" alt="Python 3.11 or later">
+  </a>
+  <a href="#project-tests-no-provider-quota-usage">
+    <img src="https://img.shields.io/badge/CI%20matrix-Linux%20%7C%20Windows%20%7C%20macOS-475569" alt="CI matrix: Linux, Windows and macOS">
+  </a>
+  <a href="#project-tests-no-provider-quota-usage">
+    <img src="https://img.shields.io/badge/CI-free%20on%20public%20repos-2DA44E?logo=githubactions&amp;logoColor=white" alt="CI: free on public repositories">
+  </a>
+</p>
+<p align="center">
+  <a href="CHANGELOG.md">
+    <img src="https://img.shields.io/badge/Status-experimental%20alpha-F59E0B" alt="Status: experimental alpha">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-22C55E" alt="License: MIT">
+  </a>
+  <a href="pyproject.toml">
+    <img src="https://img.shields.io/badge/Runtime%20dependencies-0-14B8A6" alt="Zero Python runtime dependencies">
+  </a>
+</p>
+
 **Published alpha/MVP:** 0.1.0. Source available on
 [GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026.
 
