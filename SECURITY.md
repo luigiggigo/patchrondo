@@ -14,6 +14,14 @@ Inherited provider configuration and managed settings can affect behavior.
 AI approval requires passing configured tests and still needs human review before
 integration. Logs may contain private project data.
 
+`tools/provider_e2e.py` calls the real provider CLIs, and uses plan quota, only
+with `--authorize-provider-calls`. `--run-fixture-tests` is separate consent to
+run a unit test on the host against agent-written code. After a failed check,
+or with `--keep`, its temporary directory holds prompts and provider
+transcripts; delete it when no longer needed and do not publish it. A passing
+check shows that the reviewer did not change files in that run. It does not
+show that a provider sandbox would block an attempt.
+
 Captured process output is bounded in memory; temporary capture files can grow on
 disk until the timeout. Apply disk quotas in isolated runners. On native Windows,
 process cleanup terminates the direct child only, and stale-lock recovery is

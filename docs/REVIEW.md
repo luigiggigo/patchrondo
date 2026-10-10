@@ -1,6 +1,7 @@
 # Technical review and validation record
 
-Initial review: October 8, 2026. Local follow-up: October 9, 2026.
+Initial review: October 8, 2026. Local follow-up: October 9, 2026. First
+real-provider check: October 10, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -18,9 +19,11 @@ dependencies. Explicit test
 consent, atomic checkpoints and the absence of automatic merges are useful
 foundations.
 
-The initial preparation fixed the defects recorded below. Validation with
-authenticated real CLIs is still required before promising complete compatibility
-or production readiness.
+The initial preparation fixed the defects recorded below. A first check with
+authenticated real CLIs passed on October 10, 2026 on one platform and one pair
+of CLI versions, without reaching passing tests or approval; its scope is
+recorded below. Broader validation with authenticated real CLIs is still
+required before promising complete compatibility or production readiness.
 The MIT license already existed; this review cannot certify ownership or the
 provenance of every contribution.
 
@@ -75,14 +78,14 @@ Initial sandbox restrictions on temporary directories and Git's ownership checks
 on a filesystem without ownership were addressed by running local tests with
 normal temporary directories. Global Git configuration was not changed.
 
-## Current local validation (October 9, 2026)
+## Local validation (October 9, 2026)
 
 The GitHub Actions CI workflow has been disabled and removed from the current
 checkout. Future validation is local; the initial CI results remain a historical
 record of the published snapshot.
 
-The current development suite contains **66 tests**. Local execution on Windows
-with Python 3.13 completed with **65 passing tests and 1 skipped POSIX
+On that date the development suite contained **66 tests**. Local execution on
+Windows with Python 3.13 completed with **65 passing tests and 1 skipped POSIX
 process-group test**. These tests use simulated providers and synthetic
 repositories. No authenticated provider calls were made. This result applies
 to the local working tree; the initial GitHub CI matrix above covers the
@@ -103,16 +106,75 @@ Dashboard review and regression coverage include:
 - A second Ctrl+C during shutdown returns 130 and preserves demo files; deletion
   is allowed only after a confirmed clean shutdown.
 
-The latest heuristic publication check still reports two items: an ignored local
-`debug.log` and the binary mascot asset `docs/assets/rondo-mascot-v1.png`.
+The heuristic publication check recorded on that date reported two items: an
+ignored local `debug.log` and the binary mascot asset
+`docs/assets/rondo-mascot-v1.png`. The October 10 result below supersedes it.
 These require review; the scan does not report a clean result. The checked
 documentation, changed Python files and startup scripts use LF line endings.
+
+## Real-provider check preparation (October 10, 2026)
+
+`tools/provider_e2e.py` was added to run the loop against the authenticated
+CLIs with both pairings, behind explicit `--authorize-provider-calls` consent.
+The preparation recorded in this section made no provider calls; the first
+authorized run is recorded in the next section.
+
+- The suite grew to **73 tests**. Windows with Python 3.13.3: 72 passed and 1
+  POSIX process-group test skipped. WSL2 with Python 3.12.3: 73 passed.
+  The seven new tests drive the tool with simulated CLIs and cover the
+  authorization gate, the readiness gate, disabled fixture tests by default,
+  consented fixture tests, a reviewer that edits the worktree, a rejected CLI
+  argument and stopping on a quota failure. Removing the authorization gate,
+  the fixture-test consent or the quota stop each made a test fail.
+- Preflight only, without model calls: WSL2 reported Claude Code 2.1.291
+  (login method `claude.ai`) and `codex-cli 0.160.1`, both logged in. Native
+  Windows reported Claude Code 2.1.295 and no Codex on `PATH`, so both pairings
+  can currently be checked on this machine only under WSL2.
+- Parser help only: `codex-cli 0.160.1` lists every Codex argument the adapter
+  uses, with `--ask-for-approval` as a global option before `exec`. Claude Code
+  2.1.291 and 2.1.295 list every Claude argument the adapter uses except
+  `--max-turns`, which is absent from `claude --help`. The authorized run
+  below shows that 2.1.291 still accepts it.
+- The heuristic publication check exited with status 1 and four findings, all
+  predating this change: the ignored local `debug.log` and three binary images
+  (`docs/assets/rondo-mascot-v1.png`, `src/patchrondo/static/rondo.webp`,
+  `src/patchrondo/static/rondo-head.webp`). These require review; the scan
+  does not report a clean result.
+
+## First real-provider run (October 10, 2026)
+
+The user authorized one run of
+`python3 tools/provider_e2e.py --authorize-provider-calls`. It exited with
+status 0 and reported `RESULT: PASS` for both pairings.
+
+- Platform: WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2, glibc 2.39), Python
+  3.12.3, Claude Code 2.1.291 with login method `claude.ai`, codex-cli 0.160.1
+  with its ChatGPT login.
+- Claude → Codex (28 s) and Codex → Claude (17 s): the developer returned a
+  handoff and created `greeting.py` in the worktree as the only change, made
+  no commits and left the main checkout clean; the reviewer returned a review
+  that parsed and left the worktree fingerprint unchanged; the loop paused
+  with `tests_disabled`.
+- Each CLI therefore accepted the adapter's arguments in both roles, including
+  Claude's `--restricted`, `--max-turns` and `--json-schema` and Codex's
+  `--sandbox`, `--ephemeral`, `--output-last-message` and `--output-schema`.
+- The verdicts were `BLOCKED` (Codex) and `CHANGES_REQUESTED` (Claude). With
+  the fixture's tests disabled the prompt reports them as skipped, so approval
+  was not expected; the review texts were not examined, because a passing run
+  deletes its files.
+
+This run made four provider calls on a trivial task. It does not cover a run
+through passing tests and final approval (`--run-fixture-tests`), a second
+iteration with reviewer feedback, resumption after an interruption, timeouts,
+quota handling with real error messages, native Windows, macOS or other CLI
+versions. Whether a reviewer's sandbox would block an attempted edit was not
+tested: the reviewers did not change files.
 
 ## Remaining limitations
 
 The remaining limitations are explicit:
 
-1. No workflow with real Claude/Codex accounts was run. The initial review environment did not have Claude installed. `doctor` checks availability/login and does not guarantee flag compatibility for every release.
+1. Real Claude/Codex accounts were checked once, on one platform and one pair of CLI versions, without reaching passing tests or approval (see the run above). The initial review environment did not have Claude installed. `doctor` checks availability/login and does not guarantee flag compatibility for every release; `tools/provider_e2e.py` does not cover resumption after an interruption.
 2. Target-project tests execute on the host. Codex can run commands allowed by its sandbox and load personal configuration. Untrusted code requires a dedicated environment.
 3. Capture bounds RAM use but not disk space until timeout. Use disk quotas in isolated runners.
 4. Native Windows terminates only direct children; private ACLs and stale-lock recovery do not have POSIX guarantees. WSL2 remains recommended.

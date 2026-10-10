@@ -23,8 +23,15 @@
 - Support child runs from source-only checkouts and report immediate startup errors.
 - Preserve command arguments through the test editor using Windows or POSIX
   quoting rules, including embedded quotes and trailing backslashes.
-- Extend local simulated-provider validation to 66 tests; native Windows skips
-  the POSIX process-group test. Authenticated provider workflows remain unvalidated.
+- Add `tools/provider_e2e.py`, an opt-in check of the real Claude Code and Codex
+  CLIs on a throwaway repository with both pairings. It makes no model calls
+  without `--authorize-provider-calls`, keeps the fixture's tests disabled unless
+  `--run-fixture-tests` is also given, and stops on quota or login failures.
+- Extend local simulated-provider validation to 73 tests; native Windows skips
+  the POSIX process-group test.
+- Run the real-provider check once, on October 10, 2026: both pairings passed
+  on WSL2 with Claude Code 2.1.291 and codex-cli 0.160.1, with fixture tests
+  disabled. A real run through passing tests and approval remains unvalidated.
 
 ## 0.1.0 — initial public MVP (source published October 8, 2026)
 

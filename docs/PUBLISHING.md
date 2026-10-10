@@ -35,7 +35,9 @@ python -m twine check dist/*
 ```
 
 For source-only tests, set `PYTHONPATH=src`. Automated checks use synthetic or
-mocked providers and do not call models. Tests of repositories managed by
+mocked providers and do not call models. When an update changes provider
+arguments, sandbox modes or reply extraction, also run the opt-in check under
+[Authenticated-provider validation](#authenticated-provider-validation). Tests of repositories managed by
 PatchRondo remain subject to explicit `tests.trust_acknowledged=true` consent.
 
 The publication check scans the working tree for credential patterns, private
@@ -98,11 +100,25 @@ publication actions. They are not performed automatically by PatchRondo.
 
 ## Authenticated-provider validation
 
-A complete workflow with real Claude/Codex accounts remains unvalidated.
+One real-provider check passed on October 10, 2026 (WSL2, both pairings,
+fixture tests disabled; see [REVIEW.md](REVIEW.md)). A complete workflow
+through passing tests and approval with real Claude/Codex accounts remains
+unvalidated.
 
-Use a test repository without private data and a small change with a deterministic
-test. Record the OS, CLI versions and login method, without tokens or private
-logs. Try both role combinations: Claude developer / Codex reviewer, and Codex
-developer / Claude reviewer. Verify the worktree, tests, review and resumption
-after an interruption. Calls may consume account quota; this remains a manual
-test separate from the simulated local checks.
+`tools/provider_e2e.py` automates the repeatable part. It creates a throwaway
+repository with a small change and a deterministic test, then runs both role
+combinations: Claude developer / Codex reviewer, and Codex developer / Claude
+reviewer. It checks the worktree, the review and, with `--run-fixture-tests`,
+the tests and final approval. It prints the OS, CLI versions and Claude login
+method, without tokens or account details.
+
+```bash
+python tools/provider_e2e.py                             # no model calls
+python tools/provider_e2e.py --authorize-provider-calls --run-fixture-tests
+```
+
+Calls consume account quota, so the check runs only with explicit authorization
+and stays separate from the simulated local checks. Record the date and printed
+summary in [REVIEW.md](REVIEW.md); do not copy the kept task state or provider
+transcripts into the repository. Resumption after an interruption is not
+covered by the tool and remains a manual test.

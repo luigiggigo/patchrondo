@@ -125,3 +125,11 @@ pending start or `.run.lock` remains, unless `--keep` was requested. A timeout,
 interruption or shutdown error preserves the files and prints their location.
 A second Ctrl+C during shutdown returns exit code 130. Preparation failures can
 be cleaned up because the dashboard has not yet admitted any runs.
+
+`tools/provider_e2e.py` is the only tool that calls the real adapter, and only
+with `--authorize-provider-calls`. It creates a temporary repository and state
+directory, runs `run_task` once per pairing and inspects the saved state: the
+developer's handoff and file, unchanged Git history, a parsed review and an
+unchanged worktree fingerprint after review. Fixture tests stay disabled unless
+`--run-fixture-tests` is given. Agent-written code is checked statically and
+never imported. Files are deleted only after every check passes.

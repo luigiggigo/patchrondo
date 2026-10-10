@@ -11,7 +11,7 @@ labels: bug
 
 ## Environment
 
-- Agent Loop version:
+- PatchRondo version:
 - Python / OS / Git versions:
 - Claude / Codex CLI versions (if relevant):
 

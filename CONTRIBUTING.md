@@ -27,6 +27,12 @@ CI workflow. Never commit credentials, prompts from private projects,
 transcripts or task state. The publication check is a heuristic, not a complete
 secret scanner or a substitute for reviewing the Git diff.
 
+Changes to provider arguments, sandbox modes or reply extraction cannot be
+confirmed by simulated providers. `python tools/provider_e2e.py` reports CLI
+versions and login without model calls; with `--authorize-provider-calls` it
+runs both pairings against your own accounts and uses plan quota. Run it only
+by choice, and report the platform and CLI versions it prints with the result.
+
 Contributions are distributed under the project's MIT license. Only submit code
 you are entitled to contribute. Report security issues through `SECURITY.md`.
 

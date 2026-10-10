@@ -18,7 +18,9 @@ It does not extract OAuth tokens, use unofficial endpoints, or promise unlimited
 usage. Current plan and account documentation is linked below.
 
 **Status: experimental alpha.** No Python runtime dependencies. Tests use
-simulated providers; a complete workflow with real accounts has yet to be validated.
+simulated providers. A first real-provider check passed on one platform (see
+[Project tests](#project-tests-no-provider-quota-usage)); a complete workflow
+through passing tests and approval with real accounts has yet to be validated.
 This is an independent project, not affiliated with or sponsored by Anthropic or OpenAI.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance and
@@ -35,7 +37,7 @@ below.
 - A **trusted** Git repository, initially **clean**, with at least one commit.
 - For Claude: install **Claude Code** with `--restricted` support (version 2.1.248 or later), then authenticate with `claude auth login` or start `claude` and sign in with a supported plan.
 - For Codex: install **Codex CLI** (`npm install -g @openai/codex`) and run `codex login`, choosing ChatGPT login if you intend to use your subscription.
-- CLI usage limits, versions and flags may vary or require updates. The implementation has been tested with simulated adapters, **not** with real accounts.
+- CLI usage limits, versions and flags may vary or require updates. The implementation is tested with simulated adapters; real accounts have been checked only once, on WSL2 with the CLI versions listed under [Real provider check](#real-provider-check-uses-plan-quota).
 
 > **Billing:** if `ANTHROPIC_API_KEY` is set, Claude Code may use API billing instead of your subscription. The runner removes common API environment variables from child processes, but cannot control your personal CLI settings. Run `patchrondo doctor` and check your account login and configuration.
 
@@ -374,18 +376,53 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 9, 2026 ran **66 tests** on Windows:
-**65 passed and 1 POSIX process-group test was skipped**. Tests use temporary Git
+The latest local validation on October 10, 2026 ran **73 tests**: on Windows
+(Python 3.13) **72 passed and 1 POSIX process-group test was skipped**; on WSL2
+(Python 3.12) all 73 passed. Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Full package checks are documented in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### Real provider check (uses plan quota)
+
+`tools/provider_e2e.py` runs the loop with the real, authenticated CLIs on a
+throwaway repository, once per pairing (Claude → Codex and Codex → Claude). It
+verifies what simulated providers cannot: that the installed CLI versions accept
+the adapter's arguments, that the developer can write inside the worktree, that
+the reviewer leaves it unchanged and that both replies are extracted and parsed.
+
+```bash
+python tools/provider_e2e.py                               # versions and login only, no model calls
+python tools/provider_e2e.py --authorize-provider-calls    # one developer and one reviewer call per pairing
+python tools/provider_e2e.py --authorize-provider-calls --run-fixture-tests
+```
+
+Nothing calls a model without `--authorize-provider-calls`. By default the
+fixture's tests stay disabled, so each pairing ends paused at the test gate after
+two calls. `--run-fixture-tests` is separate consent to run the fixture's unit
+test on your machine against agent-written code; the check then requires a
+completed, approved task and may use up to four calls per pairing. A quota,
+login or interruption failure stops before the next pairing. The exit status is
+0 only if every check passes; on failure the fixture and its private task
+state, including provider transcripts, are kept in a temporary directory for
+diagnosis. `--pairing` selects a single pairing and `--keep` preserves files
+after a pass.
+
+A pass covers only the platform, CLI versions and login reported in its output.
+The only run so far, on October 10, 2026, passed both pairings on WSL2 with
+Claude Code 2.1.291 and codex-cli 0.160.1, with the fixture's tests disabled:
+each pairing made one developer and one reviewer call and paused at the test
+gate. A run through passing tests and final approval
+(`--run-fixture-tests`), native Windows, macOS and resumption after an
+interruption have not been checked with real accounts. Details are in
+[docs/REVIEW.md](docs/REVIEW.md); record later runs there.
+
 ## Roadmap
 
 - Optional embedding-based reranking and decision-log indexing, if lexical retrieval proves insufficient.
 - Dedicated OS sandbox for tests (Docker/VM with minimal privileges).
-- End-to-end suite with authorized accounts and CLI version compatibility checks.
+- Record real-provider check results per platform and CLI version; extend the check to resumption after an interruption.
 - Approval requests for risky tools and notifications.
 - Stall detection based on Git/test changes and support for multiple projects in one state directory.
 
