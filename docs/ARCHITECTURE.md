@@ -174,8 +174,12 @@ converted with the instant the failure was observed. Both output streams of a
 failed CLI are read: stderr decides the failure kind, stdout only when stderr
 is inconclusive (so agent text cannot turn a login failure into a usage limit),
 and a reset stated on either stream is kept. `AgentFailure` carries
-`kind`, `provider`, `retry_at` and `retry_after_seconds`; `last_error` stores
-those structured values and never more log text than before. `recovery.plan` is
+`kind`, `provider`, `retry_at` and `retry_after_seconds`. An adapter may set
+either reset form: `recovery.stated_reset` counts a wait from the failure time,
+uses the later instant when both are present, and `last_error` always saves
+the result as `retry_at`. Besides these structured fields, `last_error.message`
+keeps the adapter's diagnostic, which for CLI failures is an unfiltered excerpt
+of provider output of about 1,200 characters at most. `recovery.plan` is
 a pure function that turns the failure count, the hint and the configured
 limits into "retry at T" or "stop, because R". `run_task` applies it while it
 holds `TaskLock`. `recovery.supervise` is the loop around `run_task` used by

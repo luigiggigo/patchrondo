@@ -105,6 +105,12 @@ MUTATIONS = [
              "error[\"retry_at\"] = recovery.stamp_up(retry_at)", "error[\"retry_at\"] = recovery.stamp(retry_at)"),
     Mutation("failure time saved truncated", "core.py",
              "\"at\": recovery.stamp_up(at)}", "\"at\": recovery.stamp(at)}"),
+    Mutation("wait-only reset not saved as an instant", "core.py",
+             "        if reset is not None:\n            error[\"retry_at\"] = recovery.stamp_up(reset)\n", ""),
+    Mutation("wait-only reset ignored", "recovery.py",
+             "            moments.append(failed_at + timedelta(seconds=seconds))", "            pass"),
+    Mutation("plan reads only the absolute reset", "recovery.py",
+             "retry_at=stated_reset(error), cfg=limits", "retry_at=parse_time(error.get(\"retry_at\")), cfg=limits"),
     Mutation("ambiguous time parsed", "providers.py",
              "    if moments:\n        hint[\"retry_at\"] = max(moments)",
              "    if \"9pm\" in text:\n        moments.append(observed_at + timedelta(hours=1))\n"

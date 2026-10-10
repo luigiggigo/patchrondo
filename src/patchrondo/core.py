@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import json
+import math
 import re
 import sqlite3
 import subprocess
@@ -307,7 +308,11 @@ def _report(path: Path, state: dict) -> None:
 
 
 def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
-    """The persisted `last_error`. From provider output it keeps only the kind and a parsed reset."""
+    """The persisted `last_error`.
+
+    `message` is the exception text; for CLI failures that is the adapter's
+    bounded excerpt of provider output. The other fields are structured.
+    """
     kind = getattr(exc, "kind", "interrupted" if isinstance(exc, KeyboardInterrupt) else
                    "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "system_error")
     error = {"kind": kind, "message": str(exc) or "Interrupted by the user", "at": recovery.stamp_up(at)}
@@ -317,8 +322,13 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
         retry_at = getattr(exc, "retry_at", None)
         if isinstance(retry_at, datetime) and retry_at.tzinfo is not None:
             error["retry_at"] = recovery.stamp_up(retry_at)  # truncating could allow a retry before the reset
-        if type(getattr(exc, "retry_after_seconds", None)) is int:
-            error["retry_after_seconds"] = exc.retry_after_seconds
+        seconds = getattr(exc, "retry_after_seconds", None)
+        if type(seconds) in (int, float) and math.isfinite(seconds) and seconds > 0:
+            error["retry_after_seconds"] = math.ceil(seconds)
+        # An adapter may state only a wait: save the reset as an instant either way.
+        reset = recovery.stated_reset(error)
+        if reset is not None:
+            error["retry_at"] = recovery.stamp_up(reset)
     if provider:
         error["provider"] = provider
     return error

@@ -11,6 +11,7 @@ lock. `supervise` is the outer loop that waits between runs.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import math
 import os
 from pathlib import Path
 import time
@@ -87,6 +88,24 @@ def parse_time(value) -> datetime | None:
     return moment.astimezone(timezone.utc) if moment.tzinfo else None
 
 
+def stated_reset(error: dict) -> datetime | None:
+    """Reset instant of a saved quota failure, from either form an adapter may provide.
+
+    `retry_at` is absolute; `retry_after_seconds` counts from the failure time
+    in `at`. With both, the later instant is used.
+    """
+    moments = [parse_time(error.get("retry_at"))]
+    seconds, failed_at = error.get("retry_after_seconds"), parse_time(error.get("at"))
+    if type(seconds) in (int, float) and math.isfinite(seconds) and seconds > 0 and failed_at is not None:
+        try:
+            moments.append(failed_at + timedelta(seconds=seconds))
+        except OverflowError:
+            # Beyond any date: far enough for plan() to stop instead of retrying early.
+            moments.append(datetime.max.replace(tzinfo=timezone.utc))
+    moments = [moment for moment in moments if moment is not None]
+    return max(moments) if moments else None
+
+
 def plan(*, failures: int, first_failure_at: datetime, failure_at: datetime,
          retry_at: datetime | None, cfg: dict, now: datetime) -> dict:
     """Decide what follows the `failures`-th consecutive quota failure. Pure: no I/O.
@@ -141,7 +160,7 @@ def _decide(state: dict, cfg: dict, *, failures: int, first: datetime, failure_a
                "phase": state["phase"], "iteration": state["iteration"],
                "resume_at": None, "schedule_source": None, "stop_reason": None}
     decision = plan(failures=failures, first_failure_at=first, failure_at=failure_at,
-                    retry_at=parse_time(error.get("retry_at")), cfg=limits, now=now)
+                    retry_at=stated_reset(error), cfg=limits, now=now)
     if decision["action"] == "stop":
         _stop(state, section, decision["reason"])
         return

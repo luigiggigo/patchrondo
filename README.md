@@ -533,9 +533,9 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 10, 2026 ran **145 tests**: on Windows
-(Python 3.13 and Python 3.11) **142 passed and 3 POSIX tests were skipped**; on
-WSL2 (Python 3.12) all 145 passed. This is a local result for the development
+The latest local validation on October 10, 2026 ran **151 tests**: on Windows
+(Python 3.13 and Python 3.11) **148 passed and 3 POSIX tests were skipped**; on
+WSL2 (Python 3.12) all 151 passed. This is a local result for the development
 source after 0.1.0, including automatic quota recovery; the
 [technical review](docs/REVIEW.md) records which commits also passed the CI
 workflow. Tests use temporary Git

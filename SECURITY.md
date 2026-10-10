@@ -27,10 +27,16 @@ Automatic quota recovery is disabled by default. When enabled through
 the provider CLIs again without asking, at most `max_consecutive_retries` times
 without progress; each call uses plan quota. It only waits for a limit to
 reset. Usage limits are recognized from CLI output text and can be
-misclassified, which is why the retry limit cannot be disabled. From that
-output only the failure kind, the provider name and a parsed reset time are
-added to task state. The task lock is not held while waiting and is never
-removed automatically.
+misclassified, which is why the retry limit cannot be disabled. The task lock
+is not held while waiting and is never removed automatically.
+
+A failed CLI call is recorded in `state.json` as `last_error`. Its `message`
+holds an excerpt of the CLI's own output, up to about 1,200 characters taken
+from standard error and standard output, and the report and the dashboard
+display it. Recovery adds only structured fields derived from that output: the
+failure kind, the provider name, a reset time and the stated wait in seconds.
+The complete captured output is in the run logs of the task directory. None of
+it is filtered for secrets, so treat task state as private project data.
 
 Captured process output is bounded in memory; temporary capture files can grow on
 disk until the timeout. Apply disk quotas in isolated runners. On native Windows,

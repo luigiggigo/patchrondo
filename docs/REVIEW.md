@@ -339,8 +339,9 @@ to `main` as `791566c`, and
 [GitHub CI run 38065224479](https://github.com/luigiggigo/patchrondo/actions/runs/38065224479)
 completed successfully for it: all six jobs, Python 3.11 and 3.13 on
 `ubuntu-latest`, `windows-latest` and `macos-latest` (read with `gh` on October
-10, 2026). No version was tagged or released. The follow-up described further
-down is local and was not part of that run. **No provider calls were made**:
+10, 2026). No version was tagged or released. The follow-ups described further
+down were not part of that run; each states its own status. **No provider calls
+were made**:
 every check below used scripted or synthetic providers.
 
 Design points reviewed:
@@ -356,8 +357,10 @@ Design points reviewed:
   the task paused. A stated reset cannot shorten the backoff.
 - Locks are never removed automatically, and `--unlock` is not passed to
   automatic retries. A lock found at retry time ends recovery with an error.
-- From provider output, task state gains only the failure kind, the provider
-  name and a parsed reset time.
+- From provider output, recovery adds to task state the failure kind, the
+  provider name and a parsed reset. `last_error.message` also holds an excerpt
+  of that output, as it did before this change (corrected wording; see the
+  second follow-up below).
 
 Validation, all on October 10, 2026:
 
@@ -456,6 +459,51 @@ October 10, 2026 and without provider calls:
   findings (ignored `debug.log` and the three binary images). Not a clean scan.
 
 Documentation was updated after these runs and checked for links, UTF-8 and LF.
+The maintainer committed and pushed this follow-up as `f4f8ad0`;
+[GitHub CI run 38068523374](https://github.com/luigiggigo/patchrondo/actions/runs/38068523374)
+completed successfully for it, all six jobs (read with `gh` on October 10, 2026).
+
+Second follow-up on the same day, from a further review. Two points were
+checked against the code and both were present:
+
+- A reset stated only as a wait was ignored. `AgentFailure` allows an adapter
+  to set `retry_after_seconds` without `retry_at`; the value was saved but the
+  retry decision read `retry_at` alone, and a non-integer wait was dropped
+  silently. The official adapter always sets both, so its behavior was not
+  affected. `recovery.stated_reset` now accepts either form: a wait counts
+  from the failure time, the later instant is used when both are given, and
+  `last_error` always saves the result as `retry_at`, rounded up. A saved pause
+  that holds only the wait is honored as well. Zero, negative, non-numeric and
+  non-finite waits are not used; a wait beyond any date stops recovery instead
+  of being brought forward.
+- Documentation said that only structured metadata is kept from provider
+  output. `last_error.message` also holds the adapter's diagnostic, an excerpt
+  of that output, as it did before recovery existed. `SECURITY.md`,
+  `ARCHITECTURE.md`, the docstrings and the design point above now say so. On
+  one path the excerpt was not bounded: a Claude `is_error` result was saved
+  whole. It is now limited to about 1,200 characters like a failed exit.
+
+Six tests were added; nine of their cases failed against the previous code.
+The protection check gained three entries for the wait-only form. Every check
+was rerun on this code on October 10, 2026, without provider calls:
+
+- Suite: **151 tests**. Native Windows with Python 3.13.3: 148 passed, 3 POSIX
+  tests skipped. Native Windows with Python 3.11.3: 148 passed, 3 skipped. WSL2
+  (Linux 6.6.87.2-microsoft-standard-WSL2) with Python 3.12.3: 151 passed.
+- `python tools/recovery_checks.py protections` on native Windows with Python
+  3.13.3: 35 of 35 removed safeguards detected, exit status 0.
+- `python3 tools/recovery_checks.py real-clock` under WSL2: 10 of 10 checks
+  passed, the retry 0.05 s after the planned time, exit status 0; skipped on
+  native Windows.
+- `python tools/reliability_e2e.py --repeat 3`: WSL2 42 passed, 0 failed, 0
+  skipped; native Windows 30 passed, 0 failed, 12 skipped; exit status 0.
+- Packages built outside the repository's `dist/` passed `twine check`.
+  Publication scanner: exit status **1**, 53 files checked, the same four
+  findings. Not a clean scan.
+
+This second follow-up is local: it has not been pushed and no CI run covers it.
+Diagnostic excerpts and run logs are not filtered for secrets; that is
+unchanged and documented, not fixed.
 
 Not verified:
 
@@ -467,8 +515,8 @@ Not verified:
   time zone handling beyond numeric offsets and UTC/GMT.
 - A supervisor started from the dashboard, beyond the unchanged run-start path;
   dashboard Run/Resume was not exercised because it invokes real provider CLIs.
-- The follow-up on macOS or on Linux outside WSL2. The CI run named above
-  covers those platforms for commit `791566c` only.
+- The second follow-up on macOS or on Linux outside WSL2. The CI runs named
+  above cover those platforms for commits `791566c` and `f4f8ad0` only.
 - Two supervisors as separate operating-system processes; concurrency was
   tested with threads sharing the same lock file and state.
 

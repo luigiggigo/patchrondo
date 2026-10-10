@@ -108,6 +108,14 @@ class AdapterTests(unittest.TestCase):
         self.assertIn("x" * 1000, str(error))
         self.assertEqual(self.failure("codex", Result(1, "", "")).kind, "agent_error")
 
+    def test_claude_error_result_is_bounded_in_the_diagnostic(self):
+        # The message is saved in task state: it must stay an excerpt on this path too.
+        body = json.dumps({"is_error": True, "result": "Usage limit reached. " + "x" * 5000})
+        error = self.failure("claude", Result(0, body, ""))
+        self.assertEqual(error.kind, "quota")
+        self.assertTrue(str(error).startswith("Usage limit reached. xxx"))
+        self.assertLess(len(str(error)), 1300)
+
     def test_claude_structured_output_and_errors(self):
         self.assertEqual(_claude_text('{"structured_output":{"verdict":"APPROVED"}}'), '{"verdict": "APPROVED"}')
         with self.assertRaises(AgentFailure):

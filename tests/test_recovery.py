@@ -320,6 +320,19 @@ class PolicyTests(unittest.TestCase):
         decision = self.plan(failure_at=T0 + timedelta(milliseconds=1))
         self.assertEqual(decision["resume_at"], at(seconds=121))
 
+    def test_stated_reset_reads_either_form_of_a_saved_failure(self):
+        failed = "2026-10-10T14:00:00+00:00"
+        self.assertIsNone(recovery.stated_reset({"kind": "quota", "at": failed}))
+        self.assertEqual(recovery.stated_reset({"at": failed, "retry_at": "2026-10-10T17:00:00+00:00"}), at(hours=3))
+        self.assertEqual(recovery.stated_reset({"at": failed, "retry_after_seconds": 600}), at(minutes=10))
+        self.assertEqual(recovery.stated_reset({"at": failed, "retry_after_seconds": 600,
+                                                "retry_at": "2026-10-10T14:05:00+00:00"}), at(minutes=10))
+        # A wait cannot be placed without the failure time, and odd values are not guessed.
+        self.assertIsNone(recovery.stated_reset({"retry_after_seconds": 600}))
+        for value in (True, "600", -1, 0, float("nan"), float("inf"), None, [600]):
+            self.assertIsNone(recovery.stated_reset({"at": failed, "retry_after_seconds": value}))
+        self.assertEqual(recovery.stated_reset({"at": failed, "retry_after_seconds": 10 ** 15}).year, 9999)
+
     def test_persisted_timestamps_need_an_explicit_offset(self):
         self.assertEqual(recovery.parse_time("2026-10-10T17:00:30Z"), at(hours=3, seconds=30))
         self.assertEqual(recovery.parse_time("2026-10-10T19:00:30+02:00"), at(hours=3, seconds=30))
@@ -416,6 +429,13 @@ class SupervisorTests(RecoveryCase):
         paused = run_task(self.home, task_id, adapter=adapter, auto_resume=True, clock=self.clock)
         self.assertEqual(paused["last_error"]["retry_at"], "2026-10-10T14:05:01+00:00")
         self.assertGreaterEqual(recovery.parse_time(paused["recovery"]["resume_at"]), observed + timedelta(seconds=300))
+        # An absolute reset with a fractional second, as another adapter might provide it.
+        task_id, path, _ = self.task()
+        fractional = T0 + timedelta(seconds=300, milliseconds=500)
+        adapter = self.script(path, lambda: AgentFailure("usage limit", "quota", retry_at=fractional))
+        paused = run_task(self.home, task_id, adapter=adapter, auto_resume=True, clock=self.clock)
+        self.assertEqual(paused["last_error"]["retry_at"], "2026-10-10T14:05:01+00:00")
+        self.assertGreaterEqual(recovery.parse_time(paused["recovery"]["resume_at"]), fractional)
         # A backoff derived later from the saved failure time is not shorter than a fresh one.
         task_id, path, _ = self.task()
         adapter = self.script(path, self.quota())
@@ -424,6 +444,63 @@ class SupervisorTests(RecoveryCase):
         planned = run_task(self.home, task_id, adapter=adapter, auto_resume=True, clock=self.clock)
         self.assertEqual(len(adapter.calls), 1)
         self.assertGreaterEqual(recovery.parse_time(planned["recovery"]["resume_at"]), observed + timedelta(seconds=120))
+
+    def relative_only(self, seconds, **extra):
+        return lambda: AgentFailure("usage limit", "quota", provider="codex", retry_after_seconds=seconds, **extra)
+
+    def test_relative_wait_without_an_absolute_reset_is_honored(self):
+        # An adapter may state only a wait: it counts from the failure time and is rounded up.
+        for seconds, reset, planned in ((3600, "2026-10-10T15:00:00+00:00", at(seconds=3630)),
+                                        (90.5, "2026-10-10T14:01:31+00:00", at(seconds=121))):
+            with self.subTest(seconds=seconds):
+                self.clock.now, self.clock.sleeps = T0, []
+                task_id, path, _ = self.task()
+                adapter = self.script(path, self.relative_only(seconds))
+                paused = run_task(self.home, task_id, adapter=adapter, auto_resume=True, clock=self.clock)
+                self.assertEqual(paused["last_error"]["retry_at"], reset)
+                self.assertEqual((paused["recovery"]["schedule_source"],
+                                  recovery.parse_time(paused["recovery"]["resume_at"])), ("provider_reset", planned))
+                self.assertEqual(self.supervise(task_id, adapter)["status"], "done")
+                self.assertGreaterEqual(adapter.calls[1]["at"], planned)
+
+    def test_later_of_an_absolute_reset_and_a_relative_wait_is_used(self):
+        for extra, planned in (({"retry_at": at(minutes=1)}, at(seconds=3630)),
+                               ({"retry_at": at(hours=3)}, at(hours=3, seconds=30))):
+            with self.subTest(retry_at=extra["retry_at"]):
+                task_id, path, _ = self.task()
+                adapter = self.script(path, self.relative_only(3600, **extra))
+                paused = run_task(self.home, task_id, adapter=adapter, auto_resume=True, clock=self.clock)
+                self.assertEqual(recovery.parse_time(paused["recovery"]["resume_at"]), planned)
+
+    def test_unusable_relative_waits_fall_back_or_stop(self):
+        for seconds in (True, 0, -5, "120", float("nan"), float("inf")):
+            with self.subTest(seconds=seconds):
+                task_id, path, _ = self.task()
+                adapter = self.script(path, self.relative_only(seconds))
+                paused = run_task(self.home, task_id, adapter=adapter, auto_resume=True, clock=self.clock)
+                self.assertNotIn("retry_at", paused["last_error"])
+                self.assertNotIn("retry_after_seconds", paused["last_error"])
+                self.assertEqual((paused["recovery"]["schedule_source"], paused["recovery"]["resume_at"]),
+                                 ("backoff", "2026-10-10T14:02:00+00:00"))
+        # A wait far beyond any date is not brought forward either.
+        task_id, path, _ = self.task()
+        adapter = self.script(path, always=self.relative_only(10 ** 15))
+        state = self.supervise(task_id, adapter)
+        self.assertEqual((state["recovery"]["status"], state["recovery"]["stop_reason"], len(adapter.calls)),
+                         ("stopped", "reset_beyond_budget", 1))
+
+    def test_saved_pause_with_only_a_relative_wait_is_honored_later(self):
+        task_id, path, _ = self.task()
+        adapter = self.script(path, self.relative_only(3600))
+        run_task(self.home, task_id, adapter=adapter, clock=self.clock)  # recovery not active
+        state = read_json(path / "state.json")
+        state["last_error"].pop("retry_at", None)  # as saved when only the wait was recorded
+        self.assertEqual(state["last_error"]["retry_after_seconds"], 3600)
+        save_json(path / "state.json", state)
+        self.clock.now = at(minutes=10)
+        self.assertEqual(self.supervise(task_id, adapter)["status"], "done")
+        self.assertGreaterEqual(adapter.calls[1]["at"], at(seconds=3630))
+        self.assertEqual(sum(self.clock.sleeps), 3630 - 600)
 
     def test_misclassified_error_is_bounded_by_the_retry_limit(self):
         task_id, path, _ = self.task()
@@ -897,11 +974,13 @@ class ReportingTests(RecoveryCase):
             self.assertIn(expected, page)
         self.assertNotIn("innerHTML", page)
 
-    def test_saved_error_holds_only_structured_reset_metadata(self):
+    def test_recovery_adds_only_structured_fields_beside_the_diagnostic_message(self):
         task_id, path, _ = self.task()
         adapter = self.script(path, self.quota("Usage limit reached; resets at 2026-10-10T17:00:00Z", "codex"))
         state = run_task(self.home, task_id, adapter=adapter, auto_resume=True, clock=self.clock)
+        # `message` is the adapter's diagnostic, an excerpt of CLI output; nothing else holds output text.
         self.assertEqual(set(state["last_error"]), {"kind", "message", "at", "provider", "retry_at"})
+        self.assertEqual(state["last_error"]["message"], "Usage limit reached; resets at 2026-10-10T17:00:00Z")
         self.assertEqual(set(state["recovery"]), {
             "status", "consecutive_failures", "max_consecutive_retries", "first_failure_at", "resume_at",
             "phase", "iteration", "schedule_source", "provider", "stop_reason"})

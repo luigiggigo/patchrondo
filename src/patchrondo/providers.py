@@ -20,7 +20,9 @@ class AgentFailure(RuntimeError):
         super().__init__(message)
         self.kind = kind
         self.provider = provider
-        self.retry_at = retry_at  # timezone-aware; None when no reset was stated explicitly
+        # Either form is enough for recovery: an aware instant, or a positive wait in seconds
+        # counted from the failure. None when no reset was stated explicitly.
+        self.retry_at = retry_at
         self.retry_after_seconds = retry_after_seconds
 
 
@@ -125,9 +127,10 @@ def quota_hint(text: str, observed_at: datetime | None = None) -> dict:
 
 def classified_failure(message: str, detail: str, provider: str,
                        observed_at: datetime | None = None, secondary: str = "") -> AgentFailure:
-    """Classify CLI error output. Only the kind and a parsed reset are derived from it.
+    """Classify CLI error output into a kind and, for quota failures, a parsed reset.
 
-    `secondary` is the other output stream. It decides the kind only when
+    `message` is the caller's diagnostic, usually a bounded excerpt of the same
+    output; it is stored with the failure. `secondary` is the other output stream. It decides the kind only when
     `detail` is inconclusive, so agent text cannot override a specific error;
     a reset stated on either stream is kept.
     """
@@ -143,7 +146,8 @@ def _claude_text(body: str, observed_at: datetime | None = None, stderr: str = "
         obj = json.loads(body)
         if isinstance(obj, dict):
             if obj.get("is_error"):
-                raise classified_failure(str(obj.get("result", "Claude returned is_error")),
+                # The message is saved in task state: keep it an excerpt, as for a failed exit.
+                raise classified_failure(short_log(str(obj.get("result", "Claude returned is_error")), 1200),
                                          str(obj.get("result", "")), "claude", observed_at, stderr.strip())
             if obj.get("structured_output") is not None:
                 structured = obj["structured_output"]
