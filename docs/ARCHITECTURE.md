@@ -154,6 +154,14 @@ the retry without real waiting.
 Reports contain objective fixture checks and timing measurements; fixture state
 and transcripts are deleted on success and retained outside the repo on failure.
 
+`tools/recovery_checks.py` holds two further local checks. `protections` copies
+`src/patchrondo` and `tests` to a temporary directory, removes one recovery or
+classification safeguard there, and runs the recovery and adapter tests against
+the copy; an undetected removal, or a pattern that no longer matches the
+sources, fails the check. `real-clock` reuses the reliability fixture with a
+12-second stated reset and no virtual clock: it sends SIGINT to a waiting
+runner, restarts it and compares the call times with the saved plan.
+
 ## 8. Quota recovery
 
 Recovery adds no task status or phase. A task that meets a usage limit is still
@@ -162,7 +170,10 @@ an optional `recovery` section in `state.json` and who calls `run_task` next.
 
 **Responsibilities.** `providers.quota_hint` only parses: it returns a reset
 instant when the CLI output states one unambiguously, relative waits being
-converted with the instant the failure was observed. `AgentFailure` carries
+converted with the instant the failure was observed. Both output streams of a
+failed CLI are read: stderr decides the failure kind, stdout only when stderr
+is inconclusive (so agent text cannot turn a login failure into a usage limit),
+and a reset stated on either stream is kept. `AgentFailure` carries
 `kind`, `provider`, `retry_at` and `retry_after_seconds`; `last_error` stores
 those structured values and never more log text than before. `recovery.plan` is
 a pure function that turns the failure count, the hint and the configured

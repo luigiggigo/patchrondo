@@ -17,12 +17,19 @@
   processes cannot call a provider twice for one plan or before it is due.
   Locks are never removed automatically; a lock found at retry time stops
   recovery with an error.
+- Classify a failed CLI run from both output streams. Previously only standard
+  error was read when both had content, so a usage limit or reset time printed
+  on standard output was missed. Standard error still decides when it names a
+  specific cause; the saved diagnostic shows a bounded excerpt of each stream.
 - Show the saved plan, provider, schedule source, retries used and the reason
   recovery ended in reports, `status`, and the dashboard task page. Record
   `recovery_scheduled`, `recovery_wait_started`, `recovery_retry_started`,
   `recovery_completed`, `recovery_stopped` and `recovery_cancelled` events.
+- Add `tools/recovery_checks.py`: `protections` removes one recovery safeguard
+  at a time from a temporary copy of the sources and expects tests to fail;
+  `real-clock` interrupts and restarts a real wait with synthetic CLIs (POSIX).
 - Add an `auto-resume` scenario to the synthetic reliability driver, and
-  recovery tests with a simulated clock, bringing the local suite to 140 tests.
+  recovery tests with a simulated clock, bringing the local suite to 145 tests.
   Reset parsing and recovery have been exercised with simulated providers only,
   not with real usage limits.
 - Add a local reliability driver with synthetic CLI subprocesses for both role

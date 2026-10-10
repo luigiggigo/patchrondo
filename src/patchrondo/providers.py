@@ -124,20 +124,27 @@ def quota_hint(text: str, observed_at: datetime | None = None) -> dict:
 
 
 def classified_failure(message: str, detail: str, provider: str,
-                       observed_at: datetime | None = None) -> AgentFailure:
-    """Classify CLI error output. Only the kind and a parsed reset are derived from it."""
+                       observed_at: datetime | None = None, secondary: str = "") -> AgentFailure:
+    """Classify CLI error output. Only the kind and a parsed reset are derived from it.
+
+    `secondary` is the other output stream. It decides the kind only when
+    `detail` is inconclusive, so agent text cannot override a specific error;
+    a reset stated on either stream is kept.
+    """
     kind = _classify_error(detail)
-    hint = quota_hint(detail, observed_at) if kind == "quota" else {}
+    if kind == "agent_error" and secondary:
+        kind = _classify_error(secondary)
+    hint = quota_hint(f"{detail}\n{secondary}", observed_at) if kind == "quota" else {}
     return AgentFailure(message, kind, provider=provider, **hint)
 
 
-def _claude_text(body: str, observed_at: datetime | None = None) -> str:
+def _claude_text(body: str, observed_at: datetime | None = None, stderr: str = "") -> str:
     try:
         obj = json.loads(body)
         if isinstance(obj, dict):
             if obj.get("is_error"):
                 raise classified_failure(str(obj.get("result", "Claude returned is_error")),
-                                         str(obj.get("result", "")), "claude", observed_at)
+                                         str(obj.get("result", "")), "claude", observed_at, stderr.strip())
             if obj.get("structured_output") is not None:
                 structured = obj["structured_output"]
                 return json.dumps(structured, ensure_ascii=False) if not isinstance(structured, str) else structured
@@ -208,11 +215,13 @@ class OfficialCLI:
         if result.timed_out:
             raise AgentFailure(f"Timeout after {self.timeout}s for {provider}/{role}", "timeout", provider=provider)
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            raise classified_failure(f"{provider}/{role} exit={result.returncode}: {short_log(detail, 1200)}",
-                                     detail, provider, self.clock())
+            # Either stream may carry the cause or the reset; stderr comes first when both do.
+            streams = [part.strip() for part in (result.stderr, result.stdout) if part.strip()] or [""]
+            shown = "\n".join(short_log(part, 1200 // len(streams)) for part in streams)
+            raise classified_failure(f"{provider}/{role} exit={result.returncode}: {shown}",
+                                     streams[0], provider, self.clock(), "\n".join(streams[1:]))
         if provider == "claude":
-            text = _claude_text(result.stdout, self.clock())
+            text = _claude_text(result.stdout, self.clock(), result.stderr)
         else:
             outfile = run_dir / f"{role}.last-message.txt"
             if not outfile.is_file():

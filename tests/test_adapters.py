@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import json
 import tempfile
 import unittest
@@ -6,6 +7,8 @@ from unittest.mock import patch
 
 from patchrondo.providers import OfficialCLI, AgentFailure, _claude_text
 from patchrondo.process import Result, safe_env
+
+OBSERVED = datetime(2026, 10, 10, 14, 0, tzinfo=timezone.utc)
 
 
 class AdapterTests(unittest.TestCase):
@@ -55,6 +58,55 @@ class AdapterTests(unittest.TestCase):
             self.assertNotIn("ANTHROPIC_API_KEY", env)
             self.assertNotIn("OPENAI_API_KEY", env)
             self.assertNotIn("GITHUB_TOKEN", env)
+
+    def failure(self, provider, result):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)
+            adapter = OfficialCLI(clock=lambda: OBSERVED)
+            with patch("patchrondo.providers.execute", return_value=result):
+                with self.assertRaises(AgentFailure) as caught:
+                    adapter.invoke(provider, "developer", "task", path, path / "runs")
+        return caught.exception
+
+    def test_quota_on_stdout_is_found_when_stderr_is_not_empty(self):
+        for provider in ("claude", "codex"):
+            with self.subTest(provider=provider):
+                error = self.failure(provider, Result(1, "Usage limit reached. Retry after 3600 seconds.",
+                                                      "Error: request failed"))
+                self.assertEqual((error.kind, error.provider, error.retry_after_seconds, error.retry_at),
+                                 ("quota", provider, 3600, OBSERVED + timedelta(seconds=3600)))
+                # Both streams stay visible in the saved diagnostic.
+                self.assertIn("Error: request failed", str(error))
+                self.assertIn("Usage limit reached", str(error))
+
+    def test_reset_stated_on_the_other_stream_is_kept(self):
+        reset = OBSERVED + timedelta(hours=4)
+        cases = {
+            "quota on stderr, reset on stdout": Result(1, "Limit resets at 2026-10-10T18:00:00Z", "Usage limit reached"),
+            "quota on stdout, reset on stderr": Result(1, "Usage limit reached", "Limit resets at 2026-10-10T18:00:00Z"),
+            # Claude can exit with status 0 and report the failure in its JSON result.
+            "is_error result, reset on stderr": Result(0, json.dumps({"is_error": True, "result": "Usage limit reached"}),
+                                                       "Limit resets at 2026-10-10T18:00:00Z"),
+        }
+        for name, result in cases.items():
+            with self.subTest(case=name):
+                error = self.failure("claude", result)
+                self.assertEqual((error.kind, error.retry_at), ("quota", reset))
+
+    def test_conclusive_stderr_is_not_overridden_by_stdout(self):
+        # Agent text on stdout may mention limits; a login failure on stderr must stay a login failure.
+        error = self.failure("codex", Result(1, "Implemented the rate limit middleware. Retry after 5 seconds.",
+                                             "Not logged in"))
+        self.assertEqual((error.kind, error.retry_at), ("authentication", None))
+        # A long stderr does not hide the other stream from classification, and the message stays bounded.
+        error = self.failure("codex", Result(1, "quota exceeded", "trace line\n" * 2000))
+        self.assertEqual(error.kind, "quota")
+        self.assertIn("quota exceeded", str(error))
+        self.assertLess(len(str(error)), 1400)
+        # A single stream keeps the whole diagnostic budget, as before.
+        error = self.failure("codex", Result(1, "", "x" * 1000))
+        self.assertIn("x" * 1000, str(error))
+        self.assertEqual(self.failure("codex", Result(1, "", "")).kind, "agent_error")
 
     def test_claude_structured_output_and_errors(self):
         self.assertEqual(_claude_text('{"structured_output":{"verdict":"APPROVED"}}'), '{"verdict": "APPROVED"}')

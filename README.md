@@ -375,7 +375,9 @@ same information. All times are UTC.
 ### Limits of this version
 
 - **Classification is textual.** A failure is treated as a usage limit when the
-  CLI output matches patterns such as "rate limit" or "quota". An unrelated
+  CLI output matches patterns such as "rate limit" or "quota". Standard error
+  is read first; standard output decides only when standard error names no
+  specific cause, and a reset time stated on either is used. An unrelated
   error that mentions those words is retried too. The retry limit bounds the
   cost: with the defaults, at most three extra calls.
 - **Real reset messages are not validated.** Parsing is tested with simulated
@@ -531,10 +533,12 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 10, 2026 ran **140 tests**: on Windows
-(Python 3.13 and Python 3.11) **137 passed and 3 POSIX tests were skipped**; on
-WSL2 (Python 3.12) all 140 passed. This local result covers the unreleased
-working tree, including automatic quota recovery. Tests use temporary Git
+The latest local validation on October 10, 2026 ran **145 tests**: on Windows
+(Python 3.13 and Python 3.11) **142 passed and 3 POSIX tests were skipped**; on
+WSL2 (Python 3.12) all 145 passed. This is a local result for the development
+source after 0.1.0, including automatic quota recovery; the
+[technical review](docs/REVIEW.md) records which commits also passed the CI
+workflow. Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Full package checks are documented in
@@ -571,6 +575,21 @@ evidence consists of fixture acceptance tests and validation documentation;
 synthetic results do not measure model solution quality, real quota recovery or
 performance on complex projects. Successful fixtures are deleted; failed
 fixtures and transcripts remain outside the repository for diagnosis.
+
+Two further checks cover automatic quota recovery, also without model calls:
+
+```bash
+python tools/recovery_checks.py protections   # any platform
+python tools/recovery_checks.py real-clock    # POSIX; use WSL2 on Windows
+```
+
+`protections` removes one safeguard at a time (for example the due check under
+the lock, the retry limit or the explicit-offset requirement) from a temporary
+copy of the sources and expects the recovery and adapter tests to fail. It
+exits with status 1 if a removal goes unnoticed. `real-clock` lets a runner
+really wait for a 12-second reset stated by a synthetic CLI, interrupts it with
+Ctrl+C, restarts it and checks that the plan was kept and that the only further
+call came after the planned time.
 
 ### Real provider check (uses plan quota)
 

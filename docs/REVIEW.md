@@ -333,10 +333,15 @@ section, `--auto-resume` / `--no-auto-resume`, reset parsing in `providers.py`,
 the policy and foreground supervisor in the new `recovery.py`, and the plan in
 `state.json`, reports and the dashboard. It is disabled by default. This
 supersedes the statement in the previous section that the runtime never retries
-a quota failure: it still does not unless recovery is active. The change is
-local and unreleased; nothing was pushed and no workflow ran on GitHub. **No
-provider calls were made**: every check below used scripted or synthetic
-providers.
+a quota failure: it still does not unless recovery is active. The validation
+recorded first was local. The maintainer then committed and pushed that state
+to `main` as `791566c`, and
+[GitHub CI run 38065224479](https://github.com/luigiggigo/patchrondo/actions/runs/38065224479)
+completed successfully for it: all six jobs, Python 3.11 and 3.13 on
+`ubuntu-latest`, `windows-latest` and `macos-latest` (read with `gh` on October
+10, 2026). No version was tagged or released. The follow-up described further
+down is local and was not part of that run. **No provider calls were made**:
+every check below used scripted or synthetic providers.
 
 Design points reviewed:
 
@@ -406,6 +411,52 @@ Validation, all on October 10, 2026:
   four findings as before (ignored `debug.log` and the three binary images).
   This is not a clean scan. Changed text files were checked for UTF-8 and LF.
 
+Follow-up on the same day, from a review of the change: `OfficialCLI.invoke`
+classified `stderr or stdout`, so when both streams had content only standard
+error was read. A usage limit printed on standard output next to a generic
+error on standard error became `agent_error`, and a reset time on the other
+stream was lost. Both streams are now read. Standard error decides the kind
+when it names a specific cause, so agent text on standard output cannot turn
+a login failure into a usage limit; otherwise standard output decides. A reset
+stated on either stream is kept, also when Claude exits with status 0 and
+reports the failure in its JSON result. The saved diagnostic shows a bounded
+excerpt of each stream.
+
+- Three adapter tests were added. Against the previous code five of their
+  cases failed: a usage limit only on standard output for each provider, a
+  reset only on standard output, a reset on standard error beside an
+  `is_error` result, and a usage limit on standard output behind a long
+  standard error. A further case checks that a login failure on standard
+  error is not reclassified by standard output.
+- Reading standard output widens what can match the usage-limit patterns when
+  standard error is empty or generic. The retry limit remains the bound.
+- The protection check and the real-clock check described above were ad-hoc
+  scripts. They are now `tools/recovery_checks.py`, with two tests of their
+  own. `protections` works on a temporary copy of the sources, so the working
+  tree is not modified, and covers 32 safeguards: the original 26, the two
+  rounding fixes and four for the stream handling.
+
+Every check was then rerun on the final code of this follow-up, still on
+October 10, 2026 and without provider calls:
+
+- Suite: **145 tests**. Native Windows with Python 3.13.3: 142 passed, 3 POSIX
+  tests skipped. Native Windows with Python 3.11.3: 142 passed, 3 skipped. WSL2
+  (Linux 6.6.87.2-microsoft-standard-WSL2) with Python 3.12.3: 145 passed.
+- `python tools/recovery_checks.py protections` on native Windows with Python
+  3.13.3: 32 of 32 removed safeguards detected, exit status 0.
+- `python3 tools/recovery_checks.py real-clock` under WSL2: 10 of 10 checks
+  passed, the retry 0.04 s after the planned time, exit status 0. On native
+  Windows it reports itself skipped.
+- `python tools/reliability_e2e.py --repeat 3`: WSL2 42 passed, 0 failed, 0
+  skipped; native Windows 30 passed, 0 failed, 12 skipped; exit status 0.
+- Packages built outside the repository's `dist/` passed `twine check`. The
+  wheel contains `patchrondo/recovery.py`; the source archive contains
+  `tools/recovery_checks.py` and no `AGENTS.md`.
+- Publication scanner: exit status **1**, 53 files checked, the same four
+  findings (ignored `debug.log` and the three binary images). Not a clean scan.
+
+Documentation was updated after these runs and checked for links, UTF-8 and LF.
+
 Not verified:
 
 - Recovery with authenticated CLIs. The wording and format of real usage-limit
@@ -416,7 +467,8 @@ Not verified:
   time zone handling beyond numeric offsets and UTC/GMT.
 - A supervisor started from the dashboard, beyond the unchanged run-start path;
   dashboard Run/Resume was not exercised because it invokes real provider CLIs.
-- macOS, and the recovery tests on Linux outside WSL2.
+- The follow-up on macOS or on Linux outside WSL2. The CI run named above
+  covers those platforms for commit `791566c` only.
 - Two supervisors as separate operating-system processes; concurrency was
   tested with threads sharing the same lock file and state.
 

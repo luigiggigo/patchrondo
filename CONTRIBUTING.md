@@ -47,6 +47,14 @@ Use WSL2 or another POSIX host for the interruption and stale-lock scenarios;
 native Windows reports those scenarios as skipped. The JSON report includes
 objective checks and timings, not a model-quality score.
 
+After changing quota recovery, error classification or locking, also run
+`python tools/recovery_checks.py`. `protections` removes one safeguard at a
+time from a temporary copy of the sources and expects the recovery and adapter
+tests to fail; your working tree is not modified. When you add a safeguard, add
+an entry for it. `real-clock` interrupts and restarts a real 12-second wait
+with synthetic CLIs; it needs POSIX signals and is skipped on native Windows.
+Neither makes model calls.
+
 Contributions are distributed under the project's MIT license. Only submit code
 you are entitled to contribute. Report security issues through `SECURITY.md`.
 
