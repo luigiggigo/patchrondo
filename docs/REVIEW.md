@@ -1,7 +1,7 @@
 # Technical review and validation record
 
-Initial review: October 8, 2026. Local follow-up: October 9, 2026. First
-real-provider check: October 10, 2026.
+Initial review: October 8, 2026. Local follow-up: October 9, 2026. Real-provider
+checks: October 10, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -22,7 +22,9 @@ foundations.
 The initial preparation fixed the defects recorded below. A first check with
 authenticated real CLIs passed on October 10, 2026 on one platform and one pair
 of CLI versions, without reaching passing tests or approval; its scope is
-recorded below. Broader validation with authenticated real CLIs is still
+recorded below. A second check on the same platform and CLI versions completed
+both pairings with passing fixture tests and approved reviews. Broader validation
+with authenticated real CLIs is still
 required before promising complete compatibility or production readiness.
 The MIT license already existed; this review cannot certify ownership or the
 provenance of every contribution.
@@ -170,6 +172,39 @@ quota handling with real error messages, native Windows, macOS or other CLI
 versions. Whether a reviewer's sandbox would block an attempted edit was not
 tested: the reviewers did not change files.
 
+## Real-provider run with fixture tests (October 10, 2026)
+
+The user explicitly authorized real provider calls and host execution of the
+fixture tests through
+`python3 tools/provider_e2e.py --authorize-provider-calls --run-fixture-tests`.
+This local WSL2 run exited with status 0 and reported `RESULT: PASS` for both
+pairings. It was not run in GitHub CI.
+
+- Platform: WSL2 (Linux 6.6.87.2-microsoft-standard-WSL2, glibc 2.39), Python
+  3.12.3, Claude Code 2.1.291 with login method `claude.ai`, codex-cli 0.160.1
+  with login confirmed.
+- Claude → Codex passed in 18 seconds; Codex → Claude passed in 16 seconds.
+  Both reached status `done` with passing fixture tests and an `APPROVED`
+  review. The fixture configuration enabled both `tests.enabled` and
+  `tests.trust_acknowledged` as JSON booleans and ran
+  `python3 -m unittest -v test_greeting` using the interpreter's absolute path.
+- All six checks passed for each pairing: a nonempty developer handoff,
+  `greeting.py` defining `greet` in the worktree, no developer commits and a
+  clean main checkout, a parsed review, an unchanged worktree after review,
+  and completion with passing tests and approval. The reported worktree
+  change was only the untracked `greeting.py`.
+- The tool removed the temporary fixture and private task state after success,
+  as designed without `--keep`. Provider transcripts were not examined or
+  copied into this repository.
+
+This validates completion for the trivial greeting fixture on the reported
+platform and CLI versions. It does not establish behavior on larger projects,
+resumption after interruption, reviewer-feedback iterations, real quota or
+timeout failures, or enforcement against an attempted reviewer edit. No
+runtime code or CI configuration was changed for this check. README and
+changelog validation summaries were updated; documentation checks covered
+local links, UTF-8, LF line endings and diff whitespace.
+
 ## Retrieval candidate fix (October 10, 2026)
 
 `Index.search` limited the full-text candidates to the top 300 of the shared
@@ -229,7 +264,7 @@ cancel older runs on the same branch or PR.
 
 The remaining limitations are explicit:
 
-1. Real Claude/Codex accounts were checked once, on one platform and one pair of CLI versions, without reaching passing tests or approval (see the run above). The initial review environment did not have Claude installed. `doctor` checks availability/login and does not guarantee flag compatibility for every release; `tools/provider_e2e.py` does not cover resumption after an interruption.
+1. Real Claude/Codex accounts were checked in two local runs on one platform and one pair of CLI versions, including passing fixture tests and approval in both pairings (see the runs above). The fixture is trivial; larger projects and reviewer-feedback iterations remain unvalidated with real accounts. The initial review environment did not have Claude installed. `doctor` checks availability/login and does not guarantee flag compatibility for every release; `tools/provider_e2e.py` does not cover resumption after an interruption.
 2. Target-project tests execute on the host. Codex can run commands allowed by its sandbox and load personal configuration. Untrusted code requires a dedicated environment.
 3. Capture bounds RAM use but not disk space until timeout. Use disk quotas in isolated runners.
 4. Native Windows terminates only direct children; private ACLs and stale-lock recovery do not have POSIX guarantees. WSL2 remains recommended.

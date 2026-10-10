@@ -35,9 +35,10 @@
   chunks from other worktrees could hide relevant excerpts or return none.
 - Extend local simulated-provider validation to 74 tests; native Windows skips
   the POSIX process-group test.
-- Run the real-provider check once, on October 10, 2026: both pairings passed
-  on WSL2 with Claude Code 2.1.291 and codex-cli 0.160.1, with fixture tests
-  disabled. A real run through passing tests and approval remains unvalidated.
+- Run two local real-provider checks on October 10, 2026: both pairings passed
+  on WSL2 with Claude Code 2.1.291 and codex-cli 0.160.1. The first kept fixture
+  tests disabled; the second completed both tasks with passing fixture tests
+  and approved reviews.
 
 ## 0.1.0 — initial public MVP (source published October 8, 2026)
 

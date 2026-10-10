@@ -41,9 +41,9 @@ It does not extract OAuth tokens, use unofficial endpoints, or promise unlimited
 usage. Current plan and account documentation is linked below.
 
 **Status: experimental alpha.** No Python runtime dependencies. Tests use
-simulated providers. A first real-provider check passed on one platform (see
-[Project tests](#project-tests-no-provider-quota-usage)); a complete workflow
-through passing tests and approval with real accounts has yet to be validated.
+simulated providers. Real-provider checks passed on WSL2, including a complete
+workflow through passing fixture tests and approval in both role pairings (see
+[Project tests](#project-tests-no-provider-quota-usage)).
 This is an independent project, not affiliated with or sponsored by Anthropic or OpenAI.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance and
@@ -60,7 +60,7 @@ below.
 - A **trusted** Git repository, initially **clean**, with at least one commit.
 - For Claude: install **Claude Code** with `--restricted` support (version 2.1.248 or later), then authenticate with `claude auth login` or start `claude` and sign in with a supported plan.
 - For Codex: install **Codex CLI** (`npm install -g @openai/codex`) and run `codex login`, choosing ChatGPT login if you intend to use your subscription.
-- CLI usage limits, versions and flags may vary or require updates. The implementation is tested with simulated adapters; real accounts have been checked only once, on WSL2 with the CLI versions listed under [Real provider check](#real-provider-check-uses-plan-quota).
+- CLI usage limits, versions and flags may vary or require updates. The implementation is tested with simulated adapters; real-account checks cover WSL2 with the CLI versions listed under [Real provider check](#real-provider-check-uses-plan-quota).
 
 > **Billing:** if `ANTHROPIC_API_KEY` is set, Claude Code may use API billing instead of your subscription. The runner removes common API environment variables from child processes, but cannot control your personal CLI settings. Run `patchrondo doctor` and check your account login and configuration.
 
@@ -444,12 +444,12 @@ diagnosis. `--pairing` selects a single pairing and `--keep` preserves files
 after a pass.
 
 A pass covers only the platform, CLI versions and login reported in its output.
-The only run so far, on October 10, 2026, passed both pairings on WSL2 with
-Claude Code 2.1.291 and codex-cli 0.160.1, with the fixture's tests disabled:
-each pairing made one developer and one reviewer call and paused at the test
-gate. A run through passing tests and final approval
-(`--run-fixture-tests`), native Windows, macOS and resumption after an
-interruption have not been checked with real accounts. Details are in
+Two local runs on October 10, 2026 passed both pairings on WSL2 with
+Claude Code 2.1.291 and codex-cli 0.160.1. The first kept fixture tests disabled
+and paused at the test gate. The second used `--run-fixture-tests`: both
+pairings completed with passing tests, an `APPROVED` review and status `done`.
+These checks cover a trivial greeting fixture; native Windows, macOS and
+resumption after an interruption have not been checked with real accounts. Details are in
 [docs/REVIEW.md](docs/REVIEW.md); record later runs there.
 
 ## Roadmap
