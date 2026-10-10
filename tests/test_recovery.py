@@ -25,7 +25,7 @@ from patchrondo.core import config, create_task, initialize, run_task
 from patchrondo.process import Result
 from patchrondo.providers import AgentFailure, AgentReply, OfficialCLI, classified_failure, quota_hint
 from patchrondo.storage import LockBusy, TaskLock, _alive, read_json, save_json
-from patchrondo.ui import overview, task_detail
+from patchrondo.app import App
 
 T0 = datetime(2026, 10, 10, 14, 0, tzinfo=timezone.utc)
 LIMITS = {**recovery.DEFAULTS, "enabled": True}
@@ -995,7 +995,7 @@ class ConcurrencyTests(RecoveryCase):
 
 
 class ReportingTests(RecoveryCase):
-    def test_report_and_dashboard_data_show_a_pending_plan(self):
+    def test_report_and_interface_data_show_a_pending_plan(self):
         self.configure(enabled=True)
         task_id, path, _ = self.task()
         adapter = self.script(path, None, self.quota("Usage limit reached; resets at 2026-10-10T17:00:00Z", "codex"))
@@ -1009,10 +1009,15 @@ class ReportingTests(RecoveryCase):
                          "`recovery_scheduled` (attempt 1, resume_at 2026-10-10T17:00:30+00:00, "
                          "source provider_reset, provider codex)"):
             self.assertIn(expected, report)
-        detail = task_detail(self.home, task_id)
+        app = App(self.home)
+        project = app.ws.projects()[0]
+        detail = app.task_detail(project, task_id)
         self.assertEqual(detail["state"]["recovery"]["resume_at"], "2026-10-10T17:00:30+00:00")
-        self.assertFalse(detail["locked"])
-        self.assertTrue(overview(self.home)["config"]["recovery_enabled"])
+        runtime = detail["summary"]["runtime"]
+        self.assertIsNone(runtime["lock"])
+        # The plan is saved, but run_task has returned: nothing is waiting, and the interface must say so.
+        self.assertEqual((runtime["activity"], runtime["active"], runtime["waiting_process"]), ("plan_only", False, False))
+        self.assertTrue(app.project_info(project)["config"]["recovery_enabled"])
         self.assertIn("retry 1/3 for codex planned at 2026-10-10T17:00:30+00:00",
                       recovery.describe(detail["state"]["recovery"]))
 
@@ -1039,12 +1044,14 @@ class ReportingTests(RecoveryCase):
         self.assertEqual(events.count("recovery_completed"), 1)
         self.assertEqual(events[events.index("recovery_completed") - 1], "development_completed")
 
-    def test_dashboard_page_shows_the_plan_with_text_nodes(self):
-        page = resources.files("patchrondo").joinpath("static/dashboard.html").read_text(encoding="utf-8")
-        for expected in ("recoveryCard(task)", "task.recovery", "Provider at its limit", "Planned retry",
-                         "Schedule source", "Automatic retries", "Stopped because"):
+    def test_interface_shows_the_plan_with_text_nodes_and_never_as_a_service(self):
+        static = resources.files("patchrondo").joinpath("static")
+        page = static.joinpath("js/views/task.js").read_text(encoding="utf-8")
+        for expected in ("recoveryCard(", "Quota recovery", "Provider", "Next attempt", "Chosen from", "Retries",
+                         "Stopped because", "no process is waiting", "A saved plan is not a running service"):
             self.assertIn(expected, page)
-        self.assertNotIn("innerHTML", page)
+        for name in ("js/views/task.js", "js/tasks.js", "js/rondo.js", "js/components.js"):
+            self.assertNotIn("innerHTML", static.joinpath(name).read_text(encoding="utf-8"))
 
     def test_recovery_adds_only_structured_fields_beside_the_diagnostic_message(self):
         task_id, path, _ = self.task()

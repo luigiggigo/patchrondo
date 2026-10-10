@@ -1,9 +1,10 @@
 """Local checks for automatic quota recovery. Scripted or synthetic providers only.
 
 protections  Remove one safeguard at a time from a temporary copy of the sources
-             and confirm that the recovery and adapter tests fail. The working
-             tree is never modified. A safeguard whose removal goes unnoticed,
-             or whose source pattern no longer matches, fails the check.
+             and confirm that the tests fail: the recovery and adapter tests,
+             or the interface tests named by the entry. The working tree is
+             never modified. A safeguard whose removal goes unnoticed, or whose
+             source pattern no longer matches, fails the check.
 real-clock   Run the supervisor with synthetic CLIs on the real clock: interrupt
              a 12-second wait with SIGINT, restart, and confirm that the plan
              was kept and no call preceded it. Requires POSIX signals; skipped
@@ -37,6 +38,7 @@ class Mutation(NamedTuple):
     file: str
     old: str
     new: str
+    tests: tuple[str, ...] = ()  # test modules or classes that must notice; TESTS when empty
 
 
 # Each entry removes exactly one protection. `old` must occur once in `file`.
@@ -86,9 +88,9 @@ MUTATIONS = [
              "            with TaskLock(path):\n"
              "                _wait(path, resume_at, (state[\"status\"], section), clock, sleep)\n"),
     Mutation("interrupt clears the plan", "recovery.py",
-             "            return _reread(path, state)\n        if not active(config(home), auto_resume):",
+             "            return _reread(path, state)\n        if not active(task_config(home, task_id), auto_resume):",
              "            state[\"recovery\"] = None\n            save_json(path / \"state.json\", state)\n"
-             "            return state\n        if not active(config(home), auto_resume):"),
+             "            return state\n        if not active(task_config(home, task_id), auto_resume):"),
     Mutation("recovery active by default", "recovery.py",
              "    return cfg[\"recovery\"][\"enabled\"] if flag is None else bool(flag)", "    return flag is not False"),
     Mutation("booleans accepted as integers", "recovery.py",
@@ -147,6 +149,47 @@ MUTATIONS = [
     Mutation("native Windows liveness assumed dead", "storage.py",
              "        # Cannot reliably determine liveness without optional dependencies on Windows.\n        return True",
              "        return False"),
+    # What the interface may claim or start. These are checked by the interface tests.
+    Mutation("saved plan shown as waiting without a live process", "runinfo.py",
+             "        if any(entry[\"auto_resume\"] is not False for entry in alive):\n            activity = \"waiting_retry\"",
+             "        if True:\n            activity = \"waiting_retry\"", ("test_runinfo",)),
+    Mutation("unverifiable process counted as waiting", "runinfo.py",
+             "    alive = [entry for entry in attached_now if entry[\"state\"] == procinfo.ALIVE]",
+             "    alive = list(attached_now)", ("test_runinfo",)),
+    Mutation("saved running status shown as a running process", "runinfo.py",
+             "        activity = \"interrupted\"  # a checkpoint says running, but nothing holds the lock",
+             "        activity = \"running\"", ("test_runinfo",)),
+    Mutation("recycled PID accepted as the recorded process", "procinfo.py",
+             "    return ALIVE if current == token else DEAD", "    return ALIVE", ("test_runinfo",)),
+    Mutation("live PID without identity called alive", "procinfo.py",
+             "    if not token or current is None:\n        return UNKNOWN\n", "", ("test_runinfo",)),
+    Mutation("second automatic run started while a process waits", "app.py",
+             "            if runtime[\"waiting_process\"] and auto_resume is not False:", "            if False:",
+             ("test_ui.RunTests",)),
+    Mutation("interface start ignores the task lock", "app.py",
+             "            if runtime[\"lock\"] is not None:\n                if not unlock:",
+             "            if runtime[\"lock\"] is not None and unlock:\n                if not unlock:", ("test_ui.RunTests",)),
+    Mutation("interface unlock without a verified dead holder", "app.py",
+             "                if not runtime[\"can_unlock\"]:", "                if False:", ("test_ui.RunTests",)),
+    Mutation("simultaneous starts of one task admitted", "app.py",
+             "            if key in self.starting_tasks:\n                raise Conflict(\"This task is already being started\")\n", "",
+             ("test_ui.RunTests",)),
+    Mutation("test consent inherited from a previous save", "app.py",
+             "        if not isinstance(values, dict) or set(values) != {\"enabled\", \"trust_acknowledged\", \"commands\"}:",
+             "        values = {\"trust_acknowledged\": True, **values} if isinstance(values, dict) else values\n"
+             "        if not isinstance(values, dict) or set(values) != {\"enabled\", \"trust_acknowledged\", \"commands\"}:",
+             ("test_ui.SettingsTests",)),
+    Mutation("configuration written before it is validated", "app.py",
+             "            validate_config(copy.deepcopy(candidate), project.home)  # nothing invalid reaches the disk\n"
+             "            save_json(file, candidate)",
+             "            save_json(file, candidate)\n"
+             "            validate_config(copy.deepcopy(candidate), project.home)", ("test_ui.SettingsTests",)),
+    Mutation("task override outside the listed settings", "core.py",
+             "    if not isinstance(overrides, dict) or set(overrides) - set(TASK_OVERRIDES):", "    if not isinstance(overrides, dict):",
+             ("test_overrides",)),
+    Mutation("task recovery override ignored", "core.py",
+             "    cfg = effective_config(cfg, saved)  # overrides are written once, when the task is created\n", "",
+             ("test_overrides",)),
 ]
 
 
@@ -160,6 +203,7 @@ def run_mutation(mutation: Mutation | None, tests: tuple[str, ...] = TESTS) -> t
         ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
         shutil.copytree(PACKAGE, work / "src" / "patchrondo", ignore=ignore)
         shutil.copytree(ROOT / "tests", work / "tests", ignore=ignore)
+        shutil.copytree(ROOT / "tools", work / "tools", ignore=ignore)  # some interface tests load the demo tool
         if mutation is not None:
             target = work / "src" / "patchrondo" / mutation.file
             text = target.read_bytes().decode("utf-8")
@@ -179,16 +223,18 @@ def run_mutation(mutation: Mutation | None, tests: tuple[str, ...] = TESTS) -> t
 
 
 def protections(jobs: int, only: str | None = None) -> int:
-    failed, summary = run_mutation(None)
-    if failed:
-        print(f"The unchanged sources do not pass ({summary}); fix that first.")
-        return 1
     chosen = [m for m in MUTATIONS if only is None or only in m.name]
     if not chosen:
         print(f"No protection matches {only!r}")
         return 1
+    # Every group of tests used below must pass on the unchanged copy first.
+    for tests in sorted({m.tests or TESTS for m in chosen}):
+        failed, summary = run_mutation(None, tests)
+        if failed:
+            print(f"The unchanged sources do not pass {' '.join(tests)} ({summary}); fix that first.")
+            return 1
     with ThreadPoolExecutor(max_workers=jobs) as pool:
-        results = list(pool.map(run_mutation, chosen))
+        results = list(pool.map(lambda mutation: run_mutation(mutation, mutation.tests or TESTS), chosen))
     missed = 0
     for mutation, (detected, summary) in zip(chosen, results):
         print(f"{'detected' if detected else 'NOT DETECTED'}: {mutation.name} ({summary})")

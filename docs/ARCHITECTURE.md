@@ -4,8 +4,8 @@
 
 | Module | Responsibility |
 |---|---|
-| `cli.py` | CLI parsing, user input validation, `init/new/run/resume/status/report/list/index/search/ui/doctor` commands |
-| `core.py` | Deterministic state machine and completion criteria |
+| `cli.py` | CLI parsing, user input validation, project resolution, `init/new/run/resume/status/report/list/projects/index/search/ui/doctor` commands; no command opens the interface |
+| `core.py` | Deterministic state machine and completion criteria; configuration and task-override validation |
 | `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets |
 | `recovery.py` | Opt-in quota recovery: retry policy, the persisted plan and the foreground supervisor that waits without the task lock |
 | `process.py` | Process stdin/stdout, timeouts, group cleanup and filtered environment |
@@ -13,10 +13,24 @@
 | `storage.py` | Atomic JSON state, private directories, locks and process PID checks |
 | `report.py` | Auditable reports with files, tests, reviews and events |
 | `rag.py` | Optional incremental SQLite FTS5 index and retrieval of repository excerpts |
-| `ui.py`, `static/dashboard.html`, `static/*.webp` | Loopback dashboard; token-protected JSON API to read state, create tasks, start `patchrondo run` processes and edit test settings; mascot images inlined into the page at startup |
+| `workspace.py` | Project registry and global preferences of one home; in-place use of 0.1 homes |
+| `procinfo.py` | Read-only check of a process by ID and start time: alive, dead or unknown |
+| `runinfo.py` | Markers of attached `run`/`resume` processes and the process truth of one task |
+| `doctor.py` | Availability and login of the provider CLIs without model calls |
+| `commands.py` | Test command lines to and from argument arrays, with Windows or POSIX quoting |
+| `app.py` | Application layer: every operation of the interface (projects, settings, tasks, bounded file views, run start and stop) |
+| `live.py` | Snapshot and numbered change events |
+| `ui.py` | HTTP only: loopback server, request checks, routing to `app.py`, static assets, event stream |
+| `static/` | The interface: `index.html`, style sheets, ES modules and the two mascot images |
 
 Models do not call each other directly. The orchestrator invokes each model and
 stores state, feedback and evidence.
+
+The layers depend in one direction: `static/` talks to `ui.py` over HTTP;
+`ui.py` calls `app.py`; `app.py` calls `workspace.py`, `runinfo.py` and the
+engine (`core.py`, `rag.py`); the engine knows nothing about projects or the
+interface. A run is always a separate `patchrondo run` process, so the
+interface cannot bypass the lock, the checkpoints or the consent rules.
 
 ## 2. Invariants
 
@@ -29,6 +43,8 @@ stores state, feedback and evidence.
 - Only a `quota` pause can be retried without a person, only when recovery is active, and never before its persisted `resume_at`. No task lock is held while waiting, and no lock is ever removed automatically (section 8).
 - The orchestrator does not automatically merge, push, commit or install dependencies.
 - The task branch is separate from main. The external test runner executes project commands on the host and requires explicit consent.
+- What the interface says about a process comes from a check of that process, never from `status` alone, and a failed check is reported as unknown (section 10).
+- A project is trusted for tests only by explicit consent given for that project; registering or importing one never enables tests.
 
 ## 3. Review contract
 
@@ -73,6 +89,15 @@ Configurable parameters include the maximum number of iterations, agent and test
 timeouts, Claude turns, `allow_no_changes`, explicit trust in the configured tests
 and the `recovery` limits described in section 8.
 
+A task may carry `overrides` in its `state.json`, written once when it is
+created: `workflow.max_iterations`, `workflow.agent_timeout_seconds`,
+`workflow.test_timeout_seconds` and `recovery.enabled`, nothing else.
+`core.validate_overrides` applies the configuration's own ranges, and
+`core.effective_config` merges them over the project configuration in
+`run_task` and in the recovery supervisor. A state without `overrides` (every
+state written by 0.1) uses the project configuration unchanged. Tests, consent,
+retry limits and `quota_only` cannot be overridden per task.
+
 ## 5. Permissions and threat model
 
 The MVP is designed for **trusted local repositories** and credentials managed by
@@ -101,33 +126,73 @@ Vector embeddings are deliberately absent: they would add runtime dependencies
 or network calls. Consider them as a reranking stage only after measuring that
 lexical search is insufficient.
 
-## 7. Dashboard and demo lifecycle
+## 7. Interface and demo lifecycle
 
-`ui.py` serves the bundled dashboard with `ThreadingHTTPServer` on `127.0.0.1`.
-The API checks Host headers and a per-session token; writes additionally check
-Origin when supplied and require JSON. Task creation delegates to `create_task`;
-test settings retain the core's explicit boolean consent validation. The editor
-round-trips argv arrays using Windows C runtime quoting on Windows and POSIX
-quoting elsewhere. Neither form invokes a shell.
+`ui.py` serves the interface with `ThreadingHTTPServer` on `127.0.0.1`. Every
+request is checked for its Host header; every API request for the per-session
+token; writes (POST, PATCH, DELETE) additionally for Origin when supplied, a
+JSON content type and a body of at most 256 kB. The page is `static/index.html`
+with a fresh nonce per response; scripts and style sheets carry that nonce and
+are served from a dictionary of package files built at startup, so a request
+can only name a file that was collected. Nothing is loaded from another origin.
+Errors have one shape, `{"error", "code"}`, with 400, 401, 403, 404, 409, 413,
+415 or 500.
 
-Each Run/Resume launches a separate `python -m patchrondo ... run` process with
-absolute import paths, so source-only checkouts work after changing the child's
-working directory to the state directory. Existing task locks and phase
-checkpoints remain authoritative. The dashboard registers the process immediately
-and reports startup failures detected during the first 1.5 seconds.
+| Route | Purpose |
+|---|---|
+| `GET /api/snapshot` | Everything the interface lists, with the sequence number events continue from |
+| `GET /api/events?epoch=&since=` | Server-sent change events |
+| `GET/PATCH /api/settings` | Global preferences |
+| `POST /api/projects`, `/api/projects/import`, `/api/projects/inspect` | Register a repository, register a 0.1 home in place, check a path without registering it |
+| `GET/PATCH/DELETE /api/projects/{id}`, `PATCH …/config`, `POST …/index` | Detail with the full configuration, rename, forget; edit configuration sections; update the retrieval index |
+| `POST /api/projects/{id}/tasks`, `GET …/tasks/{task}`, `…/files`, `…/log` | Create a task; state and documents; changed files; a slice of one log |
+| `POST …/tasks/{task}/run`, `…/stop` | Start `patchrondo run`; interrupt it |
+| `POST /api/fs/list`, `GET /api/providers`, `POST /api/providers/refresh` | Folder names for the picker; cached CLI status |
 
-A condition variable guards `closing`, the count of pending starts and the
-registered processes. Once closing begins, new Run requests return 409. Shutdown
-waits at most 30 seconds for admitted starts, then returns `RunsAtExit(active,
-pending)`. Request threads are daemon threads; silent connections have a
-30-second timeout and do not delay shutdown. Started runs continue independently.
+A task is always addressed through its project, so one project cannot reach
+another's tasks. Task creation delegates to `create_task`. Configuration edits
+are merged into the saved file, checked as a whole by `core.validate_config`
+and only then written atomically under a short file mutex; a section that an
+older file lacks stays absent until it is edited. Test settings must arrive
+complete (`enabled`, `trust_acknowledged`, `commands`), so consent is never
+inherited from an earlier save. The editor round-trips argv arrays using
+Windows C runtime quoting on Windows and POSIX quoting elsewhere. Neither form
+invokes a shell. A client may send a `request_id` with a creation request; a
+repeat with the same identifier returns the first result.
 
-`tools/demo_dashboard.py` initializes a temporary repository with tests disabled.
-It deletes the demo only after `serve()` returns normally and no active process,
-pending start or `.run.lock` remains, unless `--keep` was requested. A timeout,
-interruption or shutdown error preserves the files and prints their location.
-A second Ctrl+C during shutdown returns exit code 130. Preparation failures can
-be cleaned up because the dashboard has not yet admitted any runs.
+Each Run/Resume launches a separate `python -m patchrondo --home <project
+state directory> run <task>` process with absolute import paths, so source-only
+checkouts work after changing the child's working directory. The flags
+`--auto-resume`, `--no-auto-resume` and `--unlock` are the only options the
+interface can add. Existing task locks and phase checkpoints remain
+authoritative. Before starting, `app.start_run` refuses a task that is done or
+blocked, locked, already being started, or (for an automatic run) already
+attended by a waiting process. It registers the process immediately and
+reports startup failures detected during the first 1.5 seconds.
+
+A condition variable guards `closing`, the count and set of pending starts and
+the registered processes. Once closing begins, new Run requests return 409.
+Shutdown ends the event streams, waits at most 30 seconds for admitted starts,
+then returns `RunsAtExit(active, pending)`. Request threads are daemon threads;
+silent connections have a 30-second timeout and do not delay shutdown. Started
+runs continue independently.
+
+The page is a set of ES modules without a build step: `dom.js` (element
+creation from text only), `api.js`, `store.js` (snapshot, events,
+reconnection), `router.js`, `ui.js` (components), `tasks.js` and `rondo.js`
+(wording), and one module per view. A compiled framework was considered and
+not adopted: the interface is about twenty modules, the package must stay
+free of build tooling and runtime dependencies, the shipped files are the
+reviewed files, and a strict nonce-based policy is simplest to keep with
+nothing generated. `docs/DESIGN.md` describes the design system.
+
+`tools/demo_dashboard.py` registers two temporary repositories with tests
+disabled. It deletes the demo only after `serve()` returns normally and no
+active process, pending start or `.run.lock` remains, unless `--keep` was
+requested. A timeout, interruption or shutdown error preserves the files and
+prints their location. A second Ctrl+C during shutdown returns exit code 130.
+Preparation failures can be cleaned up because the interface has not yet
+admitted any runs.
 
 `tools/provider_e2e.py` invokes authenticated provider CLIs only with
 `--authorize-provider-calls`. It creates a temporary repository and state
@@ -154,10 +219,18 @@ the retry without real waiting.
 Reports contain objective fixture checks and timing measurements; fixture state
 and transcripts are deleted on success and retained outside the repo on failure.
 
+`tools/ui_e2e.py` starts the real server in its own process and drives a
+headless Chrome or Edge through the DevTools protocol (`tools/browser.py`,
+standard library only). Runs it starts are real `patchrondo run` processes
+whose provider commands are routed to a synthetic executable; the runner
+refuses to start while a real `claude` or `codex` is reachable. It compares
+what the page shows with the files on disk.
+
 `tools/recovery_checks.py` holds two further local checks. `protections` copies
-`src/patchrondo` and `tests` to a temporary directory, removes one recovery or
-classification safeguard there, and runs the recovery and adapter tests against
-the copy; an undetected removal, or a pattern that no longer matches the
+`src/patchrondo`, `tests` and `tools` to a temporary directory, removes one
+safeguard there, and runs the tests named for it against the copy: the
+recovery and adapter tests, or interface tests for what the interface may
+claim or start. An undetected removal, or a pattern that no longer matches the
 sources, fails the check. `real-clock` reuses the reliability fixture with a
 12-second stated reset and no virtual clock: it sends SIGINT to a waiting
 runner, restarts it and compares the call times with the saved plan.
@@ -254,9 +327,141 @@ planned retry by `max_total_wait_seconds`. Progress is limited by
 `workflow.max_iterations`, so the number of runs one supervisor can start is
 finite, and the loop also carries an explicit cycle limit derived from both.
 
+**In the interface.** `run` and `resume` are the only supervisors, as before.
+The interface starts them and reads what they persist; it adds no retry logic.
+`app.start_run` passes `--auto-resume` or `--no-auto-resume` when the Run
+dialog's switch was changed and nothing otherwise, so the configured default
+(or the task's override) applies. Whether a process is waiting is answered by
+`runinfo` (section 10), which is why a plan is shown as attended only while a
+verified process with automatic resume is attached.
+
 **Limits.** There is no daemon: a plan without a waiting process is only data,
-and reports and the dashboard word it that way. Classification of quota
+and reports and the interface word it that way. A service that keeps plans
+attended would be a separate, opt-in process started by the user that runs
+`recovery.supervise` for tasks with a due plan, taking the same lock and
+obeying the same limits; it is not part of this version, and the interface
+must not suggest that one exists. Classification of quota
 failures is textual and can be wrong; the retry limit is the protection.
 Liveness of a recorded PID cannot be checked on native Windows, so a stale lock
 there always needs a person. Reset formats of the real CLIs have been exercised
 with simulated output only.
+
+## 9. Home, projects and settings
+
+```text
+<home>/settings.json            global preferences
+<home>/projects.json            registry
+<home>/projects/<project-id>/   state directory of a project added in 0.2
+```
+
+The engine has always worked on one directory holding `config.json`, `tasks/`,
+`worktrees/`, `index/` and `empty-hooks/`. In 0.1 that directory was the whole
+home. In 0.2 it is the **state directory of a project**, and the engine is
+given that directory wherever it used to be given the home. Nothing in
+`core.py`, `recovery.py`, `rag.py`, `gitops.py` or `storage.py` knows about
+projects, which is what keeps tasks, worktrees, indexes and locks of different
+projects apart: they are in different directories.
+
+**Registry.** `projects.json` is `{"version": 1, "legacy_root": …, "projects":
+[{"id", "name", "home", "origin", "added_at"}]}`. `id` is `P-` plus eight
+random hexadecimal digits and never changes. `home` is relative to the home
+when the state directory is inside it and absolute otherwise. The repository
+path is not copied into the registry: the project's own `config.json` remains
+its only source. Writes go through a read-modify-write under a short
+cross-process file mutex and an atomic replace.
+
+**Origins.** `managed`: created by `Workspace.add` under `projects/<id>/` with
+the regular `initialize`, so tests start disabled and untrusted. `legacy`: a
+0.1 configuration at the root of the home, registered with `"home": "."` the
+first time the registry is read by the interface or by `patchrondo projects`.
+`imported`: another 0.1 home registered by absolute path. Registration writes
+`projects.json` and nothing else. Worktrees are never moved, because Git
+records their absolute paths in the repository.
+
+**Removal and rollback.** Removing a project deletes its registry entry. A
+removed root project is marked so that it is not registered again by itself.
+The way back from any registration is to remove the entry; the way back from
+all of 0.2 is to delete `projects.json` and `settings.json`, after which a 0.1
+home is exactly what it was. A registration that fails after creating a state
+directory removes that new, empty directory.
+
+**Settings.** `settings.json` holds the default developer and reviewer, the
+theme, the selected project and whether setup was completed; unknown keys are
+rejected. Precedence for a new task's roles: the task form, then the project's
+optional `agents` section, then the global defaults. Precedence for limits: a
+task's `overrides`, then the project's `config.json`. No password, token or
+API key is stored anywhere by PatchRondo.
+
+**Command line.** Without `--project`, a configuration at the root of the home
+is used directly and the registry is not read or written, so 0.1 scripts
+behave as before. Otherwise the selected project is used, or the only one.
+Commands that take a task ID look the task up in the registered projects.
+`init --repo` creates the 0.1 layout on a home with no registry and adds a
+project on a home that has one.
+
+## 10. Process truth and live updates
+
+`status` in `state.json` is a checkpoint, not a process. `running` stays
+written after a crash, and a `scheduled` retry plan stays written after its
+supervisor is gone. The interface therefore asks two further questions.
+
+**Who holds the lock?** `TaskLock` writes its PID and, since 0.2, the start
+token of its process (`procinfo.identity`): the start time from
+`/proc/<pid>/stat` on Linux, the creation time from the Windows process API,
+or the start time printed by `ps` elsewhere. `procinfo.state(pid, token)`
+answers `alive` only when the PID exists and its token matches, `dead` when
+the PID does not exist, is a zombie, or belongs to a later process, and
+`unknown` when there is no token (a lock written by 0.1), access is denied or
+the probe fails.
+
+**What is attached?** `cli.py` wraps `run` and `resume` in `runinfo.attached`,
+which writes `<task>/attached/<pid>.json` with the PID, the start token and
+whether automatic resume is in effect, and removes it on exit. The marker
+exists while the process waits for a retry without the lock, which is the case
+the lock cannot show. A marker whose process is verified gone is deleted.
+Children started by this interface are also known directly.
+
+`runinfo.runtime` combines both with the saved state into one `activity`:
+
+| Activity | Condition |
+|---|---|
+| `running` | lock present, holder or an attached process verified alive |
+| `running_unverified` | lock present, holder cannot be verified |
+| `stale_lock` | lock present, holder verified gone |
+| `interrupted` | status `running`, no lock |
+| `starting` | a process is attached and has not taken the lock yet |
+| `waiting_retry` | plan `scheduled`, a verified process with automatic resume attached |
+| `plan_unverified` | plan `scheduled`, an attached process that cannot be verified |
+| `plan_only` | plan `scheduled`, no process |
+| `recovery_stopped`, `paused`, `blocked`, `ready`, `done` | from the saved state, with no process |
+
+It also says what is possible: `can_start`, `can_stop` (POSIX, a verified
+process) and `can_unlock` (POSIX, a stale lock). These answers are for display
+and for refusing duplicate starts. They never remove a lock: *Release lock and
+resume* starts `patchrondo run --unlock`, and `TaskLock` then applies its own,
+unchanged rule to the runner and to every recorded agent and test process. On
+native Windows that rule cannot confirm that a process is gone, so the
+interface does not offer the action there. *Stop* sends SIGINT to the verified
+processes, which is what Ctrl+C does; a run started by the interface restores
+the default interrupt handler if it inherited an ignored one.
+
+**Live updates.** `live.Hub` rebuilds the view (`app.collect`) every half
+second while a page is listening, at once after a write made through the API,
+and on every snapshot request. State files are re-read when their time, size
+or inode changed, and always while they are less than two seconds old, because
+two saves can fall within one timestamp tick. Each difference from the
+previous view becomes an event with the complete new value of one project,
+task or global section, numbered within an `epoch` that changes when the
+server restarts. `GET /api/snapshot` returns the view with its number;
+`GET /api/events` then delivers later events and a heartbeat every ten
+seconds. A client that asks for events the hub no longer holds, or with
+another epoch, receives `resync` and loads a snapshot. The page applies an
+event only when its number is the next one, reconnects with backoff, falls
+back to polling snapshots if the stream cannot be kept open, and marks the
+state as last confirmed at a given time while disconnected. The stream is read
+with `fetch`, not `EventSource`, so the token stays in a header.
+
+The task page takes its header from the summary in the stream and fetches the
+task's detail whenever that summary changes. Logs are read by byte offset in
+slices of at most 256 kB, by an identifier taken from the task's own file
+listing.

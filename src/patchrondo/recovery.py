@@ -55,7 +55,11 @@ def settings(section) -> dict:
 
 
 def active(cfg: dict, flag: bool | None) -> bool:
-    """`--auto-resume` / `--no-auto-resume` override `recovery.enabled`."""
+    """`--auto-resume` / `--no-auto-resume` override `recovery.enabled`.
+
+    `cfg` is the configuration in effect for the task: a task created with its
+    own `recovery.enabled` override uses that instead of the project value.
+    """
     return cfg["recovery"]["enabled"] if flag is None else bool(flag)
 
 
@@ -308,10 +312,10 @@ def supervise(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fa
     This is a foreground loop, not a service: when it ends or is interrupted,
     the plan stays in `state.json` and nothing retries until a new run starts.
     """
-    from .core import config, run_task, task_dir
+    from .core import run_task, task_config, task_dir
 
     notify = notify or (lambda message: None)
-    cfg = config(home)
+    cfg = task_config(home, task_id)
     if not active(cfg, auto_resume):
         return run_task(home, task_id, adapter=adapter, force_unlock=force_unlock,
                         auto_resume=False, clock=clock)
@@ -348,7 +352,7 @@ def supervise(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fa
             notify(f"Stopped waiting. The plan to retry at {section['resume_at']} stays saved, but nothing "
                    "is waiting for it now: start resume again to wait, or use --no-auto-resume to retry at once.")
             return _reread(path, state)
-        if not active(config(home), auto_resume):
+        if not active(task_config(home, task_id), auto_resume):
             notify("Automatic recovery was disabled in the configuration; the task stays paused.")
             return _reread(path, state)
         retry_of = section["resume_at"]

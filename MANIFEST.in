@@ -3,6 +3,6 @@ recursive-include docs *.md
 recursive-include examples *.json
 recursive-include tests *.py
 recursive-include tools *.py
-recursive-include src/patchrondo/static *.html *.webp
+recursive-include src/patchrondo/static *.html *.webp *.css *.js
 global-exclude *.py[cod] *.log *.key *.pem
 global-exclude AGENTS.md agents.md

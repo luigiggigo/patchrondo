@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "patchrondo"
-version = "0.1.0"
-description = "Local, resumable Claude Code / Codex review-and-repair loop"
+version = "0.2.0"
+description = "Local, resumable Claude Code / Codex review-and-repair loop with a browser interface"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -14,6 +14,7 @@ keywords = ["agents", "orchestration", "code-review", "claude", "codex"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
+  "Environment :: Web Environment",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
@@ -40,7 +41,7 @@ Issues = "https://github.com/luigiggigo/patchrondo/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-patchrondo = ["static/*.html", "static/*.webp"]
+patchrondo = ["static/*.html", "static/*.webp", "static/css/*.css", "static/js/*.js", "static/js/views/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

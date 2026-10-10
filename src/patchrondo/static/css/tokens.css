@@ -1,0 +1,169 @@
+/* PatchRondo design tokens.
+   The palette is sampled from Rondo, the mascot: cream belly, warm grey fur, charcoal mask
+   and the blue patch. The patch blue is the only accent; status colors are functional. */
+:root {
+  --rondo-cream: #f8d8c8;
+  --rondo-cream-light: #f8e8d8;
+  --rondo-fur: #887878;
+  --rondo-mask: #282828;
+  --rondo-ink: #080818;
+  --rondo-patch: #5878a8;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text-md: 13.5px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+  --text-2xl: 22px;
+  --text-3xl: 28px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 999px;
+
+  --sidebar-width: 248px;
+  --sidebar-rail: 60px;
+  --topbar-height: 52px;
+  --content-width: 1120px;
+
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --fast: 120ms;
+  --base: 180ms;
+  --slow: 320ms;
+}
+
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #131115;
+  --bg-sunken: #0e0d10;
+  --surface: #1a181d;
+  --surface-2: #211f25;
+  --surface-3: #2b2830;
+  --border: #2d2a32;
+  --border-strong: #3d3944;
+  --text: #f3ebe6;
+  --text-2: #b8adab;
+  --text-3: #918788;
+  --accent: #82a8de;
+  --accent-hover: #97b7e6;
+  --accent-ink: #0d1422;
+  --accent-soft: rgba(130, 168, 222, .14);
+  --accent-line: rgba(130, 168, 222, .42);
+  --ok: #6fc391;
+  --ok-soft: rgba(111, 195, 145, .14);
+  --warn: #e3b05c;
+  --warn-soft: rgba(227, 176, 92, .14);
+  --danger: #ee7f76;
+  --danger-soft: rgba(238, 127, 118, .14);
+  --wait: #b9a0f2;
+  --wait-soft: rgba(185, 160, 242, .14);
+  --neutral: #a59a99;
+  --neutral-soft: rgba(165, 154, 153, .14);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, .4);
+  --shadow-lg: 0 24px 64px rgba(0, 0, 0, .55);
+  --overlay: rgba(8, 7, 10, .62);
+  --diff-add: rgba(111, 195, 145, .13);
+  --diff-del: rgba(238, 127, 118, .13);
+  --rondo-halo: radial-gradient(circle at 50% 36%, #34303a, #1d1b20 72%);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f7f3ef;
+  --bg-sunken: #efe9e3;
+  --surface: #ffffff;
+  --surface-2: #faf7f3;
+  --surface-3: #f0eae4;
+  --border: #e5ddd5;
+  --border-strong: #cfc5bb;
+  --text: #221f23;
+  --text-2: #5c5355;
+  --text-3: #7b7072;
+  --accent: #3f66a3;
+  --accent-hover: #34578e;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(63, 102, 163, .1);
+  --accent-line: rgba(63, 102, 163, .4);
+  --ok: #23804f;
+  --ok-soft: rgba(35, 128, 79, .11);
+  --warn: #99650c;
+  --warn-soft: rgba(153, 101, 12, .12);
+  --danger: #c2413a;
+  --danger-soft: rgba(194, 65, 58, .1);
+  --wait: #6b4fc0;
+  --wait-soft: rgba(107, 79, 192, .1);
+  --neutral: #6f6567;
+  --neutral-soft: rgba(111, 101, 103, .11);
+  --shadow-sm: 0 1px 2px rgba(60, 40, 30, .08);
+  --shadow-md: 0 8px 24px rgba(60, 40, 30, .12);
+  --shadow-lg: 0 24px 64px rgba(60, 40, 30, .2);
+  --overlay: rgba(40, 32, 28, .4);
+  --diff-add: rgba(35, 128, 79, .12);
+  --diff-del: rgba(194, 65, 58, .1);
+  --rondo-halo: radial-gradient(circle at 50% 36%, #fff6ee, #ecdfd2 72%);
+}
+
+/* Tones: one vocabulary for badges, dots, callouts and workflow steps. */
+.tone-accent { --tone: var(--accent); --tone-soft: var(--accent-soft); }
+.tone-ok { --tone: var(--ok); --tone-soft: var(--ok-soft); }
+.tone-warn { --tone: var(--warn); --tone-soft: var(--warn-soft); }
+.tone-danger { --tone: var(--danger); --tone-soft: var(--danger-soft); }
+.tone-wait { --tone: var(--wait); --tone-soft: var(--wait-soft); }
+.tone-neutral { --tone: var(--neutral); --tone-soft: var(--neutral-soft); }
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 400 var(--text-md)/1.5 var(--font-sans);
+  letter-spacing: -.003em;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+h1, h2, h3, h4, p { margin: 0; }
+h1 { font-size: var(--text-2xl); line-height: 1.2; font-weight: 650; letter-spacing: -.02em; }
+h2 { font-size: var(--text-lg); line-height: 1.3; font-weight: 620; letter-spacing: -.01em; }
+h3 { font-size: var(--text-md); font-weight: 620; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, kbd, pre, .mono { font-family: var(--font-mono); font-size: .93em; letter-spacing: 0; }
+img { display: block; max-width: 100%; }
+::selection { background: var(--accent-line); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
+[hidden] { display: none !important; }
+
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 10px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.skip-link { position: fixed; top: -48px; left: var(--space-3); z-index: 100; padding: var(--space-2) var(--space-3); background: var(--accent); color: var(--accent-ink); border-radius: var(--radius-md); font-weight: 600; transition: top var(--fast) var(--ease); }
+.skip-link:focus { top: var(--space-3); text-decoration: none; }
+.noscript { padding: var(--space-6); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+}

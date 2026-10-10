@@ -1,6 +1,146 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — interface first, several projects
+
+Prepared in a local working tree on October 10, 2026. At that date it was not
+committed, pushed, tagged or released; the technical review records what was
+checked and on which platforms. The engine of 0.1.0 is unchanged except where
+listed under *Engine*.
+
+### Interface
+
+- `patchrondo` without a command starts the local server and opens the
+  interface. It works on a new installation with no `config.json`: the first
+  start shows a setup wizard (project, CLI status, default roles, tests, how
+  plan limits are used) and writes nothing until its last step. If port 8765
+  is taken a free port is used.
+- New interface, replacing the single-page dashboard: Home, Tasks, a workspace
+  per task (Overview, Activity, Logs, Tests, Review, Files changed, Handoff,
+  Report, Advanced), New task, Projects, Settings and About. No page reloads;
+  a sidebar that collapses to a rail and becomes a drawer on narrow windows; a
+  command palette (Ctrl/Cmd+K); dark theme by default, light and system
+  optional.
+- A design system with tokens for color, type, space, radius and motion. The
+  palette is sampled from the mascot image. Rondo appears in the brand, the
+  wizard, empty states, the task note and the About page, using only the two
+  official images; moods are a small motion and a status mark, switched off
+  under reduced motion. See `docs/DESIGN.md`.
+- The page is plain ES modules and style sheets served from the package, with
+  no build step and no runtime dependency. Content written by agents is still
+  inserted only as text nodes.
+- New task as a page: project, title, description, acceptance criteria, roles,
+  and optional limits for that task only. *Create and run* asks for the same
+  confirmation as *Run* before any agent is called.
+- Settings edit everything in a project's `config.json`: workflow limits,
+  tests, the Recovery Manager, local retrieval (with *Update index now* and
+  the result of the last manual update) and default roles, plus global
+  preferences. Each form is validated by the backend before it is written.
+  Enabling tests needs the trust checkbox each time the commands change.
+- Timeline of the persisted events in words ("Claude started development",
+  "Tests passed", "Codex: changes requested"), grouped by iteration.
+- Log viewer for the run output and every saved transcript: only the end of a
+  file is loaded, earlier output on request, new output is appended while a
+  task runs, with Follow, Wrap, jump and Copy.
+- Changed files of a task with a bounded diff and the text of new files.
+
+### Projects and settings
+
+- Several projects in one home. `projects.json` holds the registry (stable
+  `P-…` identifier, display name, state directory) and `settings.json` the
+  global preferences. A project added in 0.2 keeps its state in
+  `projects/<id>/`, with the layout the whole home had in 0.1.
+- A 0.1 home is used where it is: a configuration at the root of the home is
+  registered as a project in place, and another 0.1 home can be imported by
+  reference. Nothing is moved or rewritten; worktrees keep their paths.
+- Removing a project deletes its registry entry only. The repository, tasks,
+  worktrees and logs stay on disk and can be imported again.
+- A folder picker that lists folder names on this computer, and a read-only
+  repository check before anything is registered.
+- A project may set default roles (`agents` in `config.json`); global defaults
+  are in `settings.json`.
+
+### Process truth and live updates
+
+- The interface no longer shows a task as running because its saved status
+  says so. `run` and `resume` record themselves in `<task>/attached/<pid>.json`
+  while they live, and the lock records which process instance holds it. The
+  backend verifies process ID and start time (`/proc` on Linux, the Windows
+  process API, `ps` elsewhere) and answers *unverified* when it cannot.
+- Five recovery situations are told apart: running; a process waiting to
+  retry; a saved plan with no process; recovery ended; manual intervention.
+  A saved plan is never described as a retry that will happen.
+- A second automatic run is refused while a process waits for the same task; a
+  manual run now stays possible. Simultaneous or repeated starts of one task
+  create one process.
+- *Stop* interrupts a verified run or a waiting process, like Ctrl+C in its
+  terminal (POSIX). *Release lock and resume* is offered when the holder of a
+  lock is verified gone (POSIX); the engine still makes its own check. Native
+  Windows shows both as unavailable and explains what to do.
+- Live updates: one snapshot, then numbered server-sent events read with
+  `fetch`, so the session token stays in a header. A gap, a server restart or
+  a lost connection leads to a new snapshot; while disconnected the page shows
+  the last confirmed state with its time. A hidden tab releases its
+  connection.
+
+### Engine
+
+- A task can override `max_iterations`, `agent_timeout_seconds`,
+  `test_timeout_seconds` and `recovery.enabled`. The values are validated with
+  the configuration's ranges, saved in `state.json` as `overrides` when the
+  task is created and applied by `run_task` and the recovery supervisor. Tasks
+  without overrides keep the previous state shape.
+- New `tests_started` event, recorded when enabled tests begin.
+- `core.validate_config` checks a configuration without reading or writing a
+  file; editors use it before saving.
+- The task lock also stores the start token of its process. Unlocking does not
+  use it.
+
+### Command line
+
+- Every 0.1 command still works, and a home with `config.json` at its root
+  behaves as before without a registry being written.
+- New `--project ID|NAME` and `patchrondo projects`. Commands that take a task
+  ID find the project that holds it. `init --repo` on a home that already has a
+  registry adds a project; on a new home it creates the 0.1 layout as before.
+- `ui` no longer requires `init`. `--port` and `--no-browser` are also accepted
+  before the command.
+- `main.sh` opens the interface without requiring a configuration; `init.sh`
+  registers a repository only when one is given or found.
+
+### Security
+
+- Unchanged: loopback only, per-session token on every API call, Host and
+  Origin checks, JSON-only bounded writes, nonce-based CSP, no external assets.
+- The token is taken from the URL fragment, kept for the tab and removed from
+  the address bar.
+- Static files are served from a list built at startup; log and transcript
+  files can only be requested by an identifier from the task's own listing.
+- An unexpected server fault is answered in the common error shape with status
+  500 instead of dropping the connection.
+
+### Tests and tools
+
+- Tests for the registry, isolation between projects, 0.1 homes, settings,
+  input validation, every endpoint's protection, task creation, runs,
+  duplicate starts, process verification, an interface restart during a run,
+  the event stream and static checks of the shipped page.
+- `tools/ui_e2e.py`: browser checks in headless Chrome or Edge through the
+  DevTools protocol, with the standard library only (`tools/browser.py`).
+- `tools/recovery_checks.py protections` also removes interface safeguards and
+  expects the interface tests to fail.
+- `tools/demo_dashboard.py` now creates two projects.
+
+### Removed
+
+- `static/dashboard.html` and the API routes of the previous dashboard
+  (`/api/overview`, `/api/tasks/…`, `/api/settings/tests`).
+
+### Published as source on `main` after 0.1.0 and included here
+
+These entries describe the development snapshots as they were pushed on
+October 9 and 10, 2026. Where 0.2.0 replaced something they mention (the first
+dashboard, its routes, mascot images inlined as `data:` URIs, test counts), the
+sections above are current.
 
 - Add opt-in automatic quota recovery (`recovery` configuration section,
   `--auto-resume` / `--no-auto-resume` on `run` and `resume`). After a usage

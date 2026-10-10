@@ -1,10 +1,14 @@
-"""Try the dashboard in one command: no setup needed.
+"""Try the interface in one command: no setup needed.
 
-Creates a throwaway Git repository and state directory, runs the regular
-initialization, adds sample tasks in every status and opens `patchrondo ui`.
+Creates two throwaway Git repositories and a state directory, registers them as
+projects, adds sample tasks in every saved status and opens the interface.
 Everything is deleted on exit unless --keep is passed or a run started from
-the dashboard is still active. Opening the demo makes
-no provider calls; Run/Resume on a task created in the demo calls the real CLIs.
+the interface is still active. Opening the demo makes no provider calls;
+Run/Resume on a task created in the demo calls the real CLIs.
+
+The sample tasks are saved states only: no process is attached to them, and the
+interface says so. A saved "running" status without a process is shown as
+interrupted, and a saved retry plan as not attended.
 
     python tools/demo_dashboard.py
 """
@@ -20,9 +24,9 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from patchrondo.core import initialize  # noqa: E402
 from patchrondo.storage import atomic_text, save_json  # noqa: E402
 from patchrondo.ui import RunsAtExit, serve  # noqa: E402
+from patchrondo.workspace import Workspace  # noqa: E402
 
 TASK_TEXT = """# {title}
 
@@ -49,24 +53,30 @@ if claims["exp"] < now():
 """
 
 
-def setup(root: Path) -> Path:
-    """Create a demo repository and an initialized state directory; return the state directory."""
-    repo = root / "repo"
-    repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True, timeout=30)
-    (repo / "README.md").write_text("# Demo repository\n", encoding="utf-8")
-    # A first commit lets "New Task" create real worktrees in the demo repository.
+def repository(path: Path) -> Path:
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True, timeout=30)
+    (path / "README.md").write_text(f"# {path.name}\n", encoding="utf-8", newline="\n")
+    # A first commit lets "New task" create real worktrees in the demo repository.
     for args in (["add", "README.md"], ["-c", "user.name=PatchRondo Demo", "-c", "user.email=demo@example.invalid",
                                       "-c", "commit.gpgsign=false", "commit", "-q", "-m", "Demo repository"]):
-        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, timeout=30)
-    home = root / "state"
-    # Tests stay disabled, as after any init, until the user consents in the dashboard.
-    initialize(home, repo)
-    seed(home)
-    return home
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True, timeout=30)
+    return path
 
 
-def seed(home: Path) -> None:
+def setup(root: Path) -> Path:
+    """Create two demo repositories registered as projects; return the state directory."""
+    workspace = Workspace(root / "state")
+    # Tests stay disabled, as for any new project, until the user consents in the interface.
+    shop = workspace.add(repository(root / "shop-api"), "Shop API")
+    site = workspace.add(repository(root / "docs-site"), "Docs site")
+    seed(shop.home)
+    seed(site.home, second=True)
+    workspace.update_settings({"onboarding_completed": True})
+    return workspace.root
+
+
+def seed(home: Path, second: bool = False) -> None:
     now = datetime.now(timezone.utc)
 
     def ago(minutes: int) -> str:
@@ -86,6 +96,12 @@ def seed(home: Path) -> None:
         if iteration > 1:
             atomic_text(path / "handoff.md", HANDOFF)
 
+    if second:
+        task(0x11, "Fix broken links in the install guide", "ready", "develop", 1, "codex", "claude", 45)
+        task(0x12, "Add a dark theme to code samples", "done", "complete", 1, "claude", "codex", 1500,
+             tests=[{"command": ["npm", "test"], "status": "passed", "returncode": 0}],
+             review={"verdict": "APPROVED", "summary": "Readable in both themes.", "issues": []})
+        return
     passed = [{"command": ["python", "-m", "pytest", "-q"], "status": "passed", "returncode": 0},
               {"command": ["ruff", "check", "."], "status": "passed", "returncode": 0}]
     history = [
@@ -97,6 +113,7 @@ def seed(home: Path) -> None:
         {"at": ago(8), "event": "tests_completed", "iteration": 2, "statuses": ["passed", "passed"]},
         {"at": ago(3), "event": "review_started", "iteration": 2},
     ]
+    # Saved as running, with no process and no lock: the interface shows it as interrupted.
     task(1, "Handle JWT expiration", "running", "review", 2, "claude", "codex", 1, tests=passed, history=history,
          review={"verdict": "CHANGES_REQUESTED",
                  "summary": "The expiry check works, but clock skew is not handled and one error path leaks the token.",
@@ -124,8 +141,8 @@ def seed(home: Path) -> None:
 
 
 def runs_may_be_active(home: Path, runs: RunsAtExit) -> bool:
-    """True if a run is alive, was still starting when the dashboard closed, or holds a lock."""
-    return runs.any or any(home.glob("tasks/*/.run.lock"))
+    """True if a run is alive, was still starting when the interface closed, or holds a lock."""
+    return runs.any or any(home.glob("tasks/*/.run.lock")) or any(home.glob("projects/*/tasks/*/.run.lock"))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -138,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         home = setup(root)
     except BaseException:
-        shutil.rmtree(root, ignore_errors=True)  # nothing can be running before the dashboard starts
+        shutil.rmtree(root, ignore_errors=True)  # nothing can be running before the interface starts
         raise
     print(f"Demo state: {home}")
     # Files are deleted only once it is confirmed that no run is active or starting.
@@ -148,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         runs = serve(home, args.port, open_browser=not args.no_browser)
         if runs_may_be_active(home, runs):
-            print("A run started from the dashboard may still be active; its files are kept.")
+            print("A run started from the interface may still be active; its files are kept.")
         else:
             safe_to_delete = not args.keep
     except KeyboardInterrupt:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import copy
 import json
 import math
 import re
@@ -28,6 +29,11 @@ DEFAULT_CONFIG = {
 }
 VALID_AGENTS = {"claude", "codex"}
 VERDICTS = {"APPROVED", "CHANGES_REQUESTED", "BLOCKED"}
+WORKFLOW_LIMITS = {"max_iterations": (1, 50), "agent_timeout_seconds": (1, 86400),
+                   "test_timeout_seconds": (1, 86400), "claude_max_turns": (1, 86400)}
+# Settings one task may override; everything else always comes from the project configuration.
+TASK_OVERRIDES = {"workflow": ("max_iterations", "agent_timeout_seconds", "test_timeout_seconds"),
+                  "recovery": ("enabled",)}
 
 
 def initialize(home: Path, repo: Path) -> Path:
@@ -52,7 +58,15 @@ def config(home: Path) -> dict:
     path = home / "config.json"
     if not path.exists():
         raise RuntimeError(f"Run patchrondo init --repo PATH first (missing {path})")
-    obj = read_json(path)
+    return validate_config(read_json(path), home)
+
+
+def validate_config(obj, home: Path) -> dict:
+    """Check a project configuration and fill in defaults; raises ValueError when it is not usable.
+
+    Editors validate a candidate with this before writing it, so an invalid
+    configuration never reaches the disk.
+    """
     if not isinstance(obj, dict) or type(obj.get("version")) is not int or obj["version"] != 1:
         raise ValueError("Invalid configuration: version must be 1")
     w = obj.get("workflow", {})
@@ -72,6 +86,11 @@ def config(home: Path) -> dict:
     for field in ("agent_timeout_seconds", "test_timeout_seconds", "claude_max_turns"):
         if type(w.get(field)) is not int or not 1 <= w[field] <= 86400:
             raise ValueError(f"Invalid workflow.{field}")
+    # Optional default roles for new tasks of this project.
+    agents = obj.get("agents")
+    if agents is not None and (not isinstance(agents, dict) or set(agents) - {"developer", "reviewer"}
+                               or any(value not in VALID_AGENTS for value in agents.values())):
+        raise ValueError("agents may only set developer and reviewer to claude or codex")
     if t.get("enabled") and not t.get("trust_acknowledged"):
         raise ValueError("Enabling tests requires tests.trust_acknowledged=true (trusted repositories only)")
     if t.get("enabled"):
@@ -94,6 +113,47 @@ def config(home: Path) -> dict:
     return obj
 
 
+def validate_overrides(overrides) -> dict:
+    """Normalize the settings a task overrides: listed keys only, same ranges as the configuration."""
+    if overrides is None:
+        return {}
+    if not isinstance(overrides, dict) or set(overrides) - set(TASK_OVERRIDES):
+        raise ValueError(f"Task overrides may only contain: {', '.join(TASK_OVERRIDES)}")
+    clean: dict = {}
+    for section, fields in TASK_OVERRIDES.items():
+        values = overrides.get(section)
+        if values is None:
+            continue
+        if not isinstance(values, dict) or set(values) - set(fields):
+            raise ValueError(f"Task overrides for {section} may only set: {', '.join(fields)}")
+        for field, value in values.items():
+            if section == "recovery":
+                if type(value) is not bool:
+                    raise ValueError(f"recovery.{field} must be a JSON boolean (true/false)")
+            else:
+                low, high = WORKFLOW_LIMITS[field]
+                if type(value) is not int or not low <= value <= high:
+                    raise ValueError(f"workflow.{field} must be an integer between {low} and {high}")
+        if values:
+            clean[section] = dict(values)
+    return clean
+
+
+def effective_config(cfg: dict, state: dict) -> dict:
+    """The project configuration with the overrides saved in one task applied."""
+    overrides = validate_overrides(state.get("overrides"))
+    if not overrides:
+        return cfg
+    merged = copy.deepcopy(cfg)
+    for section, values in overrides.items():
+        merged[section].update(values)
+    return merged
+
+
+def task_config(home: Path, task_id: str) -> dict:
+    return effective_config(config(home), read_json(task_dir(home, task_id) / "state.json"))
+
+
 def task_dir(home: Path, task_id: str) -> Path:
     if not re.fullmatch(r"T-[a-f0-9]{12}", task_id):
         raise ValueError("Invalid task ID")
@@ -103,12 +163,13 @@ def task_dir(home: Path, task_id: str) -> Path:
     return path
 
 
-def create_task(home: Path, *, title: str, description: str,
-                acceptance: list[str], developer: str, reviewer: str) -> tuple[str, Path]:
+def create_task(home: Path, *, title: str, description: str, acceptance: list[str],
+                developer: str, reviewer: str, overrides: dict | None = None) -> tuple[str, Path]:
     if developer not in VALID_AGENTS or reviewer not in VALID_AGENTS:
         raise ValueError("Supported agents: claude, codex")
     if not title.strip() or not description.strip():
         raise ValueError("Title and description are required")
+    overrides = validate_overrides(overrides)
     cfg = config(home)
     repo = repo_root(Path(cfg["repository"]))
     task_id = "T-" + uuid.uuid4().hex[:12]
@@ -132,6 +193,8 @@ def create_task(home: Path, *, title: str, description: str,
              "status": "ready", "phase": "develop", "iteration": 1,
              "created_at": now(), "updated_at": now(), "history": [], "tests": [],
              "review": None, "last_error": None, "handoff": None, "recovery": None}
+    if overrides:
+        state["overrides"] = overrides  # absent otherwise, as in states written by earlier versions
     save_json(task_path / "state.json", state)
     return task_id, worktree
 
@@ -259,6 +322,8 @@ def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path) -> None:
     if not settings["enabled"]:
         results.append({"command": [], "status": "skipped", "message": "Tests are disabled: final approval requires enabled tests"})
     else:
+        _event(state, "tests_started", commands=len(settings["commands"]))
+        _save(path, state)
         for index, cmd in enumerate(settings["commands"], 1):
             try:
                 result = execute(cmd, workspace, timeout=cfg["workflow"]["test_timeout_seconds"],
@@ -345,9 +410,11 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
     """
     cfg = config(home)
     clock = clock or recovery.utcnow
-    auto = recovery.active(cfg, auto_resume)
     path = task_dir(home, task_id)
-    workspace = Path(read_json(path / "state.json")["worktree"])
+    saved = read_json(path / "state.json")
+    cfg = effective_config(cfg, saved)  # overrides are written once, when the task is created
+    auto = recovery.active(cfg, auto_resume)
+    workspace = Path(saved["worktree"])
     if not workspace.is_dir():
         raise RuntimeError(f"Missing worktree: {workspace}")
     if adapter is None:

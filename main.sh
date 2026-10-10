@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Start PatchRondo: opens the dashboard to create, run and inspect tasks.
+# Start PatchRondo: opens the local interface to set up projects and to create,
+# run and inspect tasks. On a new installation it opens the setup wizard.
 # Opening it makes no model calls; only Run/Resume uses your plan quota.
 #
 # Usage: ./main.sh [--demo] [--port PORT] [--no-browser]
-#   --demo   sample tasks in a throwaway directory, deleted on exit
+#   --demo   sample projects and tasks in a throwaway directory, deleted on exit
 # Run ./init.sh once before the first start.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -20,6 +21,4 @@ if [ "${1:-}" = "--demo" ]; then
   exec "$VENV_PYTHON" tools/demo_dashboard.py "$@"
 fi
 
-STATE_DIR="${PATCHRONDO_HOME:-$HOME/.patchrondo}"
-[ -f "$STATE_DIR/config.json" ] || fail "Configuration not found in $STATE_DIR: run ./init.sh first"
-exec "$VENV_PYTHON" -m patchrondo ui "$@"
+exec "$VENV_PYTHON" -m patchrondo "$@"

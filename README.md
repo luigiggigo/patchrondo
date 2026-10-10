@@ -29,30 +29,36 @@
   </a>
 </p>
 
-**Published alpha/MVP:** 0.1.0. Source available on
-[GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026.
+**Version 0.2.0.** The source has been public on
+[GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026
+(0.1.0). The repository has no version tags or GitHub Releases; the
+[changelog](CHANGELOG.md) says what each version contains and the
+[technical review](docs/REVIEW.md) what was checked, where and when.
 
 A **local**, **resumable** Python orchestrator that delegates development to
 **Claude Code** or **OpenAI Codex CLI** and asks the other agent to review the
-result until tests and review pass or a configured limit is reached.
+result until tests and review pass or a configured limit is reached. You use
+it from a **local interface in your browser**: add your projects, create a
+task, press Run and follow the loop live. Every command-line command of 0.1 is
+still there.
 
 It uses the **official CLIs** and the logins already configured on your machine.
 It does not extract OAuth tokens, use unofficial endpoints, or promise unlimited
 usage. Current plan and account documentation is linked below.
 
-**Status: experimental alpha.** No Python runtime dependencies. Tests use
-simulated providers. Real-provider checks passed on WSL2, including a complete
-workflow through passing fixture tests and approval in both role pairings (see
-[Project tests](#project-tests-no-provider-quota-usage)).
+**Status: experimental alpha.** No Python runtime dependencies, and no build
+step or external asset for the interface. Tests use simulated providers.
+Real-provider checks passed on WSL2 with 0.1.0, including a complete workflow
+through passing fixture tests and approval in both role pairings (see
+[Project tests](#project-tests-no-provider-quota-usage)); they have not been
+repeated for 0.2.0.
 This is an independent project, not affiliated with or sponsored by Anthropic or OpenAI.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidance and
 [SECURITY.md](SECURITY.md) for security limitations. The
-[technical review](docs/REVIEW.md) records the initial publication checks and
-subsequent local validation. The [publishing guide](docs/PUBLISHING.md) covers
-future updates, and [CHANGELOG.md](CHANGELOG.md) records the version history.
-The published source includes the local dashboard and startup scripts described
-below.
+[architecture notes](docs/ARCHITECTURE.md) describe the modules and the
+[design notes](docs/DESIGN.md) the interface. The
+[publishing guide](docs/PUBLISHING.md) covers future updates.
 
 ## Requirements
 
@@ -69,30 +75,123 @@ below.
 ```bash
 git clone https://github.com/luigiggigo/patchrondo.git
 cd patchrondo
-./init.sh /path/to/your/repository   # venv, install, init, doctor
-./main.sh                            # open the dashboard
+./init.sh        # virtual environment, install, CLI check (no model calls)
+./main.sh        # opens PatchRondo in your browser
 ```
 
-Without a path, `init.sh` uses the Git repository containing the directory you
-run it from, so `cd /path/to/your/repository && /path/to/patchrondo/init.sh`
-works too; relative paths are resolved from that directory. It refuses to pick
-PatchRondo's own checkout implicitly; pass that path explicitly if intended.
+Or, with the package installed in an environment of your own:
 
-`init.sh` is safe to run again: it keeps an existing configuration. Both scripts
-run on Linux, macOS, WSL2 and Git Bash. Setup and opening the dashboard make no
-model calls. Tests remain disabled until you authorize them (step 2 below).
+```bash
+python -m pip install -e .
+patchrondo       # starts the local server and opens the browser
+```
 
-To try the dashboard with sample data after setup:
+On a new installation the first start shows a short setup: choose a local Git
+repository, check that Claude Code and Codex are installed and logged in,
+choose the default developer and reviewer, decide whether your project's tests
+may run, and read how your plan's limits are used. Nothing is written until
+the last step and no model is called. After that, create a task and press
+**Run**: Run and Resume invoke the real CLIs and consume your account quota,
+and always ask for confirmation first.
+
+`init.sh` is safe to run again. Given a path (`./init.sh /path/to/repository`),
+or run from inside a Git repository other than PatchRondo's own checkout, it
+also registers that repository. Both scripts run on Linux, macOS, WSL2 and Git
+Bash.
+
+To look around with sample data first:
 
 ```bash
 ./main.sh --demo
 ```
 
-Create a task in the dashboard, enable trusted project tests through **Edit
-tests**, then use **Run** when ready. Run/Resume invokes the real Claude/Codex
-CLIs and consumes your account quota. The manual CLI steps follow.
+## The interface
 
-## Manual installation
+```bash
+patchrondo                         # http://127.0.0.1:8765/#token=… opens in your browser
+patchrondo --port 0 --no-browser   # pick a free port and only print the link
+```
+
+The link contains a private session token; keep it to yourself. If port 8765
+is in use, a free port is chosen. The page keeps the token for that browser
+tab and removes it from the address bar. Closing the terminal command stops
+the interface, not the runs it started.
+
+| Section | What you do there |
+|---|---|
+| **Home** | See the state of Claude Code and Codex, the selected project, tasks that are active, need attention, are ready or done, and recent activity. Start a task or add a project. |
+| **Projects** | Add a local Git repository (with a folder picker and a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees. |
+| **Tasks** | All tasks of the selected project, or of every project, with filters and search. |
+| **Task** | Header with status, roles and iteration; the workflow *Develop → Test → Review → Repeat / Complete*; then Overview, Activity (a timeline of what happened), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
+| **New task** | Project, title, description, acceptance criteria, developer and reviewer; under *Advanced*, limits for that task only. *Create and run* asks for confirmation before any agent is called. |
+| **Settings** | Global preferences and, per project: default roles, workflow limits, tests, the Recovery Manager, local retrieval and the raw configuration. Every setting has a one-line explanation. |
+
+Things worth knowing:
+
+- **What you see is checked, not assumed.** A task is shown as *Running* only
+  when its lock is held by a process the interface can verify (process ID and
+  start time). A saved status of `running` with no process is shown as
+  *Interrupted*; a lock whose process is gone as *Stopped unexpectedly*; and
+  when the computer cannot verify a process the label says *unverified*.
+- **Live.** The page loads one snapshot and then receives numbered changes. If
+  the connection drops it says so, keeps showing the last confirmed state with
+  its time, reconnects by itself and loads a fresh snapshot.
+- **Tests stay off until you say so.** In *Settings → Tests* you enter one
+  command per line and tick *I trust this repository*; the tick is asked again
+  whenever the commands change. On Windows, use double quotes around arguments
+  containing spaces; single quotes are literal characters. On Linux and macOS,
+  commands use POSIX quoting rules. Commands are saved as argument arrays and
+  executed without a shell.
+- **Stopping.** *Stop* interrupts a run, or a process waiting for a retry, like
+  Ctrl+C in its terminal. It is available on Linux, macOS and WSL2. On native
+  Windows it is shown as unavailable: use Ctrl+C in the terminal of a run
+  started from the command line, or let the run reach its next pause.
+- **After a crash.** If a run was killed and left its lock, the task page
+  offers *Release lock and resume* once the lock's process is verified gone
+  (Linux, macOS, WSL2). The engine repeats the check for every recorded agent
+  and test process and refuses if one is alive. On native Windows the lock is
+  removed by hand, as before; the page shows its path.
+- **Keyboard.** Ctrl/Cmd+K or `/` opens search and commands, `N` a new task,
+  `G` then `H`/`T`/`P`/`S` goes to Home, Tasks, Projects, Settings.
+
+The server uses only the standard library, listens on `127.0.0.1` only, rejects
+foreign `Host` and `Origin` headers, accepts writes only as JSON, requires the
+session token on every API call and serves the page with a strict
+Content-Security-Policy and no external assets. See [SECURITY.md](SECURITY.md).
+
+### Several projects, and homes created by 0.1
+
+Private state lives in `~/.patchrondo/`; set `PATCHRONDO_HOME` or pass `--home`
+to choose another location. A home can hold any number of projects, each with
+its own configuration, tasks, worktrees and retrieval index.
+
+A home created by 0.1 keeps working without any migration: its configuration
+at the root of the home is listed as a project where it is, marked *0.1 home*,
+with all its tasks, logs, handoffs and reports. Another 0.1 home (a different
+`--home`) can be added with *Projects → ⋯ → Import a 0.1 state directory*; it
+is used in place too. Nothing is moved or rewritten, because Git worktrees
+record absolute paths.
+
+### Try it with sample data
+
+`./main.sh --demo` (or `python tools/demo_dashboard.py` from a source checkout)
+creates two throwaway repositories with sample tasks and opens the interface
+with tests disabled. The samples are saved states with no process behind them,
+and the interface presents them that way. The demo deletes its files only
+after a normal exit confirms there are no active runs, pending starts or run
+locks. It keeps them after an uncertain or interrupted shutdown, or with
+`--keep`, and prints their location. A second Ctrl+C during shutdown keeps the
+files and exits with code 130.
+
+Stopping the interface refuses new runs and waits up to 30 seconds for run
+starts already in progress. Active runs continue in their separate processes;
+their output is saved as `ui-run.log` in the task directory. Idle connections
+do not delay shutdown.
+
+## Command line
+
+Everything can also be done from a terminal, and scripts written for 0.1 keep
+working.
 
 ```bash
 git clone https://github.com/luigiggigo/patchrondo.git
@@ -107,33 +206,36 @@ patchrondo doctor
 On Windows with WSL2, run the Linux commands in your WSL shell. Without installing
 the package, run `PYTHONPATH=src python -m patchrondo --help` from the project root.
 
-The command and Python import package are both `patchrondo`. Private state lives
-in `~/.patchrondo/`; set `PATCHRONDO_HOME` or pass `--home` to choose another location.
+The command and Python import package are both `patchrondo`.
 Task branches use the `patchrondo/<task-id>` prefix.
 
-### 1. Configure a repository
+### 1. Register a repository
 
 ```bash
 patchrondo init --repo /absolute/path/to/your/repository
 ```
 
-This creates private task and worktree storage in `~/.patchrondo/`, **outside the
-repository**. To use another project, run
-`patchrondo --home /path/to/other-state init --repo /other/repository` and pass the
-same `--home` to subsequent commands. You can also set `PATCHRONDO_HOME`.
+On a new home this creates the configuration at the root of the home, exactly
+as 0.1 did. On a home that already has a project registry (because you used the
+interface) it adds the repository as another project. Private task and
+worktree storage is always **outside the repository**; a `--home` inside the
+repository is rejected to keep private state and logs out of project files.
 
-A `--home` inside the repository is rejected to keep private state and logs out
-of project files.
+```bash
+patchrondo projects                       # list projects: ID, name, repository, state directory
+patchrondo --project shop-api list        # choose a project by ID or name
+```
+
+When a home holds several projects, commands use the one selected in the
+interface unless `--project` is given. Commands that take a task ID find the
+project that holds it by themselves.
 
 ### 2. Explicitly authorize tests
 
-In the dashboard, choose **Edit tests**, enable **Run project tests**, enter your
-commands and tick the explicit trust checkbox before saving.
-
-For manual configuration, edit `~/.patchrondo/config.json` (or your
-`PATCHRONDO_HOME/config.json`). The `tests`
-section must contain commands **as argument arrays** (no shell), chosen by you
-for your project:
+Use *Settings → Tests* in the interface, or edit the project's `config.json`
+(shown by `patchrondo projects`; `~/.patchrondo/config.json` for a 0.1 home).
+The `tests` section must contain commands **as argument arrays** (no shell),
+chosen by you for your project:
 
 ```json
 {
@@ -155,7 +257,9 @@ and review once, but **pauses** before declaring the task `done`.
 A complete reference configuration is in
 [`examples/config.example.json`](examples/config.example.json). It also includes
 `workflow.max_iterations`, timeouts, the maximum number of Claude turns and the
-disabled-by-default `recovery` section.
+disabled-by-default `recovery` section. An optional `agents` section
+(`{"developer": "claude", "reviewer": "codex"}`) sets the roles pre-selected
+for new tasks of the project.
 
 ### 3. Create tasks with configurable roles
 
@@ -207,52 +311,6 @@ Phases: `develop`, `test`, `review`, `complete`.
 human intervention and a new task, or a carefully controlled manual state edit,
 are required.
 
-### 5. Dashboard (optional)
-
-```bash
-patchrondo ui              # opens http://127.0.0.1:8765/#token=… in your browser
-patchrondo ui --port 0 --no-browser
-```
-
-Run `patchrondo init` first: `ui` refuses to start without a valid configuration.
-To try it without any setup, run `python tools/demo_dashboard.py` from a source
-checkout: it creates a throwaway repository and sample tasks, then opens the
-dashboard with tests disabled. Sample tasks illustrate the interface; create a
-new task to try a real run. The demo deletes its files only after a normal exit
-confirms there are no active runs, pending starts or run locks. It keeps them
-after an uncertain or interrupted shutdown, or with `--keep`, and prints their
-location. A second Ctrl+C during shutdown keeps the files and exits with code 130.
-
-The dark-themed dashboard shows tasks with live status, the phase pipeline,
-review verdict and issues, test results, the event timeline and the task,
-handoff, feedback, report and run-log documents, refreshing every few seconds.
-From it you can:
-
-- **create tasks** (`+` or `N`): same as `patchrondo new`, no model calls;
-- **run or resume** a task: after a confirmation, starts `patchrondo run` as a
-  separate process. This **calls the real CLIs and uses your plan quota**. The
-  run keeps going if the dashboard stops; its output is saved as `ui-run.log` in
-  the task directory. A task stuck in `running` after a crash still needs
-  `patchrondo resume <task-id> --unlock` from the terminal. If
-  `recovery.enabled` is `true`, that process also waits and retries after a
-  usage limit; the task page shows the saved plan, its source, the retries used
-  and why recovery stopped, but not whether a process is still waiting;
-- **edit project tests** (*Edit tests*): enabling them requires ticking the
-  explicit trust checkbox, exactly like `trust_acknowledged` in `config.json`.
-  Enter one command per line. On Windows, use double quotes around arguments
-  containing spaces; single quotes are literal characters. On Linux and macOS,
-  commands use POSIX quoting rules. Commands are saved as argument arrays and
-  executed without a shell.
-
-Stopping the dashboard refuses new runs and waits up to 30 seconds for run
-starts already in progress. Active runs continue in their separate processes;
-a start still pending when that wait expires also causes the demo to keep its
-files. Idle HTTP connections do not delay shutdown.
-
-The server uses only the standard library, listens on `127.0.0.1` only, rejects
-foreign `Host` and `Origin` headers, accepts writes only as JSON and requires the
-per-session token printed in the URL; keep that URL private.
-
 ## Loop behavior
 
 ```text
@@ -301,7 +359,10 @@ patchrondo resume T-a1b2c3d4e5f6 --no-auto-resume   # one run now; a saved retry
 ```
 
 Recovery is active when `--auto-resume` is given or `recovery.enabled` is `true`
-in `config.json`. `--no-auto-resume` turns it off for one command.
+in the project's `config.json`. `--no-auto-resume` turns it off for one
+command. In the interface the same settings are in *Settings → Recovery*, the
+Run dialog has a switch for that run, and a task can be created with its own
+default.
 
 ```json
 "recovery": {
@@ -375,8 +436,29 @@ keeps the plan.
 
 `patchrondo status` shows the plan in the `recovery` section of `state.json`
 (`resume_at`, `consecutive_failures`, `schedule_source`, `provider`, and
-`stop_reason` when recovery has ended). The report and the dashboard show the
-same information. All times are UTC.
+`stop_reason` when recovery has ended). The report shows the same information.
+All times are UTC.
+
+### What the interface shows
+
+The task page shows the failure kind, the provider, the reset time when one was
+stated, the next attempt, retries used and allowed, where the plan came from
+(provider reset or backoff) and why recovery stopped. It keeps five situations
+apart, from the real state of the processes and not from the saved status:
+
+| Shown as | Meaning |
+|---|---|
+| **Running** | A run holds the task lock and its process is verified. |
+| **Waiting to retry** | A verified `run`/`resume` process with automatic resume is alive and waiting for the saved time. |
+| **Retry planned · nothing waiting** | The plan is saved but no process is waiting. Nothing will retry until you resume. |
+| **Recovery ended** | Automatic recovery stopped, with the reason. |
+| **Paused** / **Blocked** | A person has to act: a failure that is never retried automatically, or recovery was off. |
+
+A planned retry is not a promise: it happens only while the process that is
+waiting for it stays alive. *Resume* lets you choose for that run whether to
+use automatic recovery (the run then waits for the saved time before calling
+the provider) or to run once now, which cancels the plan. A second automatic
+run is refused while one is already waiting.
 
 ### Limits of this version
 
@@ -396,7 +478,8 @@ same information. All times are UTC.
   retries within about 14 minutes, after which recovery stops; a limit lasting
   several hours then still needs a manual resume or larger backoff settings.
 - **The waiting process must stay alive.** Automatic resume happens only while
-  it runs; the dashboard cannot tell whether one is still waiting.
+  it runs. The interface recognizes a waiting process started by 0.2 from the
+  marker it writes; a process it cannot verify is shown as *unverified*.
 - **Locks are never recovered automatically.** If the task lock exists when a
   retry is due, recovery stops with an error and leaves the lock and the plan
   untouched. `--unlock` applies only to the run you start by hand, never to an
@@ -413,35 +496,46 @@ same information. All times are UTC.
 ## State layout
 
 ```text
-~/.patchrondo/
-  config.json
-  empty-hooks/
-  index/
-    rag.sqlite3   # local retrieval index (rebuildable; safe to delete)
-  tasks/
-    T-.../
-      task.md
-      state.json
-      handoff.md
-      feedback.md
-      report.md
-      runs/
-        iteration-001/
-          developer.prompt.md
-          developer.stdout.log
-          developer.stderr.log
-          developer.reply.md
-          reviewer.prompt.md
-          reviewer.last-message.txt  # Codex
-          review.schema.json         # Codex
-          reviewer.reply.md
-          test-01.log
-  worktrees/
-    T-.../   # isolated Git worktree for each task
+~/.patchrondo/                  # the home (--home or PATCHRONDO_HOME)
+  settings.json                 # global preferences: default roles, theme, selected project
+  projects.json                 # project registry: ID, display name, state directory
+  projects/
+    P-1a2b3c4d/                 # state directory of one project
+      config.json               # repository, workflow, tests, rag, recovery, optional agents
+      empty-hooks/
+      index/
+        rag.sqlite3             # local retrieval index (rebuildable; safe to delete)
+        last-index.json         # result of the last index update requested in the interface
+      tasks/
+        T-.../
+          task.md
+          state.json
+          handoff.md
+          feedback.md
+          report.md
+          ui-run.log            # output of runs started from the interface
+          attached/<pid>.json   # present while a run or resume process is alive
+          runs/
+            iteration-001/
+              developer.prompt.md
+              developer.stdout.log
+              developer.stderr.log
+              developer.reply.md
+              reviewer.prompt.md
+              reviewer.last-message.txt  # Codex
+              review.schema.json         # Codex
+              reviewer.reply.md
+              test-01.log
+      worktrees/
+        T-.../                  # isolated Git worktree for each task
 ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for state transitions and the
-retrieval layer.
+A home created by 0.1 has `config.json`, `tasks/`, `worktrees/` and `index/`
+directly at its root. That layout is one project and stays where it is; the
+registry then refers to it as `"home": "."`.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for state transitions, the
+registry and the retrieval layer.
 
 Task memory consists of `task.md`, `state.json`, `handoff.md`, `feedback.md` and
 previous runs. Retrieved context supplements it but never replaces it.
@@ -473,7 +567,7 @@ the changed file names. No model, network service or extra dependency is used.
   `state.json` and test results remain authoritative. A retrieval failure is
   recorded as a `retrieval_failed` event and the prompt is sent without context.
 
-Configure it in the `rag` section of `config.json`:
+Configure it in *Settings → RAG* or in the `rag` section of the project's `config.json`:
 
 ```json
 "rag": {"enabled": true, "max_chunks": 8, "max_chars": 12000}
@@ -489,8 +583,10 @@ patchrondo search "jwt expiration" -k 5
 patchrondo search "jwt expiration" --task T-a1b2c3d4e5f6   # search a task worktree
 ```
 
-The index lives in `~/.patchrondo/index/` and can be deleted at any time; it is
-rebuilt on the next run. Index files of removed worktrees are cleaned up automatically.
+The index lives in the project's state directory (`index/`) and can be deleted
+at any time; it is rebuilt on the next run. Index files of removed worktrees
+are cleaned up automatically. *Settings → RAG → Update index now* does what
+`patchrondo index` does and shows the result.
 
 ## Security and practical limitations
 
@@ -504,13 +600,14 @@ rebuilt on the next run. Index files of removed worktrees are cleaned up automat
 8. **Fallible LLM review:** the JSON schema checks structure, not review accuracy. Require human review before integrating changes into main or production.
 9. **Sensitive logs:** logs and handoffs may contain confidential project data. They are saved locally with private permissions; protect backups and disk storage, and do not share `~/.patchrondo`.
 10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group; native Windows terminates only the direct child, so WSL2 remains recommended. POSIX private permissions are not translated into Windows ACLs by the program.
+11. **The interface is local and single-user.** It is bound to the loopback interface and protected by a session token, but anyone who can read that token (your terminal output, your browser tab) can create tasks, change settings and start runs with your accounts. A repository does not become trusted by being added: its tests stay disabled until you enable them for it.
 
 ### Final integration
 
 The result stays in the Git branch and worktree. Example, **after human review**:
 
 ```bash
-cd ~/.patchrondo/worktrees/T-a1b2c3d4e5f6
+cd ~/.patchrondo/projects/P-1a2b3c4d/worktrees/T-a1b2c3d4e5f6   # the task page shows and copies this path
 git status --short
 git diff
 # Review any untracked files, then:
@@ -543,16 +640,45 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 10, 2026 ran **156 tests**: on Windows
-(Python 3.13 and Python 3.11) **152 passed and 4 POSIX-only tests were
-skipped**; on WSL2 (Python 3.12) all 156 passed. This is a local result for the development
-source after 0.1.0, including automatic quota recovery; the
-[technical review](docs/REVIEW.md) records which commits also passed the CI
-workflow. Tests use temporary Git
+The latest local validation on October 10, 2026 ran **248 tests** on the 0.2.0
+working tree: on native Windows (Python 3.13 and Python 3.11) **243 passed and
+5 were skipped** (four POSIX-only tests and the POSIX interrupt test of the
+interface); on WSL2 (Python 3.12) **247 passed and 1 was skipped** (a test of
+the native Windows refusal). This is a local result: 0.2.0 had not been pushed,
+so no CI run covers it; the [technical review](docs/REVIEW.md) records which
+earlier commits passed the CI workflow. Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Full package checks are documented in
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Browser checks of the interface (no provider quota usage)
+
+```bash
+python tools/ui_e2e.py --screenshots .test-tmp/shots --output .test-tmp/ui-e2e.json
+```
+
+The check starts the real server and drives a headless Chrome or Edge on your
+computer through the DevTools protocol, with the Python standard library only.
+Runs it starts are real `patchrondo run` processes whose provider commands
+reach a synthetic executable only; the runner refuses to start while a real
+`claude` or `codex` is reachable. Eight scenarios compare the page with the
+files on disk: first start and setup wizard; a run followed live with
+duplicate starts refused; the interface closed and reopened during a run;
+reconnection after the server restarts; the recovery states; two projects with
+separate settings and tasks; a 0.1 home opened in place; and layout from 1440
+to 480 pixels, keyboard use, accessible names, contrast, reduced motion, a
+6 MB log and a list of more than 60 tasks. Select scenarios with repeatable
+`--only` options.
+
+On October 10, 2026, on native Windows 11 with Chrome 154 and Python 3.13, all
+163 checks passed. Measured there, on a local server: a state change on disk
+reached the page in about 0.36 to 0.46 seconds; a filter click was painted in
+about 15 ms; a list of 68 tasks appeared about 50 ms after navigation; the end
+of a 6 MB log was shown in about 0.15 seconds. These are measurements of one
+machine, not guarantees. The check needs a local Chromium-based browser and
+reports that it was skipped when there is none; it has not been run on Linux,
+macOS, Firefox or Safari, and it is not part of CI.
 
 ### Local reliability checks (no provider quota usage)
 
@@ -594,8 +720,10 @@ python tools/recovery_checks.py real-clock    # POSIX; use WSL2 on Windows
 ```
 
 `protections` removes one safeguard at a time (for example the due check under
-the lock, the retry limit or the explicit-offset requirement) from a temporary
-copy of the sources and expects the recovery and adapter tests to fail. It
+the lock, the retry limit, the explicit-offset requirement, the refusal of a
+second automatic run while a process waits, or the explicit consent for tests)
+from a temporary copy of the sources and expects the tests named for it to
+fail. It
 exits with status 1 if a removal goes unnoticed. `real-clock` lets a runner
 really wait for a 12-second reset stated by a synthetic CLI, interrupts it with
 Ctrl+C, restarts it and checks that the plan was kept and that the only further
@@ -640,10 +768,13 @@ resumption after an interruption have not been checked with real accounts. Detai
 - Optional embedding-based reranking and decision-log indexing, if lexical retrieval proves insufficient.
 - Dedicated OS sandbox for tests (Docker/VM with minimal privileges).
 - Record real-provider check results per platform and CLI version; extend the check to resumption after an interruption.
-- Confirm quota classification and reset parsing against usage-limit failures observed with real CLI versions, including the reset format of Claude Code; consider named time zones and a way to keep a retry plan attended without a foreground process.
-- Process supervision on native Windows: a liveness check for recorded PIDs and tracking of the whole process tree of an agent, which stale-lock recovery needs before it can be anything but manual there.
+- Confirm quota classification and reset parsing against usage-limit failures observed with real CLI versions, including the reset format of Claude Code; consider named time zones and an optional supervisor service that keeps a retry plan attended without a foreground process (not part of 0.2: a saved plan still needs a live `run` or `resume`).
+- Process supervision on native Windows: tracking of the whole process tree of an agent, which stale-lock recovery and Stop need before they can be offered there. (0.2 verifies single processes on Windows for display only.)
 - Approval requests for risky tools and notifications.
-- Stall detection based on Git/test changes and support for multiple projects in one state directory.
+- Stall detection based on Git/test changes.
+- Live output of an agent while it works (the CLIs' output is currently saved when a step ends), and a diff view per iteration.
+- Dedicated illustrations of Rondo for each state (see [docs/DESIGN.md](docs/DESIGN.md)).
+- Browser checks of the interface on Linux and macOS, and in Firefox and Safari.
 
 ## Official documentation
 

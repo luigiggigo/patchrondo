@@ -1,13 +1,15 @@
 # Technical review and validation record
 
 Initial review: October 8, 2026. Local follow-up: October 9, 2026. Real-provider
-checks and the automatic quota recovery change: October 10, 2026.
+checks and the automatic quota recovery change: October 10, 2026. PatchRondo
+0.2 (interface, several projects, process truth): October 10, 2026, as a local
+working tree.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
-`AGENTS.md` was added during publication preparation. The source is now public;
-the dashboard and startup-script follow-up covers the current, unreleased
-working tree.
+`AGENTS.md` was added during publication preparation. The source is now public.
+Each section below says which code it covers: a published commit or a local
+working tree at its date.
 
 ## Assessment
 
@@ -579,6 +581,168 @@ Not verified:
 - Two supervisors as separate operating-system processes; concurrency was
   tested with threads sharing the same lock file and state.
 
+## PatchRondo 0.2: interface, projects and process truth (October 10, 2026)
+
+Scope: the 0.2.0 working tree on one development machine. At the time of
+writing nothing of it was committed or pushed, so the GitHub repository and
+its CI runs do not contain or cover it. No provider call was made and no plan
+quota was used: every run in these checks used scripted or synthetic
+providers. CLI status commands (`--version`, login status) were replaced by
+fixed answers in the tests and, in the installed-package check, the provider
+CLIs were removed from `PATH`.
+
+### What changed
+
+`patchrondo` without a command opens a local interface that works on a new
+installation; a home holds several projects; settings are edited in the
+interface; and the interface reports the real state of processes. The engine
+(state machine, adapters, recovery policy, locks) is unchanged except for
+per-task overrides, one new event and a start token in the lock file. The
+changelog lists the changes; `docs/ARCHITECTURE.md` sections 7, 9 and 10 and
+`docs/DESIGN.md` describe them.
+
+Decisions that shaped the result:
+
+- **A project is what the home was.** The engine keeps working on one
+  directory; the registry maps a project to its directory. 0.1 homes are used
+  in place because Git worktrees record absolute paths. Nothing is migrated,
+  so nothing can be lost by a migration, and deleting `projects.json` and
+  `settings.json` restores a 0.1 home exactly.
+- **No framework and no build step.** About twenty ES modules and three style
+  sheets served from the package. A compiled front end would have added a
+  toolchain and generated files to review, and made a strict nonce-based
+  policy harder to keep, for an interface of this size.
+- **Status is not a process.** The page shows what the backend verified by
+  process ID and start time, and "unverified" otherwise. A retry plan is shown
+  as attended only while a verified process with automatic resume exists.
+- **No daemon.** Recovery still needs a live `run` or `resume`. The interface
+  starts those processes and reads what they persist; it has no retry logic.
+- **No executable path setting.** The CLIs are still found on `PATH`; letting
+  the browser name an executable would let it run one.
+
+### Defects found by these checks and fixed
+
+| Found by | Defect | Fix |
+|---|---|---|
+| Browser check, recovery scenario | The task page kept an old detail when two saves fell in the same second: its panels were refreshed by a signature built on `updated_at`, which has one-second resolution, so a paused task could keep showing "Running" below a correct header. | Panels are refreshed whenever a new detail is fetched. |
+| Suite on WSL2 (`/mnt/g`) | The server cached a state file by time and size. Two saves within one timestamp tick with the same size were not seen until a later save. | The inode is part of the signature, and a file modified in the last two seconds is always read again. Regression test with a forced identical signature. |
+| Suite on Python 3.11 | `tools/ui_e2e.py` had a backslash inside an f-string expression: a syntax error before Python 3.12. | Moved out of the expression; every source, test and tool parses with the 3.11 grammar. |
+| Browser check | Project settings always opened as *Global*: an inner function named `route` shadowed the route argument. | Renamed. |
+| Browser check | *Save changes* became active again after a successful save. | The busy state no longer restores the button's previous disabled state. |
+| Browser check | Selecting the first tab raised an exception when the route had no tab part. | The route builder accepts a missing part. |
+| Browser check | *Copy* in the log viewer left out text scrolled out of view. | Copies the text content of every loaded part. |
+| Installed-package check | With output redirected, the link was not printed until exit (block buffering), so a script or a pipe never saw it. | The start messages are flushed; regression test with a buffered stream, which fails without the flush. |
+| Unit test | An unexpected exception in a request handler closed the connection without an answer. | Answered with status 500 in the common error shape; the exception type goes to the terminal. |
+| Review of the server on Windows | A second `patchrondo` could bind a port already in use, because address reuse is enabled by default and means port sharing on Windows. | Address reuse is disabled on Windows; a taken port falls back to a free one. |
+
+### Checks, all rerun on the final code on October 10, 2026
+
+- **Suite: 248 tests.** Native Windows 11 (10.0.26200) with Python 3.13.3: 243
+  passed, 5 skipped, exit status 0. Native Windows with Python 3.11.3: 243
+  passed, 5 skipped, exit status 0. WSL2 (Linux
+  6.6.87.2-microsoft-standard-WSL2, repository on `/mnt/g`) with Python 3.12.3:
+  247 passed, 1 skipped, exit status 0. The skips are the four POSIX-only
+  tests that existed before plus the POSIX interrupt test of the interface on
+  Windows, and the native Windows refusal test on WSL2.
+- **Browser check** (`python tools/ui_e2e.py`), native Windows, Chrome
+  154.0.8037.99 headless, Python 3.13.3: 163 checks passed, 0 failed, exit
+  status 0, in eight scenarios. Timings of that run: final state on disk to
+  page 0.46 s; a later change on disk to page 0.36 s; navigation to a list of
+  68 tasks 48 ms; filter click to paint 15 ms; end of a 6 MB log shown in
+  0.15 s; longest frame while loading earlier log output 20 ms. The same
+  scenarios passed in an earlier complete run on the same day with 0.36 s for
+  the first figure.
+- **Protections** (`python tools/recovery_checks.py protections`), native
+  Windows, Python 3.13.3: 52 of 52 removed safeguards detected, exit
+  status 0. Thirteen entries are new: what the interface may claim about a
+  process, what it may start, explicit consent for tests, validation before a
+  configuration is written, and task overrides.
+- **Real clock** (`python3 tools/recovery_checks.py real-clock`), WSL2: 10 of
+  10 checks passed, the retry 0.05 s after the planned time, exit status 0.
+  Skipped on native Windows.
+- **Reliability driver** (`python tools/reliability_e2e.py --repeat 3`): WSL2
+  42 passed, 0 failed, 0 skipped; native Windows 30 passed, 0 failed, 12
+  skipped; exit status 0 on both.
+- **Packages.** `python -m build` into a directory outside the repository
+  produced `patchrondo-0.2.0.tar.gz` and `patchrondo-0.2.0-py3-none-any.whl`;
+  `twine check` passed both. The wheel contains the 24 files of the interface
+  (`index.html`, 3 style sheets, 18 modules, 2 images) and no `AGENTS.md`.
+- **Installed package.** The wheel was installed with `--no-index` in a new
+  Python 3.13 environment. `patchrondo --version` printed 0.2.0; `patchrondo
+  --home <new directory> --port 0 --no-browser` printed its link at once,
+  served the page with a nonce policy, the scripts, style sheets and images,
+  answered the snapshot with the token and 401 without it, reported both CLIs
+  as not installed (none was reachable), and wrote nothing to the home.
+- **Publication scanner:** exit status **1**, 91 files checked, four findings:
+  `debug.log` (an ignored local log), `docs/assets/rondo-mascot-v1.png`,
+  `src/patchrondo/static/rondo.webp` and `rondo-head.webp` (binary assets that
+  need manual review). The same four as before this change. Not a clean scan.
+
+One run of the suite on native Windows with Python 3.13 during development
+ended with one error whose output was not kept. It was not seen again in five
+later complete runs with that interpreter, six runs of the new test modules
+alone, or the runs on Python 3.11 and WSL2. Its cause is not known.
+
+### The stated acceptance criteria
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| `patchrondo` opens the interface with no manual initialization | Met | CLI tests; installed-package check; browser scenario *wizard* |
+| A new user can configure everything from the interface | Met for project, roles, workflow, tests, recovery and retrieval. The path of a CLI executable is shown, not editable, by design | Browser scenarios *wizard*, *projects*, *recovery*; settings tests |
+| Several projects can be registered and used | Met | Registry tests; browser scenario *projects* |
+| Global and per-project settings work | Met | Settings tests; browser scenarios |
+| Tasks can be created, started, monitored and resumed | Met with scripted providers | Browser scenarios *run*, *restart*, *recovery* |
+| Information updates without reloading the page | Met; measured 0.36 to 0.46 s | Event stream test; browser scenarios *run*, *reconnect* |
+| Process state is told apart from persisted state | Met on Linux (WSL2) and Windows; `ps`-based path for macOS not run | `test_runinfo`; restart and stale-lock tests with real child processes |
+| Recovery Manager and retrieval are configurable from the interface | Met | Settings tests; browser scenario *recovery* |
+| Rondo is in branding, onboarding and empty states | Met with the two official images | Browser screenshots; `docs/DESIGN.md` |
+| Coherent, careful, responsive design | Layout checked from 1440 to 480 px in Chrome; visual quality is a judgment, reviewed from screenshots by the author of the change only | Browser scenario *quality* |
+| Interactions are fluid and non-blocking | Measured in Chrome on one machine | Timings above |
+| Earlier configurations and tasks stay usable | Met | 0.1 home tests with file hashes; browser scenario *legacy* |
+| Existing security constraints are preserved | Met for the constraints listed in `SECURITY.md` | Protection tests for every route; static checks of the page |
+| Automated tests pass | Met locally on three interpreters and two platforms | Above |
+| Documentation reflects the new usage | Updated: README, architecture, design, security, contributing, publishing, changelog | This change |
+
+### Not verified
+
+- **Real providers.** Nothing in 0.2 was run with authenticated CLIs. Run and
+  Resume from the interface start the same `patchrondo run` that the 0.1
+  real-provider checks exercised, but that path was not repeated, and the
+  provider status shown by the interface was only tested with fixed answers.
+- **Browsers and platforms.** Chrome on native Windows only. Not Firefox,
+  Safari or Edge; not Linux or macOS desktops. The server ran under WSL2 only
+  in the unit tests; no browser was pointed at it there. The `ps`-based
+  process check for systems without `/proc` (macOS, BSD) was not run at all.
+  CI has not run on this code.
+- **POSIX-only actions in a browser.** *Stop* and *Release lock and resume*
+  were tested through the API under WSL2 (a real interrupt of a synthetic
+  child; the `--unlock` flag reaching a mocked start), not by clicking them.
+  *Release lock and resume* with the real engine was not exercised from the
+  interface; the engine's own unlock rule is covered by its existing tests and
+  the `crash` scenario of the reliability driver.
+- **The polling fallback** of the page (used when the event stream cannot be
+  kept open) and the release of the connection by a hidden tab were not
+  exercised.
+- **Long sessions and scale.** Pages left open for hours, hundreds of tasks,
+  many projects, and logs larger than 6 MB were not tried.
+- **Assistive technology.** Names, roles, focus order, contrast and reduced
+  motion were checked by script. No screen reader was used.
+- **Concurrent writers to the registry** from separate operating-system
+  processes; the mutex was exercised with threads.
+
+### Limits of 0.2
+
+- Agent output is not streamed: the CLIs' output is captured and saved when a
+  step ends, so the live view is the timeline of persisted events and the run
+  log, not the agent's words as they are produced.
+- Stop and stale-lock release are not available on native Windows.
+- There is still no service that keeps a retry plan attended.
+- A lock or a waiting process created by 0.1, or by a `run` on a system where
+  the process check is not available, is shown as unverified.
+- Rondo's states use two images, motion and a mark; dedicated illustrations
+  are listed in `docs/DESIGN.md` as work to do.
+- The interface is in English only.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:
@@ -589,7 +753,8 @@ The remaining limitations are explicit:
 4. Native Windows terminates only direct children; private ACLs and stale-lock recovery do not have POSIX guarantees. WSL2 remains recommended.
 5. Fingerprints exclude ignored files, submodule contents and external dependencies/services. They do not eliminate every concurrent-edit race. Avoid other writers during a task and do not run multiple `--unlock` operations simultaneously.
 6. There was no original Git history to inspect. The review covers the supplied source, not other copies or external repositories.
-7. Automatic quota recovery is opt-in and needs its foreground process to stay alive; there is no service that resumes a saved plan. Usage limits are recognized from CLI text and may be misclassified, with the retry limit as the bound. Reset times are used only in explicit forms, validated with simulated output. Locks are not recovered automatically, and native Windows cannot check recorded PIDs.
+7. The 0.2 interface was checked in one browser on one platform with scripted providers; see the section above for what was not verified. It is a single-user local tool: whoever holds its session token can start runs with the user's accounts.
+8. Automatic quota recovery is opt-in and needs its foreground process to stay alive; there is no service that resumes a saved plan. Usage limits are recognized from CLI text and may be misclassified, with the retry limit as the bound. Reset times are used only in explicit forms, validated with simulated output. Locks are not recovered automatically, and native Windows cannot check recorded PIDs.
 
 Source publication does not establish production readiness or authenticated-CLI
 compatibility. [PUBLISHING.md](PUBLISHING.md) describes validation and publication
