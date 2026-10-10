@@ -37,6 +37,13 @@ versions and login without model calls; with `--authorize-provider-calls` it
 runs both pairings against your own accounts and uses plan quota. Run it only
 by choice, and report the platform and CLI versions it prints with the result.
 
+For repeatable local reliability checks without model calls, use
+`python tools/reliability_e2e.py --repeat 3 --output .test-tmp/reliability.json`.
+It covers both role pairings, feedback, quota recovery and a multi-file fixture.
+Use WSL2 or another POSIX host for the interruption and stale-lock scenarios;
+native Windows reports those scenarios as skipped. The JSON report includes
+objective checks and timings, not a model-quality score.
+
 Contributions are distributed under the project's MIT license. Only submit code
 you are entitled to contribute. Report security issues through `SECURITY.md`.
 

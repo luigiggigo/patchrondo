@@ -418,6 +418,34 @@ do not call Claude or Codex, validate real model output, or replace an end-to-en
 test with authenticated accounts. Full package checks are documented in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+### Local reliability checks (no provider quota usage)
+
+Run the repeatable reliability driver from a source checkout:
+
+```bash
+python tools/reliability_e2e.py --repeat 3 --output .test-tmp/reliability.json
+```
+
+It uses synthetic Claude/Codex CLIs in real subprocesses for both role pairings.
+Six scenarios cover review feedback followed by a second iteration, developer
+quota, reviewer quota, Ctrl+C during review, a killed runner with a stale lock,
+and a task spanning three Python files with six functional tests. Signal and
+crash scenarios require POSIX and are skipped on native Windows; use WSL2 for
+full coverage. Select scenarios with repeatable `--scenario` options.
+
+The driver invokes resume after each injected failure and checks that completed
+development and tests are preserved when resuming review. After a crash it first
+verifies that ordinary resume refuses the stale lock, then uses `--unlock` after
+the runner has exited. This is test-driver automation; PatchRondo does not
+automatically retry a real quota failure.
+
+The optional JSON report records checks, iterations, attempted provider calls,
+test runs, changed files, total elapsed time and provider-call timings. Quality
+evidence consists of fixture acceptance tests and validation documentation;
+synthetic results do not measure model solution quality, real quota recovery or
+performance on complex projects. Successful fixtures are deleted; failed
+fixtures and transcripts remain outside the repository for diagnosis.
+
 ### Real provider check (uses plan quota)
 
 `tools/provider_e2e.py` runs the loop with the real, authenticated CLIs on a

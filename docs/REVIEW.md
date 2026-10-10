@@ -260,6 +260,72 @@ cancel older runs on the same branch or PR.
   review remains local so binary findings require human review rather than
   being silently ignored by CI.
 
+## Local reliability checks (October 10, 2026)
+
+Added `tools/reliability_e2e.py` and eight driver tests. These use the real
+adapters and CLI entry point in separate processes, with every provider command
+routed exclusively to a local synthetic Python executable. Runners also remove
+provider directories from PATH and verify neither CLI can be found. No authenticated
+provider calls were made. Runtime code and CI configuration were unchanged.
+
+The WSL2 driver run used Python 3.12.3 on Linux
+6.6.87.2-microsoft-standard-WSL2. Three repetitions of six scenarios in both
+role pairings produced **36 passed, 0 failed, 0 skipped**, exit status 0.
+The local metrics report is `.test-tmp/reliability-wsl.json` (ignored).
+
+| Scenario | Executions | Iterations | Attempted provider calls | Median elapsed time |
+|---|---:|---:|---:|---:|
+| Review feedback, correction, approval | 6 | 2 | 4 | 0.796 s |
+| Developer quota, resume | 6 | 1 | 3 | 0.830 s |
+| Reviewer quota, resume | 6 | 1 | 3 | 0.853 s |
+| SIGINT during review, resume | 6 | 1 | 3 | 1.102 s |
+| Killed runner, stale lock, unlock/resume | 6 | 1 | 2 | 1.008 s |
+| Three-file task | 6 | 1 | 2 | 0.546 s |
+
+Times include fixture setup and orchestration and are synthetic-provider
+measurements, not expected real-model latency. Reports also include individual
+provider-call durations, test runs, changed-file counts and named checks.
+
+- The feedback scenario starts with six passing functional tests, receives
+  `CHANGES_REQUESTED` for missing validation documentation, confirms delivery
+  of that actionable feedback and approves the corrected second iteration.
+- Quota is injected once for each provider in both developer and reviewer roles.
+  The task pauses at the failed phase, with no additional calls before the
+  driver's explicit resume. Review recovery does not repeat development or tests.
+- SIGINT interrupts a runner waiting for a synthetic reviewer. Checks confirm
+  provider termination, removed process markers and lock, preserved code and
+  successful review-only resume in a new runner process.
+- SIGKILL occurs at the saved review checkpoint before a reviewer child starts.
+  Ordinary resume refuses the stale lock; `--unlock` succeeds after the runner
+  exits. This does not cover a killed runner with a surviving agent process.
+- The fixture spans name validation, batch greetings and JSON CLI I/O. Six
+  independent functional cases cover names, whitespace, Unicode, empty input,
+  blank-name rejection and CLI output. Final checks require documentation,
+  exactly three changed files, preserved tests, unchanged main checkout and
+  Git history, and an unchanged worktree after review.
+- Negative controls remove review feedback at the synthetic CLI boundary and
+  inject incorrect greeting behavior despite an approving reviewer. Both are
+  detected as failures, so approval alone cannot satisfy the driver.
+- Full local suite: **82 tests**. WSL2 with Python 3.12.3: 82 passed. Native
+  Windows with Python 3.13.3: 79 passed, 3 POSIX tests skipped. After adding
+  explicit provider PATH removal and refining the missing-feedback negative
+  control, all eight driver tests were rerun: WSL2 passed all eight; Windows
+  passed six with two POSIX skips. The earlier full-suite run precedes these
+  driver-only refinements.
+  Checked changed Python sources against Python 3.11 grammar and checked
+  changed text for UTF-8, LF, local link targets and diff whitespace.
+- Publication scanner: exit status **1**, with four pre-existing findings:
+  ignored `debug.log`, `docs/assets/rondo-mascot-v1.png`,
+  `src/patchrondo/static/rondo.webp` and `src/patchrondo/static/rondo-head.webp`.
+  This is not a clean scan. Packages were not rebuilt for this tooling change.
+
+Resume automation belongs to the check driver, not the runtime. PatchRondo
+still requires an explicit resume after interruption or quota exhaustion.
+Synthetic checks validate orchestration and objective fixture acceptance;
+larger real-model tasks, solution quality, actual quota recovery and real-model
+timings remain unvalidated. The earlier real-provider fixture results are
+recorded separately above. No workflow was pushed or run remotely here.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:

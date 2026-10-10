@@ -126,10 +126,23 @@ interruption or shutdown error preserves the files and prints their location.
 A second Ctrl+C during shutdown returns exit code 130. Preparation failures can
 be cleaned up because the dashboard has not yet admitted any runs.
 
-`tools/provider_e2e.py` is the only tool that calls the real adapter, and only
-with `--authorize-provider-calls`. It creates a temporary repository and state
+`tools/provider_e2e.py` invokes authenticated provider CLIs only with
+`--authorize-provider-calls`. It creates a temporary repository and state
 directory, runs `run_task` once per pairing and inspects the saved state: the
 developer's handoff and file, unchanged Git history, a parsed review and an
 unchanged worktree fingerprint after review. Fixture tests stay disabled unless
-`--run-fixture-tests` is given. Agent-written code is checked statically and
-never imported. Files are deleted only after every check passes.
+`--run-fixture-tests` is given. Without that flag, agent-written code is checked
+statically and never imported. Files are deleted only after every check passes.
+
+`tools/reliability_e2e.py` exercises the same adapters with an exclusive route
+to local synthetic Python executables. Each runner removes provider CLI
+directories from PATH and confirms both CLI lookups fail before starting.
+Each scenario uses a temporary repository and private state in sibling
+directories. Separate runner processes invoke the CLI entry point. The driver
+injects review feedback, developer/reviewer quota errors, SIGINT during review
+and SIGKILL at the persisted review checkpoint before a reviewer child starts.
+It verifies process cleanup, lock recovery and resume without repeated completed
+stages. The crash case does not simulate a runner killed while an agent survives.
+Resume is initiated by the driver, not an automatic runtime retry policy.
+Reports contain objective fixture checks and timing measurements; fixture state
+and transcripts are deleted on success and retained outside the repo on failure.

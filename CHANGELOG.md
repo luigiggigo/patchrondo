@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a local reliability driver with synthetic CLI subprocesses for both role
+  pairings: review feedback and correction, developer/reviewer quota recovery,
+  POSIX interruption and stale-lock recovery, and a three-file task. Record
+  objective acceptance checks, iterations, attempted calls and elapsed times
+  in an optional JSON report, without real provider usage.
 - Restore GitHub Actions CI for Python 3.11 and 3.13 on Linux, Windows and
   macOS using only free standard runners for public repositories. Skip jobs
   for private repositories, cancel superseded runs and limit jobs to 15 minutes.
