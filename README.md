@@ -367,8 +367,19 @@ git merge patchrondo/T-a1b2c3d4e5f6
 
 ## Project tests (no provider quota usage)
 
-Validation is run locally; the GitHub Actions CI workflow is disabled. Pushes
-and pull requests do not run that CI.
+The [CI workflow](.github/workflows/ci.yml) runs on pushes to `main`, pull
+requests targeting `main` and manual dispatch. It tests Python 3.11 and 3.13
+on `ubuntu-latest`, `windows-latest` and `macos-latest`, and checks source and
+wheel packages on Linux with Python 3.13. Each job has a 15-minute timeout;
+new runs cancel earlier runs of this workflow on the same branch or PR.
+
+Only standard GitHub-hosted runners are used. GitHub documents these as
+[free for public repositories](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories).
+The job is skipped before runner allocation when the repository is private.
+There are no artifact uploads, Actions caches, deployments or paid services.
+CI uses simulated providers without account credentials or real model calls.
+The publication scanner remains a local manual check because binary assets
+require human review. Run the suite locally with:
 
 ```bash
 python -m unittest discover -s tests -v

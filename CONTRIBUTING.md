@@ -22,8 +22,12 @@ Windows is recommended through WSL2; native Windows tests use synthetic CLI scri
 
 Keep changes small and explain the behavior before and after. Add regression tests
 for changes to state transitions, consent, provider arguments and process handling.
-Run validation locally with simulated providers; there is no active GitHub Actions
-CI workflow. Never commit credentials, prompts from private projects,
+Run validation locally with simulated providers. The [CI workflow](.github/workflows/ci.yml)
+also runs the suite on Python 3.11 and 3.13 across Linux, Windows and macOS, and
+checks packages on Linux. It runs only for public repositories on free standard
+GitHub-hosted runners, without artifact uploads, Actions caches or real provider
+calls. Review publication scanner findings locally before publishing.
+Never commit credentials, prompts from private projects,
 transcripts or task state. The publication check is a heuristic, not a complete
 secret scanner or a substitute for reviewing the Git diff.
 

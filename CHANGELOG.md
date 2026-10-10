@@ -2,8 +2,11 @@
 
 ## Unreleased
 
-- Remove the GitHub Actions CI workflow, its README badge and its Dependabot
-  action updates; retain local test, publication and package checks.
+- Restore GitHub Actions CI for Python 3.11 and 3.13 on Linux, Windows and
+  macOS using only free standard runners for public repositories. Skip jobs
+  for private repositories, cancel superseded runs and limit jobs to 15 minutes.
+  Check packages on Linux without artifact uploads, Actions caches, provider
+  calls or automatic publication; retain local publication review.
 - Add `patchrondo ui`, a token-protected local dashboard (standard library only,
   loopback-bound) with live task status, reviews, tests, history and documents. It can
   create tasks, start or resume runs as separate CLI processes after confirmation,

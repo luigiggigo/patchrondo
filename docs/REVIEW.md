@@ -80,9 +80,9 @@ normal temporary directories. Global Git configuration was not changed.
 
 ## Local validation (October 9, 2026)
 
-The GitHub Actions CI workflow has been disabled and removed from the current
-checkout. Future validation is local; the initial CI results remain a historical
-record of the published snapshot.
+On that date the GitHub Actions CI workflow was disabled and removed from the
+checkout, leaving local validation. The initial CI results remain a historical
+record of the published snapshot. Restoration is recorded below.
 
 On that date the development suite contained **66 tests**. Local execution on
 Windows with Python 3.13 completed with **65 passing tests and 1 skipped POSIX
@@ -185,6 +185,45 @@ matches to that worktree before the limit.
 - A synthetic index of 24,000 chunks across six roots took about 40 ms for a
   45-term query on Windows; larger indexes were not measured. The publication
   and package checks were not rerun for this change.
+
+## Free CI restoration (October 10, 2026)
+
+The current checkout restores `.github/workflows/ci.yml` for pushes to `main`,
+pull requests targeting `main` and manual dispatch. The six matrix combinations
+cover Python 3.11 and 3.13 on Linux, Windows and macOS. Package build and metadata
+checks run on Linux with Python 3.13. Jobs have a 15-minute timeout and newer runs
+cancel older runs on the same branch or PR.
+
+- Verified in the [official GitHub runner documentation](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories)
+  that `ubuntu-latest`, `windows-latest` and `macos-latest` are standard runners
+  free for public repositories. A job-level repository privacy condition skips
+  the matrix before runner allocation for private repositories.
+- Only official checkout and Python setup actions are used, pinned to release
+  commits. Token permissions are limited to `contents: read`; checkout does not
+  persist credentials. There are no artifact uploads, Actions caches, deployments,
+  provider credentials or authenticated provider calls.
+- Local validation on native Windows with Python 3.13.3: **74 tests**, 73 passed
+  and 1 POSIX process-group test skipped, using `PYTHONPATH=src`. The initial run
+  failed because Git rejected ownership of temporary repositories on the local
+  drive. A process-scoped `safe.directory` setting limited to `.test-tmp/*`
+  resolved this without changing global Git settings or project code.
+- Editable installation and `python -m build` succeeded. Twine passed for the
+  newly generated PatchRondo wheel and sdist. The initial `dist/*` check exited
+  with status 1 because a pre-existing `dist/patchrondo` directory is not a
+  distribution; checking the two generated files explicitly passed. CI builds
+  in a fresh checkout and uploads neither file.
+- Local YAML structure checks covered triggers, all six combinations, the
+  job-level guard, runner labels, timeout, cancellation, permissions, install
+  and test commands, and the absence of artifact/cache actions. Changed text
+  files passed UTF-8, LF and diff whitespace checks. These are local checks;
+  the restored workflow has not been pushed or run on GitHub, and this change
+  has not been tested locally on Linux or macOS.
+- The publication scanner exited with status 1 and four pre-existing findings:
+  ignored `debug.log` and the three binary images
+  `docs/assets/rondo-mascot-v1.png`, `src/patchrondo/static/rondo.webp` and
+  `src/patchrondo/static/rondo-head.webp`. This is not a clean scan. Publication
+  review remains local so binary findings require human review rather than
+  being silently ignored by CI.
 
 ## Remaining limitations
 
