@@ -12,8 +12,8 @@
   failures are retried. Disabled by default: existing configurations and
   commands behave as before.
 - Keep the provider and an explicitly stated reset time with quota failures.
-  Times without a date or UTC offset, impossible dates and expired resets are
-  not used. Plans are checked again under the task lock, so concurrent waiting
+  Times without a date or UTC offset (apart from the Codex form below),
+  impossible dates and expired resets are not used. Plans are checked again under the task lock, so concurrent waiting
   processes cannot call a provider twice for one plan or before it is due.
   Locks are never removed automatically; a lock found at retry time stops
   recovery with an error.
@@ -26,6 +26,12 @@
   an absolute time is also given. Previously only the absolute form reached
   the retry decision. Bound the saved diagnostic of a Claude `is_error` result
   to an excerpt, as for a failed exit.
+- Give login failures precedence over usage-limit wording when one message
+  contains both; such a failure was previously classified as `quota`.
+- Read the reset time that Codex CLI prints in local time without a zone
+  (`try again at 3:45 PM.`, `try again at Oct 12th, 2026 3:45 PM.`), for Codex
+  failures only. The form comes from the public source of codex-cli 0.160.1
+  and has not been observed in a live usage-limit failure.
 - Show the saved plan, provider, schedule source, retries used and the reason
   recovery ended in reports, `status`, and the dashboard task page. Record
   `recovery_scheduled`, `recovery_wait_started`, `recovery_retry_started`,
@@ -34,7 +40,7 @@
   at a time from a temporary copy of the sources and expects tests to fail;
   `real-clock` interrupts and restarts a real wait with synthetic CLIs (POSIX).
 - Add an `auto-resume` scenario to the synthetic reliability driver, and
-  recovery tests with a simulated clock, bringing the local suite to 151 tests.
+  recovery tests with a simulated clock, bringing the local suite to 156 tests.
   Reset parsing and recovery have been exercised with simulated providers only,
   not with real usage limits.
 - Add a local reliability driver with synthetic CLI subprocesses for both role

@@ -170,10 +170,15 @@ an optional `recovery` section in `state.json` and who calls `run_task` next.
 
 **Responsibilities.** `providers.quota_hint` only parses: it returns a reset
 instant when the CLI output states one unambiguously, relative waits being
-converted with the instant the failure was observed. Both output streams of a
-failed CLI are read: stderr decides the failure kind, stdout only when stderr
-is inconclusive (so agent text cannot turn a login failure into a usage limit),
-and a reset stated on either stream is kept. `AgentFailure` carries
+converted with the instant the failure was observed. Classification rules are
+an ordered list in which authentication precedes quota, so text that names both
+is never retried automatically. Both output streams of a failed CLI are read:
+stderr decides the failure kind, stdout only when stderr is inconclusive (so
+agent text cannot turn a login failure into a usage limit), and a reset stated
+on either stream is kept. One form is provider-specific: Codex prints its reset
+as local wall-clock time without a zone, so for Codex failures only that form
+is read in the local zone of the host and rounded up a minute; in an hour
+repeated by a clock change the later instant is taken. `AgentFailure` carries
 `kind`, `provider`, `retry_at` and `retry_after_seconds`. An adapter may set
 either reset form: `recovery.stated_reset` counts a wait from the failure time,
 uses the later instant when both are present, and `last_error` always saves

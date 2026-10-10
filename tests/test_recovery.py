@@ -9,11 +9,13 @@ from functools import partial
 from importlib import resources
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -235,6 +237,63 @@ class ParsingTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(quota_hint(text, T0), {})
 
+    @staticmethod
+    def codex_message(reset, now):
+        """The usage-limit text of codex-cli 0.160.1 (codex-rs/protocol/src/error.rs, format_retry_timestamp)."""
+        local, today = reset.astimezone(), now.astimezone().date()
+        clock = f"{local.hour % 12 or 12}:{local:%M} {'AM' if local.hour < 12 else 'PM'}"
+        if local.date() != today:
+            suffix = "th" if 11 <= local.day <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(local.day % 10, "th")
+            month = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")[local.month - 1]
+            clock = f"{month} {local.day}{suffix}, {local.year} {clock}"
+        return ("You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+                f"https://chatgpt.com/codex/settings/usage to purchase more credits or try again at {clock}.")
+
+    def test_codex_reset_is_read_in_the_local_time_zone_of_the_process(self):
+        # Codex prints local wall-clock time without a zone and without seconds.
+        for delta in (timedelta(minutes=90, seconds=17), timedelta(hours=5), timedelta(hours=30, seconds=59),
+                      timedelta(days=6, minutes=7), timedelta(days=23)):
+            reset = T0 + delta
+            text = self.codex_message(reset, T0)
+            with self.subTest(text=text):
+                self.assertEqual(classified_failure(text, text, "codex", T0).kind, "quota")
+                # The printed minute is rounded up, so the result never precedes the real reset.
+                expected = reset.replace(second=0) + timedelta(minutes=1)
+                self.assertEqual(quota_hint(text, T0, "codex"), {"retry_at": expected})
+                self.assertTrue(reset < expected <= reset + timedelta(minutes=1))
+                # The same zoneless text from any other source stays ambiguous.
+                self.assertEqual(quota_hint(text, T0), {})
+                self.assertEqual(quota_hint(text, T0, "claude"), {})
+
+    def test_codex_messages_without_a_usable_reset_yield_nothing(self):
+        for text in ("You’ve hit your usage limit. Try again later.",
+                     "You’ve hit your usage limit. Upgrade to Plus to continue using Codex "
+                     "(https://chatgpt.com/explore/plus), or try again later.",
+                     "try again at 13:45 PM.", "try again at 0:10 AM.", "try again at Feb 30th, 2027 3:45 PM.",
+                     "try again at Foo 3rd, 2027 3:45 PM.", "try again at 3:45.", "try again at 3 PM."):
+            with self.subTest(text=text):
+                self.assertEqual(quota_hint(text, T0, "codex"), {})
+
+    @unittest.skipUnless(hasattr(time, "tzset"), "changing the process time zone needs POSIX tzset")
+    def test_codex_reset_in_a_repeated_local_hour_uses_the_later_instant(self):
+        previous = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Los_Angeles"
+        time.tzset()
+        try:
+            # 1:30 AM occurs twice on November 1, 2026 in this zone: 08:30 and 09:30 UTC.
+            observed = datetime(2026, 11, 1, 6, 0, tzinfo=timezone.utc)
+            hint = quota_hint("or try again at Nov 1st, 2026 1:30 AM.", observed, "codex")
+            self.assertEqual(hint, {"retry_at": datetime(2026, 11, 1, 9, 31, tzinfo=timezone.utc)})
+            # The short form is placed on the local day of the failure (still October 31 there).
+            hint = quota_hint("or try again at 11:45 PM.", observed, "codex")
+            self.assertEqual(hint, {"retry_at": datetime(2026, 11, 1, 6, 46, tzinfo=timezone.utc)})
+        finally:
+            if previous is None:
+                del os.environ["TZ"]
+            else:
+                os.environ["TZ"] = previous
+            time.tzset()
+
     def test_the_latest_stated_reset_wins(self):
         hint = quota_hint("resets at 2026-10-10T15:00:00Z; retry after 6 hours", T0)
         self.assertEqual(hint["retry_at"], at(hours=6))
@@ -394,6 +453,19 @@ class SupervisorTests(RecoveryCase):
         paused = self.supervise(second, adapter, auto_resume=False)
         self.assertEqual((paused["status"], paused["recovery"], len(adapter.calls)), ("paused", None, 1))
         self.assertEqual(sum(self.clock.sleeps), 120)
+
+    def test_codex_usage_limit_message_plans_the_retry_at_its_local_reset(self):
+        task_id, path, _ = self.task()
+        reset = at(hours=5, seconds=20)
+        text = ParsingTests.codex_message(reset, T0)
+        adapter = self.script(path, None, self.quota(text, "codex"))
+        state = self.supervise(task_id, adapter)
+        self.assertEqual(state["status"], "done")
+        planned = next(e for e in state["history"] if e["event"] == "recovery_scheduled")
+        self.assertEqual((planned["source"], planned["provider"], recovery.parse_time(planned["resume_at"])),
+                         ("provider_reset", "codex", at(hours=5, minutes=1, seconds=30)))
+        self.assertGreaterEqual(adapter.calls[2]["at"], reset + timedelta(seconds=30))
+        self.assertEqual(adapter.roles, ["developer", "reviewer", "reviewer"])
 
     def test_ambiguous_reset_uses_the_backoff(self):
         task_id, path, _ = self.task()

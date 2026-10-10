@@ -354,6 +354,12 @@ keeps the plan.
   UTC`), or a relative wait with units (`Retry after 120 seconds`, `try again in
   2 hours 30 minutes`). The retry is planned for that instant plus the safety
   margin, and never before it.
+- One provider-specific form is also read. Codex CLI states its reset as local
+  wall-clock time without a zone: `try again at 3:45 PM.` on the same day,
+  otherwise `try again at Oct 12th, 2026 3:45 PM.`. For a Codex failure this is
+  interpreted in the local time zone of the machine, which is the zone the
+  Codex process itself used, and rounded up one minute because seconds are not
+  printed. The same text from any other source is not used.
 - A time without a date or offset (`resets at 9pm`), a time zone name or
   abbreviation, an impossible date or a reset that has already passed is not
   used. The wait is then an exponential backoff: 120 s, 240 s, 480 s … up to
@@ -377,14 +383,18 @@ same information. All times are UTC.
 - **Classification is textual.** A failure is treated as a usage limit when the
   CLI output matches patterns such as "rate limit" or "quota". Standard error
   is read first; standard output decides only when standard error names no
-  specific cause, and a reset time stated on either is used. An unrelated
-  error that mentions those words is retried too. The retry limit bounds the
-  cost: with the defaults, at most three extra calls.
-- **Real reset messages are not validated.** Parsing is tested with simulated
-  output only. If your CLI states its reset in another form, the backoff
-  applies. With the defaults that is three retries within about 14 minutes,
-  after which recovery stops; a limit lasting several hours then still needs a
-  manual resume or larger backoff settings.
+  specific cause, and a reset time stated on either is used. Wording of a login
+  failure takes precedence over wording of a usage limit in the same text,
+  because waiting cannot fix a login. An unrelated error that mentions a limit
+  is retried too. The retry limit bounds the cost: with the defaults, at most
+  three extra calls.
+- **Real limit messages have not been observed.** No test has hit a real usage
+  limit. The Codex form above was taken from the public source of codex-cli
+  0.160.1, not from a live failure, and may change between versions. For
+  Claude Code no reset format could be established, so its usage limits are
+  expected to fall back to the backoff. With the defaults that is three
+  retries within about 14 minutes, after which recovery stops; a limit lasting
+  several hours then still needs a manual resume or larger backoff settings.
 - **The waiting process must stay alive.** Automatic resume happens only while
   it runs; the dashboard cannot tell whether one is still waiting.
 - **Locks are never recovered automatically.** If the task lock exists when a
@@ -533,9 +543,9 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 10, 2026 ran **151 tests**: on Windows
-(Python 3.13 and Python 3.11) **148 passed and 3 POSIX tests were skipped**; on
-WSL2 (Python 3.12) all 151 passed. This is a local result for the development
+The latest local validation on October 10, 2026 ran **156 tests**: on Windows
+(Python 3.13 and Python 3.11) **152 passed and 4 POSIX-only tests were
+skipped**; on WSL2 (Python 3.12) all 156 passed. This is a local result for the development
 source after 0.1.0, including automatic quota recovery; the
 [technical review](docs/REVIEW.md) records which commits also passed the CI
 workflow. Tests use temporary Git
@@ -630,7 +640,8 @@ resumption after an interruption have not been checked with real accounts. Detai
 - Optional embedding-based reranking and decision-log indexing, if lexical retrieval proves insufficient.
 - Dedicated OS sandbox for tests (Docker/VM with minimal privileges).
 - Record real-provider check results per platform and CLI version; extend the check to resumption after an interruption.
-- Compare quota-reset parsing with the messages of real CLI versions; consider named time zones and a way to keep a retry plan attended without a foreground process.
+- Confirm quota classification and reset parsing against usage-limit failures observed with real CLI versions, including the reset format of Claude Code; consider named time zones and a way to keep a retry plan attended without a foreground process.
+- Process supervision on native Windows: a liveness check for recorded PIDs and tracking of the whole process tree of an agent, which stale-lock recovery needs before it can be anything but manual there.
 - Approval requests for risky tools and notifications.
 - Stall detection based on Git/test changes and support for multiple projects in one state directory.
 

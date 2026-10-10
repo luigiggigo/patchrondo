@@ -98,6 +98,9 @@ class AdapterTests(unittest.TestCase):
         error = self.failure("codex", Result(1, "Implemented the rate limit middleware. Retry after 5 seconds.",
                                              "Not logged in"))
         self.assertEqual((error.kind, error.retry_at), ("authentication", None))
+        # The same holds the other way round: a usage limit on stderr is not undone by agent text.
+        error = self.failure("codex", Result(1, "Expired tokens now get 401 Unauthorized.", "Usage limit reached"))
+        self.assertEqual(error.kind, "quota")
         # A long stderr does not hide the other stream from classification, and the message stays bounded.
         error = self.failure("codex", Result(1, "quota exceeded", "trace line\n" * 2000))
         self.assertEqual(error.kind, "quota")
@@ -107,6 +110,23 @@ class AdapterTests(unittest.TestCase):
         error = self.failure("codex", Result(1, "", "x" * 1000))
         self.assertIn("x" * 1000, str(error))
         self.assertEqual(self.failure("codex", Result(1, "", "")).kind, "agent_error")
+
+    def test_authentication_takes_precedence_over_quota_wording(self):
+        # Waiting cannot fix a login problem: a message naming both must not look retryable.
+        mixed = ("Error: not logged in. Rate limit status unavailable.",
+                 "401 Unauthorized: usage limit data could not be loaded; retry after 60 seconds",
+                 "Quota check failed: authentication failed. Please login again.")
+        for text in mixed:
+            with self.subTest(text=text):
+                for result in (Result(1, "", text), Result(1, text, ""),
+                               Result(0, json.dumps({"is_error": True, "result": text}), "")):
+                    error = self.failure("claude", result)
+                    self.assertEqual((error.kind, error.retry_at, error.retry_after_seconds),
+                                     ("authentication", None, None))
+        # Each kind on its own is unchanged.
+        self.assertEqual(self.failure("codex", Result(1, "", "Usage limit reached")).kind, "quota")
+        self.assertEqual(self.failure("codex", Result(1, "", "Please login")).kind, "authentication")
+        self.assertEqual(self.failure("codex", Result(1, "", "Segmentation fault")).kind, "agent_error")
 
     def test_claude_error_result_is_bounded_in_the_diagnostic(self):
         # The message is saved in task state: it must stay an excerpt on this path too.

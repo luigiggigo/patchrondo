@@ -501,22 +501,81 @@ was rerun on this code on October 10, 2026, without provider calls:
   Publication scanner: exit status **1**, 53 files checked, the same four
   findings. Not a clean scan.
 
-This second follow-up is local: it has not been pushed and no CI run covers it.
 Diagnostic excerpts and run logs are not filtered for secrets; that is
-unchanged and documented, not fixed.
+unchanged and documented, not fixed. The maintainer committed and pushed this
+second follow-up as `375d0cd`;
+[GitHub CI run 38071152945](https://github.com/luigiggigo/patchrondo/actions/runs/38071152945)
+completed successfully for it, all six jobs (read with `gh` on October 10, 2026).
+
+Third follow-up on the same day, from a further review with three points.
+
+- *Classification precedence.* Confirmed: quota patterns were tested before
+  authentication patterns, so one message naming both became `quota` and could
+  be retried. The rules are now an ordered list with authentication first.
+  Three mixed messages, each on either stream and as a Claude `is_error`
+  result, failed against the previous code. The rule that a specific cause on
+  standard error is not overridden by standard output is unchanged and now
+  tested in both directions.
+- *Real messages.* No usage limit was provoked and no provider call was made,
+  so nothing was observed live. Two offline sources were read instead.
+  The public Codex source at tag `rust-v0.160.1`, the installed version
+  (`codex-rs/protocol/src/error.rs`, `format_retry_timestamp`), shows that a
+  usage limit reads "You've hit your usage limit. … or try again at 3:45 PM."
+  when the reset falls on the same local day and "… try again at Oct 12th,
+  2026 3:45 PM." otherwise, in the local time zone of the Codex process, with
+  no zone and no seconds; without a reset it ends "try again later." The
+  parser recognized none of these, so every real Codex limit would have used
+  the backoff only. For Codex failures this form is now read in the local
+  zone of the host, rounded up one minute, taking the later instant in an
+  hour repeated by a clock change; the same text from another source is still
+  not used. The strings of the installed Claude Code 2.1.295 binary were
+  searched as well. They contain fragments such as "You've hit your" and
+  "resets at" and an internal reset in epoch seconds, but the text printed in
+  non-interactive mode could not be established, so nothing was added for
+  Claude Code: its limits are expected to fall back to the backoff.
+- *Native Windows locks.* Not changed. A liveness check alone would not make
+  unlocking safe there, because a timeout terminates only the direct child and
+  surviving descendants of an agent are not recorded. It is listed in the
+  README roadmap together with process-tree tracking.
+
+Five tests were added (one skipped without POSIX `tzset`), and four entries in
+the protection check. Every check was rerun on this code on October 10, 2026,
+without provider calls:
+
+- Suite: **156 tests**. Native Windows with Python 3.13.3: 152 passed, 4
+  skipped (3 POSIX process tests and the time-zone test). Native Windows with
+  Python 3.11.3: 152 passed, 4 skipped. WSL2 (Linux
+  6.6.87.2-microsoft-standard-WSL2) with Python 3.12.3: 156 passed. The
+  recovery tests also passed under WSL2 with `TZ` set to `Asia/Tokyo`,
+  `America/Los_Angeles` and `Pacific/Kiritimati`; the Windows runs used the
+  host's own zone.
+- `python tools/recovery_checks.py protections` on native Windows with Python
+  3.13.3: 39 of 39 removed safeguards detected, exit status 0.
+- `python3 tools/recovery_checks.py real-clock` under WSL2: 10 of 10 checks
+  passed, the retry 0.04 s after the planned time, exit status 0; skipped on
+  native Windows.
+- `python tools/reliability_e2e.py --repeat 3`: WSL2 42 passed, 0 failed, 0
+  skipped; native Windows 30 passed, 0 failed, 12 skipped; exit status 0.
+- Packages built outside the repository's `dist/` passed `twine check`.
+  Publication scanner: exit status **1**, 53 files checked, the same four
+  findings. Not a clean scan.
+
+This third follow-up is local: it has not been pushed and no CI run covers it.
 
 Not verified:
 
-- Recovery with authenticated CLIs. The wording and format of real usage-limit
-  messages were not compared with the parser, so with real accounts a reset
-  may go unrecognized (backoff applies) or an unrelated error may be classified
-  as a usage limit (the retry limit applies).
-- Waits of realistic length, system suspend during a wait, clock changes and
-  time zone handling beyond numeric offsets and UTC/GMT.
+- Recovery with authenticated CLIs. No real usage-limit failure was observed.
+  The Codex wording comes from its source, not from the output of `codex exec`
+  at a limit: which stream carries it and what surrounds it are unconfirmed.
+  The Claude Code wording is unknown. An unrelated error may still be
+  classified as a usage limit (the retry limit applies).
+- Waits of realistic length, system suspend during a wait and clock changes
+  during a wait. Named time zones in messages are not read.
 - A supervisor started from the dashboard, beyond the unchanged run-start path;
   dashboard Run/Resume was not exercised because it invokes real provider CLIs.
-- The second follow-up on macOS or on Linux outside WSL2. The CI runs named
-  above cover those platforms for commits `791566c` and `f4f8ad0` only.
+- The third follow-up on macOS or on Linux outside WSL2. The CI runs named
+  above cover those platforms for commits `791566c`, `f4f8ad0` and `375d0cd`
+  only.
 - Two supervisors as separate operating-system processes; concurrency was
   tested with threads sharing the same lock file and state.
 

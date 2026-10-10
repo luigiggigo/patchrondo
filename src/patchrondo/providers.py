@@ -32,13 +32,18 @@ class AgentReply:
     provider: str
 
 
+# Checked in this order; the first match decides. Authentication comes first: waiting
+# cannot fix a login problem, so a message naming both must never look retryable.
+_ERROR_KINDS = (
+    ("authentication", re.compile(r"not logged in|authentication failed|unauthorized|please login|login required")),
+    ("quota", re.compile(r"rate.?limit|usage.?limit|quota|too many requests|out of credits|insufficient credits"
+                         r"|limit reached|resets at")),
+)
+
+
 def _classify_error(body: str) -> str:
     lowered = body.lower()
-    if re.search(r"(rate.?limit|usage.?limit|quota|too many requests|out of credits|insufficient credits|limit reached|resets at)", lowered):
-        return "quota"
-    if re.search(r"(not logged in|authentication failed|unauthorized|please login|login required)", lowered):
-        return "authentication"
-    return "agent_error"
+    return next((kind for kind, pattern in _ERROR_KINDS if pattern.search(lowered)), "agent_error")
 
 
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
@@ -105,16 +110,51 @@ def _relative_seconds(text: str) -> int | None:
     return math.ceil(max(waits)) if waits else None
 
 
-def quota_hint(text: str, observed_at: datetime | None = None) -> dict:
+# Codex names no zone: it prints the reset in the local time of its own process, as
+# "try again at 3:45 PM." on the same local day and "try again at Oct 12th, 2026 3:45 PM."
+# otherwise (format_retry_timestamp in codex-rs/protocol/src/error.rs, read at rust-v0.160.1).
+# PatchRondo starts that process on the same host with the same TZ, so the same zone applies.
+_CODEX_RESET = re.compile(
+    r"\btry again at (?:(?P<month>[a-z]{3}) (?P<day>\d{1,2})(?:st|nd|rd|th), (?P<year>\d{4}) )?"
+    r"(?P<hour>\d{1,2}):(?P<minute>\d{2}) (?P<half>[ap])m(?![a-z])", re.I)
+
+
+def _codex_moment(match: re.Match, observed_at: datetime) -> datetime | None:
+    """UTC instant of a Codex local reset time; None when it is not a real date or time."""
+    part = match.groupdict()
+    hour = int(part["hour"])
+    if not 1 <= hour <= 12:
+        return None
+    hour = hour % 12 + (12 if part["half"].lower() == "p" else 0)
+    try:
+        if part["month"]:
+            month = next((index for index, name in enumerate(_MONTHS, 1) if name.startswith(part["month"].lower())), 0)
+            year, day = int(part["year"]), int(part["day"])
+        else:
+            today = observed_at.astimezone()  # the short form means the local day of the failure
+            year, month, day = today.year, today.month, today.day
+        # fold=1: in an hour repeated by a clock change, take the later instant.
+        local = datetime(year, month, day, hour, int(part["minute"]), fold=1)
+        # Seconds are not printed: the reset may be up to a minute after the printed time.
+        return local.astimezone(timezone.utc) + timedelta(minutes=1)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def quota_hint(text: str, observed_at: datetime | None = None, provider: str | None = None) -> dict:
     """Read a provider reset from a quota message, as AgentFailure keyword arguments.
 
-    Recognized: a date and time with an explicit UTC offset, or a relative wait
-    with units. A time without a date or offset ("resets at 9pm") yields nothing.
-    This only parses; recovery.plan decides whether the result may be used.
+    Recognized from any source: a date and time with an explicit UTC offset, or
+    a relative wait with units. A time without a date or offset ("resets at
+    9pm") yields nothing, except in the form Codex is known to print in local
+    time. This only parses; recovery.plan decides whether the result may be used.
     """
     observed_at = observed_at or datetime.now(timezone.utc)
     moments = [moment for pattern in _ABSOLUTE for match in pattern.finditer(text)
                if (moment := _moment(match)) is not None]
+    if provider == "codex":
+        moments += [moment for match in _CODEX_RESET.finditer(text)
+                    if (moment := _codex_moment(match, observed_at)) is not None]
     hint: dict = {}
     seconds = _relative_seconds(text)
     if seconds is not None:
@@ -137,7 +177,7 @@ def classified_failure(message: str, detail: str, provider: str,
     kind = _classify_error(detail)
     if kind == "agent_error" and secondary:
         kind = _classify_error(secondary)
-    hint = quota_hint(f"{detail}\n{secondary}", observed_at) if kind == "quota" else {}
+    hint = quota_hint(f"{detail}\n{secondary}", observed_at, provider) if kind == "quota" else {}
     return AgentFailure(message, kind, provider=provider, **hint)
 
 
