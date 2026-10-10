@@ -16,9 +16,6 @@
   <a href="#project-tests-no-provider-quota-usage">
     <img src="https://img.shields.io/badge/CI%20matrix-Linux%20%7C%20Windows%20%7C%20macOS-475569" alt="CI matrix: Linux, Windows and macOS">
   </a>
-  <a href="#project-tests-no-provider-quota-usage">
-    <img src="https://img.shields.io/badge/CI-free%20on%20public%20repos-2DA44E?logo=githubactions&amp;logoColor=white" alt="CI: free on public repositories">
-  </a>
 </p>
 <p align="center">
   <a href="CHANGELOG.md">
