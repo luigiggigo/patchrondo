@@ -22,6 +22,16 @@ transcripts; delete it when no longer needed and do not publish it. A passing
 check shows that the reviewer did not change files in that run. It does not
 show that a provider sandbox would block an attempt.
 
+Automatic quota recovery is disabled by default. When enabled through
+`recovery.enabled` or `--auto-resume`, a waiting `run`/`resume` process calls
+the provider CLIs again without asking, at most `max_consecutive_retries` times
+without progress; each call uses plan quota. It only waits for a limit to
+reset. Usage limits are recognized from CLI output text and can be
+misclassified, which is why the retry limit cannot be disabled. From that
+output only the failure kind, the provider name and a parsed reset time are
+added to task state. The task lock is not held while waiting and is never
+removed automatically.
+
 Captured process output is bounded in memory; temporary capture files can grow on
 disk until the timeout. Apply disk quotas in isolated runners. On native Windows,
 process cleanup terminates the direct child only, and stale-lock recovery is

@@ -1,14 +1,16 @@
 """Local reliability checks using synthetic CLIs, never authenticated providers.
 
-Exercises feedback, quota recovery, interruption, stale locks and a three-file
-Python task in real subprocesses. Reports objective fixture checks, not model
-quality. State and transcripts stay in a temporary directory outside the repo.
+Exercises feedback, quota recovery, interruption, stale locks, automatic resume
+after a stated reset and a three-file Python task in real subprocesses. Reports
+objective fixture checks, not model quality. State and transcripts stay in a
+temporary directory outside the repo.
 """
 from __future__ import annotations
 
 import argparse
 import ast
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -25,11 +27,12 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SOURCE))
 
+from patchrondo import recovery  # noqa: E402
 from patchrondo.core import create_task, initialize  # noqa: E402
 from patchrondo.gitops import fingerprint, git  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
 
-SCENARIOS = ("feedback", "quota-develop", "quota-review", "interrupt", "crash", "multi-file")
+SCENARIOS = ("feedback", "quota-develop", "quota-review", "interrupt", "crash", "multi-file", "auto-resume")
 PAIRINGS = (("claude", "codex"), ("codex", "claude"))
 FEEDBACK = "Document blank-name validation in normalize_name."
 IMPLEMENTATION = {
@@ -101,6 +104,10 @@ if scenario == ('quota-review' if reviewer else 'quota-develop') and not (root /
     (root / 'quota.once').touch()
     print('Usage limit reached; resets at 23:59' if provider == 'claude' else 'quota exceeded', file=sys.stderr)
     sys.exit(1)
+if scenario == 'auto-resume' and reviewer and not (root / 'auto-quota.once').exists():
+    (root / 'auto-quota.once').touch()
+    print('Rate limit exceeded. Retry after 300 seconds.', file=sys.stderr)
+    sys.exit(1)
 if scenario == 'interrupt' and reviewer and not (root / 'interrupt.once').exists():
     (root / 'interrupt.once').touch()
     (root / 'ready.json').write_text(json.dumps({'pid': os.getpid()}), encoding='utf-8')
@@ -131,12 +138,23 @@ else:
 '''
 
 
-def worker(root: Path, task_id: str, unlock: bool) -> int:
+def worker(root: Path, task_id: str, unlock: bool, auto: bool = False) -> int:
     """Run the real CLI entry point with an exclusive route to synthetic CLIs."""
     from patchrondo.cli import main as cli_main
     from patchrondo.process import execute
 
     control = read_json(root / "control.json")
+    lock = root / "state" / "tasks" / task_id / ".run.lock"
+    skipped = [0.0]
+
+    def clock():
+        return datetime.now(timezone.utc) + timedelta(seconds=skipped[0])
+
+    def virtual_sleep(seconds):
+        # A planned wait advances the runner's clock instead of pausing the check.
+        with (root / "waits.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps({"seconds": seconds, "locked": lock.exists()}) + "\n")
+        skipped[0] += seconds
 
     def synthetic_execute(argv, cwd, **kwargs):
         if argv[0] not in {"claude", "codex"}:
@@ -146,23 +164,26 @@ def worker(root: Path, task_id: str, unlock: bool) -> int:
             (root / "crash.once").touch()
             save_json(root / "ready.json", {"pid": os.getpid()})
             time.sleep(120)  # Kill the runner at the persisted review checkpoint.
-        started = time.monotonic()
+        started, called_at = time.monotonic(), clock()
         try:
             return execute([sys.executable, str(root / "synthetic.py"), *argv], cwd, **kwargs)
         finally:
             with (root / "timings.jsonl").open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"provider": argv[0], "role": "reviewer" if reviewer else "developer",
-                                         "seconds": round(time.monotonic() - started, 3)}) + "\n")
+                                         "seconds": round(time.monotonic() - started, 3),
+                                         "called_at": called_at.isoformat(),
+                                         "returned_at": clock().isoformat()}) + "\n")
 
     provider_free_path = os.pathsep.join(
         directory for directory in os.environ.get("PATH", "").split(os.pathsep)
         if directory and not any(shutil.which(name, path=directory) for name in ("claude", "codex")))
     with patch.dict(os.environ, {"PATH": provider_free_path}), \
-         patch("patchrondo.providers.execute", side_effect=synthetic_execute):
+         patch("patchrondo.providers.execute", side_effect=synthetic_execute), \
+         patch("patchrondo.recovery.supervise", partial(recovery.supervise, clock=clock, sleep=virtual_sleep)):
         if any(shutil.which(name) for name in ("claude", "codex")):
             raise RuntimeError("A real provider CLI is still on PATH; refusing the synthetic run")
         args = ["--home", str(root / "state"), "resume", task_id]
-        return cli_main(args + (["--unlock"] if unlock else []))
+        return cli_main(args + (["--unlock"] if unlock else []) + (["--auto-resume"] if auto else []))
 
 
 def setup(root: Path, scenario: str, developer: str, reviewer: str) -> tuple[str, Path]:
@@ -190,12 +211,13 @@ def setup(root: Path, scenario: str, developer: str, reviewer: str) -> tuple[str
                        developer=developer, reviewer=reviewer)
 
 
-def launch(root: Path, task_id: str, *, unlock: bool = False) -> subprocess.Popen:
+def launch(root: Path, task_id: str, *, unlock: bool = False, auto: bool = False) -> subprocess.Popen:
     code = ("import sys; from pathlib import Path; "
             f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); "
             "from reliability_e2e import worker; "
-            "raise SystemExit(worker(Path(sys.argv[1]), sys.argv[2], sys.argv[3] == '1'))")
-    return subprocess.Popen([sys.executable, "-c", code, str(root), task_id, "1" if unlock else "0"],
+            "raise SystemExit(worker(Path(sys.argv[1]), sys.argv[2], sys.argv[3] == '1', sys.argv[4] == '1'))")
+    return subprocess.Popen([sys.executable, "-c", code, str(root), task_id, "1" if unlock else "0",
+                             "1" if auto else "0"],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                             start_new_session=(os.name == "posix"))
 
@@ -235,13 +257,13 @@ def run_scenario(root: Path, scenario: str, developer: str, reviewer: str) -> di
     def check(name, ok):
         result["checks"].append({"name": name, "passed": bool(ok)})
 
-    def run(*, unlock=False):
-        proc = launch(root, task_id, unlock=unlock)
+    def run(*, unlock=False, auto=False):
+        proc = launch(root, task_id, unlock=unlock, auto=auto)
         processes.append(proc)
         return proc
 
     try:
-        proc = run()
+        proc = run(auto=scenario == "auto-resume")
         if scenario in {"interrupt", "crash"}:
             ready = wait_ready(proc, root)
             if scenario == "interrupt":
@@ -273,6 +295,23 @@ def run_scenario(root: Path, scenario: str, developer: str, reviewer: str) -> di
             refused, _ = finish(run())
             check("stale lock prevents ordinary resume", refused == 1)
             code, output = finish(run(unlock=True))
+        elif scenario == "auto-resume":
+            # One runner: it meets the limit, waits on its virtual clock and retries by itself.
+            waits = [json.loads(line) for line in (root / "waits.jsonl").read_text(encoding="utf-8").splitlines()] \
+                if (root / "waits.jsonl").exists() else []
+            journal = [entry for entry in first["history"] if entry["event"].startswith("recovery_")]
+            reviews = [json.loads(line) for line in (root / "timings.jsonl").read_text(encoding="utf-8").splitlines()]
+            reviews = [entry for entry in reviews if entry["role"] == "reviewer"]
+            planned = datetime.fromisoformat(journal[0]["resume_at"]) if journal and journal[0].get("resume_at") else None
+            # Times are on the runner's virtual clock. The reset is 300 s after the failed call; the margin is 30 s.
+            check("retry planned at the stated reset plus the safety margin", planned is not None and len(reviews) == 2
+                  and 330 <= (planned - datetime.fromisoformat(reviews[0]["returned_at"])).total_seconds() <= 332)
+            check("no provider call before the planned time", planned is not None and len(reviews) == 2
+                  and datetime.fromisoformat(reviews[1]["called_at"]) >= planned)
+            check("no task lock during the wait", bool(waits) and not any(wait["locked"] for wait in waits))
+            check("recovery journal is complete and ordered", [entry["event"] for entry in journal] == [
+                "recovery_scheduled", "recovery_wait_started", "recovery_retry_started", "recovery_completed"]
+                and journal[0].get("source") == "provider_reset" and journal[0].get("provider") == reviewer)
         state = read_json(path / "state.json")
         history = state["history"]
         calls = [json.loads(line) for line in (root / "calls.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -284,6 +323,7 @@ def run_scenario(root: Path, scenario: str, developer: str, reviewer: str) -> di
             "interrupt": ["developer", "reviewer", "reviewer"],
             "crash": ["developer", "reviewer"],
             "multi-file": ["developer", "reviewer"],
+            "auto-resume": ["developer", "reviewer", "reviewer"],
         }[scenario]
         check("exact provider call sequence", [call["role"] for call in calls] == expected_roles
               and all(call["provider"] == (developer if call["role"] == "developer" else reviewer) for call in calls))
@@ -296,7 +336,7 @@ def run_scenario(root: Path, scenario: str, developer: str, reviewer: str) -> di
             check("rejection then approval with green tests in both iterations",
                   [e["verdict"] for e in history if e["event"] == "review_completed"] == ["CHANGES_REQUESTED", "APPROVED"]
                   and [e["statuses"] for e in history if e["event"] == "tests_completed"] == [["passed"], ["passed"]])
-        if scenario in {"quota-review", "interrupt", "crash"}:
+        if scenario in {"quota-review", "interrupt", "crash", "auto-resume"}:
             check("resume preserved code and did not repeat completed stages", fingerprint(workspace) == before_resume
                   and events.count("development_completed") == 1 and events.count("tests_completed") == 1)
         check("main checkout and tests unchanged", fingerprint(root / "repo") == fixture_fingerprint

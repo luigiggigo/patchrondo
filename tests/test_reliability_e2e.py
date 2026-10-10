@@ -34,6 +34,24 @@ class ReliabilityTests(unittest.TestCase):
     def test_multiple_modules_and_json_entry_point(self):
         self.scenario("multi-file")
 
+    def test_auto_resume_waits_for_the_stated_reset_in_one_run(self):
+        self.scenario("auto-resume")
+
+    def test_auto_resume_stops_at_the_retry_limit(self):
+        # A reviewer that never leaves its limit: the single runner must give up, not loop.
+        endless = reliability.SYNTHETIC_CLI.replace(" and not (root / 'auto-quota.once').exists()", "")
+        self.assertNotEqual(endless, reliability.SYNTHETIC_CLI)
+        with tempfile.TemporaryDirectory() as folder, patch.object(reliability, "SYNTHETIC_CLI", endless):
+            root = Path(folder).resolve()
+            result = reliability.run_scenario(root, "auto-resume", "claude", "codex")
+            state = next((root / "state" / "tasks").glob("T-*/state.json"))
+            recovery_state = reliability.read_json(state)["recovery"]
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["provider_calls"], 5)  # one developer call, then the reviewer and three retries
+        self.assertEqual(result["final_status"], "paused")
+        self.assertEqual((recovery_state["status"], recovery_state["stop_reason"]),
+                         ("stopped", "max_consecutive_retries"))
+
     @unittest.skipUnless(os.name == "posix", "POSIX signals and PID liveness checks")
     def test_interrupt_cleans_provider_and_resumes_review(self):
         self.scenario("interrupt")

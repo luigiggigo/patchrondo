@@ -73,7 +73,7 @@ def seed(home: Path) -> None:
         return (now - timedelta(minutes=minutes)).isoformat(timespec="seconds")
 
     def task(number: int, title: str, status: str, phase: str, iteration: int, developer: str,
-             reviewer: str, updated: int, review=None, tests=(), error=None, history=()) -> None:
+             reviewer: str, updated: int, review=None, tests=(), error=None, history=(), recovery=None) -> None:
         task_id = f"T-{number:012x}"
         path = home / "tasks" / task_id
         save_json(path / "state.json", {
@@ -81,7 +81,7 @@ def seed(home: Path) -> None:
             "developer": developer, "reviewer": reviewer, "created_at": ago(updated + 90),
             "updated_at": ago(updated), "review": review, "tests": list(tests), "last_error": error,
             "history": list(history), "worktree": str(home / "worktrees" / task_id),
-            "base_sha": "0" * 40, "handoff": None})
+            "base_sha": "0" * 40, "handoff": None, "recovery": recovery})
         atomic_text(path / "task.md", TASK_TEXT.format(title=title))
         if iteration > 1:
             atomic_text(path / "handoff.md", HANDOFF)
@@ -104,8 +104,16 @@ def seed(home: Path) -> None:
                      {"severity": "high", "path": "auth/jwt.py", "description": "Exception message includes the raw token value."},
                      {"severity": "medium", "path": "auth/jwt.py", "description": "Allow a configurable leeway for clock skew."},
                      {"severity": "low", "path": "", "description": "Document the new ExpiredToken exception."}]})
+    # A saved retry plan only: no supervisor is waiting for it in the demo.
     task(2, "Paginate the /orders endpoint", "paused", "develop", 3, "codex", "claude", 22,
-         error={"kind": "rate_limit", "message": "Codex usage limit reached. Resume after the quota resets."})
+         error={"kind": "quota", "message": "codex/developer exit=1: Usage limit reached. Try again in 3 hours.",
+                "at": ago(22), "provider": "codex", "retry_at": ago(22 - 180), "retry_after_seconds": 10800},
+         recovery={"status": "scheduled", "consecutive_failures": 1, "max_consecutive_retries": 3,
+                   "first_failure_at": ago(22), "resume_at": ago(22 - 180), "phase": "develop", "iteration": 3,
+                   "schedule_source": "provider_reset", "provider": "codex", "stop_reason": None},
+         history=[{"at": ago(22), "event": "task_paused", "iteration": 3, "reason": "quota"},
+                  {"at": ago(22), "event": "recovery_scheduled", "iteration": 3, "attempt": 1,
+                   "resume_at": ago(22 - 180), "source": "provider_reset", "provider": "codex"}])
     task(3, "Migrate settings to pydantic v2", "done", "complete", 2, "claude", "codex", 180, tests=passed,
          review={"verdict": "APPROVED", "summary": "Clean migration with full test coverage.", "issues": []})
     task(4, "Remove legacy XML exporter", "blocked", "review", 6, "codex", "claude", 600,

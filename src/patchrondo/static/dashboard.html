@@ -448,6 +448,13 @@ const VERDICTS = {
   BLOCKED: { label: "Blocked", tone: "red", icon: "x" },
 };
 const SEVERITY = { low: "gray", medium: "orange", high: "red", critical: "red" };
+const RECOVERY_SOURCES = { provider_reset: "Provider reset time plus safety margin", backoff: "Exponential backoff" };
+const RECOVERY_STOPS = {
+  max_consecutive_retries: "Retry limit reached",
+  wait_budget_exceeded: "The next backoff would exceed the wait budget",
+  reset_beyond_budget: "The provider reset is beyond the wait budget",
+  invalid_schedule: "The saved plan was unreadable",
+};
 const DOCS = [["task", "Task"], ["handoff", "Handoff"], ["feedback", "Feedback"], ["report", "Report"], ["log", "Run log"]];
 const AGENTS = { claude: "Claude", codex: "Codex" };
 
@@ -510,6 +517,8 @@ function taskMessage(detail) {
   const verdict = task.review?.verdict;
   if (task.status === "done") return `All patched up! ${rev} approved the work.`;
   if (task.status === "blocked") return "I'm stuck on this one. Check the details below before trying again.";
+  if (task.status === "paused" && task.recovery?.status === "scheduled")
+    return `${agentName(task.recovery.provider)} hit a usage limit. A retry is planned; it needs a run with automatic resume to be waiting.`;
   if (task.status === "paused") return verdict === "CHANGES_REQUESTED"
     ? `Paused after ${rev} asked for changes. Resume to send the feedback back to ${dev}.`
     : "Paused. Resume picks up from the last checkpoint.";
@@ -777,6 +786,7 @@ function confirmRun(detail) {
       h("div", { class: "alert-dialog-body" },
         h("h3", {}, `${label} “${task.title}”?`),
         h("p", {}, `${agentName(task.developer)} develops and ${agentName(task.reviewer)} reviews in the task worktree. This calls the real CLIs and uses your plan quota.`),
+        cfg?.recovery_enabled ? h("p", {}, "Automatic quota recovery is enabled: after a usage limit this run keeps waiting and retries within the configured limits.") : null,
         cfg && !cfg.tests_enabled ? h("p", { class: "warn" }, "Tests are disabled: the task will pause after the first review.") : null),
       h("div", { class: "alert-actions" }, h("button", { type: "button", onclick: close }, "Cancel"), go),
     ];
@@ -901,6 +911,7 @@ function renderOverview() {
     settingRow("Tests", cfg.tests_enabled ? h("span", { class: "badge-on" }, `Enabled · ${cfg.test_commands} command${cfg.test_commands === 1 ? "" : "s"}`) : h("span", { class: "badge-off" }, "Disabled")),
     settingRow("Max iterations", String(cfg.max_iterations)),
     settingRow("Local retrieval", cfg.rag_enabled ? h("span", { class: "badge-on" }, "Enabled") : h("span", { class: "badge-off" }, "Disabled")),
+    settingRow("Quota recovery", cfg.recovery_enabled ? h("span", { class: "badge-on" }, "Enabled") : h("span", { class: "badge-off" }, "Disabled")),
     settingRow("State directory", h("span", { class: "mono" }, overview.home)))
     : h("div", { class: "alert tone-orange" }, icon("warning"), h("div", {},
         h("div", { class: "alert-title" }, "Configuration unavailable"),
@@ -959,6 +970,24 @@ function errorAlert(error, status) {
     message ? h("div", { class: "alert-body" }, message) : null));
 }
 
+// Shows the persisted plan only: waiting and retrying belong to the `patchrondo run` process.
+function recoveryCard(task) {
+  const plan = task.recovery;
+  if (!plan || typeof plan !== "object") return null;
+  const used = plan.consecutive_failures, limit = plan.max_consecutive_retries;
+  const rows = [settingRow("Provider at its limit", agentName(plan.provider))];
+  if (plan.status === "scheduled") {
+    rows.push(settingRow("Planned retry", h("span", { title: plan.resume_at }, `${fullDate(plan.resume_at)} · ${ago(plan.resume_at)}`)),
+      settingRow("Schedule source", RECOVERY_SOURCES[plan.schedule_source] || humanize(plan.schedule_source)));
+  }
+  if (plan.status === "stopped") rows.push(settingRow("Stopped because", RECOVERY_STOPS[plan.stop_reason] || `${humanize(plan.stop_reason)} is not retried automatically`));
+  if (Number.isInteger(used) && Number.isInteger(limit)) rows.push(settingRow("Automatic retries", `${Math.min(used, limit)} of ${limit} used · ${Math.max(limit - used, 0)} left`));
+  const note = plan.status === "scheduled" ? "The retry happens only while a run with automatic resume is waiting. Otherwise the plan stays saved and the task stays paused."
+    : plan.status === "stopped" ? "Automatic recovery has ended. Resume manually when the cause is resolved."
+    : "A planned retry is in progress.";
+  return section("Quota recovery", humanize(plan.status), h("div", { class: "card group" }, rows, h("div", { class: "empty-row" }, note)));
+}
+
 function reviewCard(review) {
   if (!review) return h("div", { class: "card" }, h("div", { class: "empty-row" }, "No review completed yet"));
   const verdict = VERDICTS[review.verdict] || { label: review.verdict, tone: "gray", icon: "eye" };
@@ -1003,6 +1032,9 @@ function eventDetail(event) {
   if (event.reason) parts.push(humanize(event.reason));
   if (event.statuses) parts.push(event.statuses.join(", "));
   if (event.previous_status) parts.push(`from ${event.previous_status}`);
+  if (event.attempt) parts.push(`retry ${event.attempt}`);
+  if (event.resume_at || event.scheduled_for) parts.push(`at ${fullDate(event.resume_at || event.scheduled_for)}`);
+  if (event.source) parts.push(RECOVERY_SOURCES[event.source] || humanize(event.source));
   if (event.message) parts.push(event.message);
   return parts.join(" · ");
 }
@@ -1064,6 +1096,7 @@ function renderTask(detail) {
         statTile("Tests", "flask", tests.value),
         statTile("Updated", "clock", ago(task.updated_at, true))),
       errorAlert(task.last_error, task.status),
+      recoveryCard(task),
       section("Review", task.review ? `by ${agentName(task.reviewer)}` : null, reviewCard(task.review)),
       section("Tests", null, testsCard(task.tests)),
       section("Activity", `${(task.history || []).length} events`, timelineCard(task.history)),

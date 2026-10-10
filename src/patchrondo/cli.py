@@ -9,8 +9,8 @@ import shutil
 import sqlite3
 import sys
 
-from .core import initialize, config, create_task, run_task, task_dir
-from . import rag
+from .core import initialize, config, create_task, task_dir
+from . import rag, recovery
 from .storage import read_json
 from .process import execute
 
@@ -35,6 +35,10 @@ def parser() -> argparse.ArgumentParser:
         cmd.add_argument("task_id", help="Task ID such as T-0123456789ab")
         if action in {"run", "resume"}:
             cmd.add_argument("--unlock", action="store_true", help="Recover a stale lock only after checking process IDs")
+            cmd.add_argument("--auto-resume", action=argparse.BooleanOptionalAction, default=None,
+                             help="After a provider usage limit, keep this process waiting and retry at the reset "
+                                  "or after a backoff, within the configured caps. --no-auto-resume runs once and "
+                                  "cancels a pending retry plan. Default: recovery.enabled in config.json")
     sub.add_parser("list", help="List tasks")
     index = sub.add_parser("index", help="Update the local retrieval index (no model calls)")
     search = sub.add_parser("search", help="Query the local retrieval index (no model calls)")
@@ -65,11 +69,15 @@ def main(argv: list[str] | None = None) -> int:
                  acceptance=opts.accept, developer=opts.developer, reviewer=opts.reviewer)
             print(f'Created {task_id}\nWorktree: {workspace}\nRun: patchrondo --home "{home}" run {task_id}')
         elif opts.command in {"run", "resume"}:
-            state = run_task(home, opts.task_id, force_unlock=opts.unlock)
+            state = recovery.supervise(home, opts.task_id, force_unlock=opts.unlock, auto_resume=opts.auto_resume,
+                                       notify=lambda message: print(message, flush=True))
             print(f"{state['id']} · {state['status']} · iteration {state['iteration']} · phase {state['phase']}")
             print(f"Report: {home / 'tasks' / opts.task_id / 'report.md'}")
             if state.get("last_error"):
                 print(f"Details: {state['last_error']}")
+            plan = recovery.describe(state.get("recovery"))
+            if plan:
+                print(plan)
             return 0 if state["status"] == "done" else 2
         elif opts.command == "status":
             print(json.dumps(read_json(task_dir(home, opts.task_id) / "state.json"), indent=2, ensure_ascii=False))

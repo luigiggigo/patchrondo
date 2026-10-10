@@ -20,5 +20,14 @@
     "enabled": true,
     "max_chunks": 8,
     "max_chars": 12000
+  },
+  "recovery": {
+    "enabled": false,
+    "quota_only": true,
+    "max_consecutive_retries": 3,
+    "initial_backoff_seconds": 120,
+    "max_backoff_seconds": 1800,
+    "max_total_wait_seconds": 86400,
+    "reset_safety_margin_seconds": 30
   }
 }

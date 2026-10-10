@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Add opt-in automatic quota recovery (`recovery` configuration section,
+  `--auto-resume` / `--no-auto-resume` on `run` and `resume`). After a usage
+  limit the foreground process saves a retry plan in `state.json`, waits
+  without holding the task lock and retries the failed phase at the reset time
+  stated by the provider plus a safety margin, or after an exponential backoff.
+  Retries are limited by consecutive failures without progress and by a total
+  wait budget; a reset beyond the budget is never brought forward. Only `quota`
+  failures are retried. Disabled by default: existing configurations and
+  commands behave as before.
+- Keep the provider and an explicitly stated reset time with quota failures.
+  Times without a date or UTC offset, impossible dates and expired resets are
+  not used. Plans are checked again under the task lock, so concurrent waiting
+  processes cannot call a provider twice for one plan or before it is due.
+  Locks are never removed automatically; a lock found at retry time stops
+  recovery with an error.
+- Show the saved plan, provider, schedule source, retries used and the reason
+  recovery ended in reports, `status`, and the dashboard task page. Record
+  `recovery_scheduled`, `recovery_wait_started`, `recovery_retry_started`,
+  `recovery_completed`, `recovery_stopped` and `recovery_cancelled` events.
+- Add an `auto-resume` scenario to the synthetic reliability driver, and
+  recovery tests with a simulated clock, bringing the local suite to 140 tests.
+  Reset parsing and recovery have been exercised with simulated providers only,
+  not with real usage limits.
 - Add a local reliability driver with synthetic CLI subprocesses for both role
   pairings: review feedback and correction, developer/reviewer quota recovery,
   POSIX interruption and stale-lock recovery, and a three-file task. Record

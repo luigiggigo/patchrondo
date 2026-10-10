@@ -22,6 +22,8 @@ Windows is recommended through WSL2; native Windows tests use synthetic CLI scri
 
 Keep changes small and explain the behavior before and after. Add regression tests
 for changes to state transitions, consent, provider arguments and process handling.
+Test quota recovery with an injected clock and scripted providers, as
+`tests/test_recovery.py` does: no test may wait in real time or reach a provider CLI.
 Run validation locally with simulated providers. The [CI workflow](.github/workflows/ci.yml)
 also runs the suite on Python 3.11 and 3.13 across Linux, Windows and macOS, and
 checks packages on Linux. It runs only for public repositories on free standard
@@ -39,7 +41,8 @@ by choice, and report the platform and CLI versions it prints with the result.
 
 For repeatable local reliability checks without model calls, use
 `python tools/reliability_e2e.py --repeat 3 --output .test-tmp/reliability.json`.
-It covers both role pairings, feedback, quota recovery and a multi-file fixture.
+It covers both role pairings, feedback, quota recovery, automatic resume on a
+virtual clock and a multi-file fixture.
 Use WSL2 or another POSIX host for the interruption and stale-lock scenarios;
 native Windows reports those scenarios as skipped. The JSON report includes
 objective checks and timings, not a model-quality score.

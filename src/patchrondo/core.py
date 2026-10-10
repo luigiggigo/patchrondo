@@ -1,6 +1,7 @@
 """Deterministic task state machine: develop -> test -> review -> repeat/done."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import json
 import re
@@ -12,7 +13,7 @@ from .storage import private_dir, save_json, read_json, atomic_text, now, TaskLo
 from .gitops import repo_root, create_worktree, changes, stat, fingerprint
 from .process import execute, short_log
 from .providers import OfficialCLI, AgentFailure
-from . import rag
+from . import rag, recovery
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -22,6 +23,7 @@ DEFAULT_CONFIG = {
                  "allow_no_changes": False},
     "tests": {"enabled": False, "trust_acknowledged": False, "commands": []},
     "rag": {"enabled": True, "max_chunks": 8, "max_chars": 12000},
+    "recovery": dict(recovery.DEFAULTS),
 }
 VALID_AGENTS = {"claude", "codex"}
 VERDICTS = {"APPROVED", "CHANGES_REQUESTED", "BLOCKED"}
@@ -86,6 +88,8 @@ def config(home: Path) -> dict:
         raise ValueError("rag.max_chunks must be between 1 and 50")
     if type(r.get("max_chars")) is not int or not 1000 <= r["max_chars"] <= 100000:
         raise ValueError("rag.max_chars must be between 1000 and 100000")
+    # Configurations without a recovery section keep automatic resume disabled.
+    obj["recovery"] = recovery.settings(obj.get("recovery"))
     return obj
 
 
@@ -126,7 +130,7 @@ def create_task(home: Path, *, title: str, description: str,
              "reviewer": reviewer, "worktree": str(worktree), "base_sha": base,
              "status": "ready", "phase": "develop", "iteration": 1,
              "created_at": now(), "updated_at": now(), "history": [], "tests": [],
-             "review": None, "last_error": None, "handoff": None}
+             "review": None, "last_error": None, "handoff": None, "recovery": None}
     save_json(task_path / "state.json", state)
     return task_id, worktree
 
@@ -136,6 +140,7 @@ def _event(state: dict, name: str, **details) -> None:
 
 
 def _save(path: Path, state: dict) -> None:
+    recovery.note_progress(state)
     state["updated_at"] = now()
     save_json(path / "state.json", state)
 
@@ -301,21 +306,56 @@ def _report(path: Path, state: dict) -> None:
     atomic_text(path / "report.md", render_report(state))
 
 
-def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = False) -> dict:
+def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
+    """The persisted `last_error`. From provider output it keeps only the kind and a parsed reset."""
+    kind = getattr(exc, "kind", "interrupted" if isinstance(exc, KeyboardInterrupt) else
+                   "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "system_error")
+    error = {"kind": kind, "message": str(exc) or "Interrupted by the user", "at": recovery.stamp_up(at)}
+    provider = getattr(exc, "provider", None)
+    if kind == "quota":
+        provider = provider or state["developer" if state["phase"] == "develop" else "reviewer"]
+        retry_at = getattr(exc, "retry_at", None)
+        if isinstance(retry_at, datetime) and retry_at.tzinfo is not None:
+            error["retry_at"] = recovery.stamp_up(retry_at)  # truncating could allow a retry before the reset
+        if type(getattr(exc, "retry_after_seconds", None)) is int:
+            error["retry_after_seconds"] = exc.retry_after_seconds
+    if provider:
+        error["provider"] = provider
+    return error
+
+
+def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = False,
+             auto_resume: bool | None = None, clock=None, retry_of: str | None = None) -> dict:
+    """Run one task under its lock until it completes, blocks or pauses.
+
+    `auto_resume` overrides `recovery.enabled`. While recovery is active, a
+    quota failure persists a retry plan before the lock is released, and no
+    provider is called before a pending plan is due. `retry_of` marks a retry
+    started by `recovery.supervise` for the plan with that `resume_at`.
+    """
     cfg = config(home)
+    clock = clock or recovery.utcnow
+    auto = recovery.active(cfg, auto_resume)
     path = task_dir(home, task_id)
     workspace = Path(read_json(path / "state.json")["worktree"])
     if not workspace.is_dir():
         raise RuntimeError(f"Missing worktree: {workspace}")
     if adapter is None:
         adapter = OfficialCLI(timeout=cfg["workflow"]["agent_timeout_seconds"],
-                              claude_turns=cfg["workflow"]["claude_max_turns"])
+                              claude_turns=cfg["workflow"]["claude_max_turns"], clock=clock)
     with TaskLock(path, force=force_unlock):
         state = read_json(path / "state.json")
         if state["status"] in {"done", "blocked"}:
             return state
         if state["phase"] not in {"develop", "test", "review"}:
             raise ValueError(f"Invalid task phase: {state['phase']}")
+        # Checked before `last_error` is cleared: a planned retry must not start early.
+        proceed, changed = recovery.admit(state, cfg, active=auto, retry_of=retry_of, now=clock())
+        if not proceed:
+            if changed:
+                _save(path, state)
+                _report(path, state)
+            return state
         # 'running' after process death is recoverable from the last checkpoint.
         _event(state, "run_started", previous_status=state["status"])
         state["status"] = "running"
@@ -387,11 +427,12 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     state["phase"] = "develop"
                     _save(path, state)
         except (AgentFailure, KeyboardInterrupt, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            reason = getattr(exc, "kind", "interrupted" if isinstance(exc, KeyboardInterrupt) else
-                             "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "system_error")
+            failed_at = clock()
             state["status"] = "paused"
-            state["last_error"] = {"kind": reason, "message": str(exc) or "Interrupted by the user", "at": now()}
-            _event(state, "task_paused", reason=reason)
+            state["last_error"] = _failure(exc, state, failed_at)
+            _event(state, "task_paused", reason=state["last_error"]["kind"])
+            # The retry plan is saved with the pause, before the lock is released.
+            recovery.on_failure(state, cfg, active=auto, now=failed_at)
             _save(path, state)
             _report(path, state)
             return state

@@ -1,7 +1,7 @@
 # Technical review and validation record
 
 Initial review: October 8, 2026. Local follow-up: October 9, 2026. Real-provider
-checks: October 10, 2026.
+checks and the automatic quota recovery change: October 10, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -326,6 +326,100 @@ larger real-model tasks, solution quality, actual quota recovery and real-model
 timings remain unvalidated. The earlier real-provider fixture results are
 recorded separately above. No workflow was pushed or run remotely here.
 
+## Automatic quota recovery (October 10, 2026)
+
+Added opt-in recovery after provider usage limits: the `recovery` configuration
+section, `--auto-resume` / `--no-auto-resume`, reset parsing in `providers.py`,
+the policy and foreground supervisor in the new `recovery.py`, and the plan in
+`state.json`, reports and the dashboard. It is disabled by default. This
+supersedes the statement in the previous section that the runtime never retries
+a quota failure: it still does not unless recovery is active. The change is
+local and unreleased; nothing was pushed and no workflow ran on GitHub. **No
+provider calls were made**: every check below used scripted or synthetic
+providers.
+
+Design points reviewed:
+
+- The retry plan is saved in the same atomic write as the quota pause, while
+  the task lock is held. `run_task` evaluates a pending plan before it clears
+  `last_error`, and makes no provider call before `resume_at`.
+- The supervisor waits without the lock. On waking it passes the `resume_at` it
+  waited for; `run_task` rereads the state under the lock and proceeds only if
+  that plan is still saved, still a quota pause and due.
+- Only `quota` is retried. Retries are bounded by consecutive failures without
+  progress and by a total wait budget; a known reset beyond the budget leaves
+  the task paused. A stated reset cannot shorten the backoff.
+- Locks are never removed automatically, and `--unlock` is not passed to
+  automatic retries. A lock found at retry time ends recovery with an error.
+- From provider output, task state gains only the failure kind, the provider
+  name and a parsed reset time.
+
+Validation, all on October 10, 2026:
+
+- The suite grew from 82 to **140 tests**: 56 in `tests/test_recovery.py` and
+  two more driver tests. Native Windows with Python 3.13.3: 137 passed, 3 POSIX
+  tests skipped. Native Windows with Python 3.11.3: 137 passed, 3 skipped. WSL2
+  (Linux 6.6.87.2-microsoft-standard-WSL2) with Python 3.12.3: 140 passed. The
+  recovery tests use an injected clock and replace `providers.execute` with a
+  guard that fails the test if a provider CLI would be started.
+- They cover the default-off and legacy configurations, strict setting types
+  and ranges, reset parsing (explicit offset, relative waits, ambiguous,
+  impossible and expired times), a misclassified error, the retry limit, the
+  wait budget, a reset beyond the budget, restart before the reset, absence of
+  the lock during every wait, two supervisors (threads, one inside its provider
+  call), counter reset on progress, review resumed without repeating
+  development or tests, Ctrl+C while waiting, an orphaned lock with `--unlock`
+  given to the first run, the conservative native-Windows liveness check, each
+  non-quota failure kind, reports, events and the CLI flags.
+- Protection check: 26 single changes that each remove one safeguard (for
+  example the due check under the lock, the plan comparison, the retry limit,
+  the budget, the safety margin, lock-free waiting, strict integer types, the
+  explicit-offset requirement) were applied one at a time to the sources and
+  the recovery tests rerun. 25 made tests fail. The one that did not, accepting
+  an expired reset, exposed a missing assertion; with that test added it fails
+  too. This is a manual, local check, not part of the suite.
+- `python tools/reliability_e2e.py --repeat 3`, now seven scenarios in both
+  pairings. WSL2: **42 passed, 0 failed, 0 skipped**, exit status 0 (report in
+  the ignored `.test-tmp/reliability-recovery-wsl.json`). Native Windows with
+  Python 3.13.3: 30 passed, 0 failed, 12 skipped (the POSIX interruption and
+  crash scenarios), exit status 0. In the new `auto-resume` scenario one runner
+  started with `--auto-resume` meets `Retry after 300 seconds` from the
+  synthetic reviewer, waits on a virtual clock and completes: three provider
+  calls, one development and one test run, no lock during the wait, and the
+  retry not before the planned time. A negative control with a reviewer that
+  never leaves its limit ends after five calls with recovery stopped.
+- That scenario found a defect during development: the stated reset was saved
+  with its fractional second truncated, so a retry could start up to one second
+  before "reset plus margin". Times a retry depends on are now rounded up. A
+  regression test with a sub-second clock fails against the truncating code
+  and passes with the fix.
+- One real-clock check under WSL2, with synthetic CLIs and a 12-second stated
+  reset: SIGINT during the wait ended the runner with status 2, plan and pause
+  unchanged and no lock; a restarted runner made exactly one more call, 0.04 s
+  after the planned time, and completed. 10 of 10 checks passed. This was an
+  ad-hoc script and is not in the repository.
+- The dashboard task page and overview were rendered in headless Chrome from
+  the demo data, which now includes a paused task with a saved plan. The demo
+  makes no provider calls; the throwaway directory was removed afterwards.
+- Packages built from this tree passed `twine check`; the wheel contains
+  `patchrondo/recovery.py`. Publication scanner: exit status **1** with the same
+  four findings as before (ignored `debug.log` and the three binary images).
+  This is not a clean scan. Changed text files were checked for UTF-8 and LF.
+
+Not verified:
+
+- Recovery with authenticated CLIs. The wording and format of real usage-limit
+  messages were not compared with the parser, so with real accounts a reset
+  may go unrecognized (backoff applies) or an unrelated error may be classified
+  as a usage limit (the retry limit applies).
+- Waits of realistic length, system suspend during a wait, clock changes and
+  time zone handling beyond numeric offsets and UTC/GMT.
+- A supervisor started from the dashboard, beyond the unchanged run-start path;
+  dashboard Run/Resume was not exercised because it invokes real provider CLIs.
+- macOS, and the recovery tests on Linux outside WSL2.
+- Two supervisors as separate operating-system processes; concurrency was
+  tested with threads sharing the same lock file and state.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:
@@ -336,6 +430,7 @@ The remaining limitations are explicit:
 4. Native Windows terminates only direct children; private ACLs and stale-lock recovery do not have POSIX guarantees. WSL2 remains recommended.
 5. Fingerprints exclude ignored files, submodule contents and external dependencies/services. They do not eliminate every concurrent-edit race. Avoid other writers during a task and do not run multiple `--unlock` operations simultaneously.
 6. There was no original Git history to inspect. The review covers the supplied source, not other copies or external repositories.
+7. Automatic quota recovery is opt-in and needs its foreground process to stay alive; there is no service that resumes a saved plan. Usage limits are recognized from CLI text and may be misclassified, with the retry limit as the bound. Reset times are used only in explicit forms, validated with simulated output. Locks are not recovered automatically, and native Windows cannot check recorded PIDs.
 
 Source publication does not establish production readiness or authenticated-CLI
 compatibility. [PUBLISHING.md](PUBLISHING.md) describes validation and publication

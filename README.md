@@ -154,7 +154,8 @@ and review once, but **pauses** before declaring the task `done`.
 
 A complete reference configuration is in
 [`examples/config.example.json`](examples/config.example.json). It also includes
-`workflow.max_iterations`, timeouts and the maximum number of Claude turns.
+`workflow.max_iterations`, timeouts, the maximum number of Claude turns and the
+disabled-by-default `recovery` section.
 
 ### 3. Create tasks with configurable roles
 
@@ -189,6 +190,10 @@ If an agent reaches a quota, times out or is interrupted, the task becomes
 ```bash
 patchrondo resume T-a1b2c3d4e5f6
 ```
+
+To let the same process wait for a usage limit to reset and retry by itself, see
+[Automatic quota recovery](#automatic-quota-recovery-opt-in). It is disabled by
+default.
 
 If the Python process was killed abruptly and left a `.run.lock`, **first confirm
 that no other run is active**, then use
@@ -228,7 +233,10 @@ From it you can:
   separate process. This **calls the real CLIs and uses your plan quota**. The
   run keeps going if the dashboard stops; its output is saved as `ui-run.log` in
   the task directory. A task stuck in `running` after a crash still needs
-  `patchrondo resume <task-id> --unlock` from the terminal;
+  `patchrondo resume <task-id> --unlock` from the terminal. If
+  `recovery.enabled` is `true`, that process also waits and retries after a
+  usage limit; the task page shows the saved plan, its source, the retries used
+  and why recovery stopped, but not whether a process is still waiting;
 - **edit project tests** (*Edit tests*): enabling them requires ticking the
   explicit trust checkbox, exactly like `trust_acknowledged` in `config.json`.
   Enter one command per line. On Windows, use double quotes around arguments
@@ -263,6 +271,7 @@ new -> [Git worktree + task.md + state.json]
            +-- CHANGES_REQUESTED / failing tests -> feedback.md -> developer (next iteration)
            +-- BLOCKED / too many iterations -> BLOCKED
            +-- quota / timeout / invalid output / Ctrl+C -> PAUSED -> resume
+               (quota only, opt-in: wait for the reset or a backoff, then retry)
 ```
 
 AI review is one input: the orchestrator independently checks test results and
@@ -276,6 +285,118 @@ ignored files) and the configured test commands is checked. If they differ from
 the last test checkpoint, the task pauses with `stale_tests`; `resume` starts at
 the test phase. This check does not cover external dependencies, ignored files or
 submodule contents. Do not modify these during a task.
+
+## Automatic quota recovery (opt-in)
+
+By default a usage limit pauses the task until you resume it. With automatic
+recovery, the `run` or `resume` process stays in the foreground, waits until
+the limit should have reset and retries the phase that failed. It never works
+around a limit: it only waits, and each retry is an ordinary CLI call that uses
+your plan quota exactly like a manual resume.
+
+```bash
+patchrondo run T-a1b2c3d4e5f6 --auto-resume
+patchrondo resume T-a1b2c3d4e5f6 --auto-resume
+patchrondo resume T-a1b2c3d4e5f6 --no-auto-resume   # one run now; a saved retry plan is cancelled
+```
+
+Recovery is active when `--auto-resume` is given or `recovery.enabled` is `true`
+in `config.json`. `--no-auto-resume` turns it off for one command.
+
+```json
+"recovery": {
+  "enabled": false,
+  "quota_only": true,
+  "max_consecutive_retries": 3,
+  "initial_backoff_seconds": 120,
+  "max_backoff_seconds": 1800,
+  "max_total_wait_seconds": 86400,
+  "reset_safety_margin_seconds": 30
+}
+```
+
+| Setting | Allowed values | Meaning |
+|---|---|---|
+| `enabled` | `true` / `false` | Default for commands without `--auto-resume` or `--no-auto-resume`. |
+| `quota_only` | `true` | Fixed in this version: no other failure is ever retried automatically. |
+| `max_consecutive_retries` | 1–10 | Retries allowed without progress before recovery stops. |
+| `initial_backoff_seconds` | 10–3600 | Wait before the first retry when no reset time is usable; doubles each time. |
+| `max_backoff_seconds` | `initial_backoff_seconds`–86400 | Upper bound for one backoff wait. |
+| `max_total_wait_seconds` | 60–604800 | Longest time from the first failure of a streak to a planned retry. |
+| `reset_safety_margin_seconds` | 0–3600 | Added to a reset time stated by the provider. |
+
+Values must be JSON booleans and integers; `true` is not accepted as a number,
+and unknown keys are rejected. A configuration without a `recovery` section, or
+with only some of its keys, uses the defaults above for the rest.
+
+### Three ways to continue a paused task
+
+| | Command | Behavior |
+|---|---|---|
+| **Manual resume** | `resume` with recovery off, or `--no-auto-resume` | Runs once, immediately. A saved retry plan is cancelled and recorded as such. |
+| **Automatic resume** | `run` / `resume` with recovery active, left running | After a usage limit the process saves a retry plan, waits and retries, within the limits above. |
+| **Scheduled resume** | a plan saved by an automatic run that has since ended | Nothing runs by itself. Start `resume` with recovery active to wait for the saved time; it does not call a provider earlier. |
+
+There is no daemon, system service or background process. If the waiting
+process ends (Ctrl+C, closed terminal, reboot), the plan stays in `state.json`
+and the task stays paused until you start a command again. Ctrl+C while waiting
+keeps the plan.
+
+### How the retry time is chosen
+
+- Only a pause whose `last_error.kind` is `quota` is retried. `authentication`,
+  `configuration`, `stale_tests`, `tests_disabled`, `interrupted`, `timeout`,
+  `invalid_review`, `agent_error`, `system_error` and any unknown failure
+  always wait for you.
+- A reset time is used only when the CLI output states it unambiguously next to
+  wording such as "resets" or "retry": a date and time with an explicit UTC
+  offset (`resets at 2026-10-10T18:00:00Z`, `resets on Oct 10, 2026 at 6:00 PM
+  UTC`), or a relative wait with units (`Retry after 120 seconds`, `try again in
+  2 hours 30 minutes`). The retry is planned for that instant plus the safety
+  margin, and never before it.
+- A time without a date or offset (`resets at 9pm`), a time zone name or
+  abbreviation, an impossible date or a reset that has already passed is not
+  used. The wait is then an exponential backoff: 120 s, 240 s, 480 s … up to
+  `max_backoff_seconds`.
+- A stated reset can lengthen the wait but never shorten it below the backoff
+  for that attempt.
+- The count of consecutive failures returns to zero when the task reaches a new
+  phase or iteration. After `max_consecutive_retries` retries without progress,
+  recovery stops and the task stays paused.
+- If the next wait would end later than `max_total_wait_seconds` after the first
+  failure of the streak, recovery stops. A known reset beyond that budget is
+  not brought forward: no call is made.
+
+`patchrondo status` shows the plan in the `recovery` section of `state.json`
+(`resume_at`, `consecutive_failures`, `schedule_source`, `provider`, and
+`stop_reason` when recovery has ended). The report and the dashboard show the
+same information. All times are UTC.
+
+### Limits of this version
+
+- **Classification is textual.** A failure is treated as a usage limit when the
+  CLI output matches patterns such as "rate limit" or "quota". An unrelated
+  error that mentions those words is retried too. The retry limit bounds the
+  cost: with the defaults, at most three extra calls.
+- **Real reset messages are not validated.** Parsing is tested with simulated
+  output only. If your CLI states its reset in another form, the backoff
+  applies. With the defaults that is three retries within about 14 minutes,
+  after which recovery stops; a limit lasting several hours then still needs a
+  manual resume or larger backoff settings.
+- **The waiting process must stay alive.** Automatic resume happens only while
+  it runs; the dashboard cannot tell whether one is still waiting.
+- **Locks are never recovered automatically.** If the task lock exists when a
+  retry is due, recovery stops with an error and leaves the lock and the plan
+  untouched. `--unlock` applies only to the run you start by hand, never to an
+  automatic retry. Native Windows cannot check whether a recorded PID is still
+  alive, so stale-lock recovery there stays manual and conservative; use WSL2
+  for unattended runs.
+- **Starting it twice is safe but pointless.** Two waiting processes for one
+  task never call a provider at the same time or twice for one plan: the task
+  lock and a check of the saved plan under that lock decide. The process that
+  meets the lock stops.
+- Setting `recovery.enabled` to `false` stops a process that was activated by
+  the configuration at its next wake-up, without a provider call.
 
 ## State layout
 
@@ -367,7 +488,7 @@ rebuilt on the next run. Index files of removed worktrees are cleaned up automat
 4. **Separate worktree:** the main repository is not edited; no automatic commit, push or merge. Worktree creation disables Git hooks for the checkout command, but **does not create an OS sandbox** or prevent every possible effect of external Git configuration.
 5. **Credentials:** prompts are sent through stdin, not shell arguments. State has private permissions on POSIX; the child environment removes several API key/secret/token variables. Local CLI credentials remain managed **by the CLIs**, not the orchestrator. Keep secrets out of the repository: file access and test scripts could expose them.
 6. **Test execution:** unlike sandboxed agent tools, test commands run **on the host with your permissions**. A malicious repository can execute arbitrary code through its test suite. For untrusted code, run **the entire orchestrator inside an isolated VM/container**, without production credentials and with appropriate network/firewall settings.
-7. **Billing and limits:** subscriptions have quotas and may support additional usage billing. The loop stops on rate limits, timeouts, errors, `BLOCKED` or the maximum iteration count. There is no automatic quota-availability polling.
+7. **Billing and limits:** subscriptions have quotas and may support additional usage billing. The loop stops on rate limits, timeouts, errors, `BLOCKED` or the maximum iteration count. Nothing polls for quota availability. With the opt-in [automatic quota recovery](#automatic-quota-recovery-opt-in), a waiting process retries a usage-limit pause a bounded number of times; every retry uses plan quota.
 8. **Fallible LLM review:** the JSON schema checks structure, not review accuracy. Require human review before integrating changes into main or production.
 9. **Sensitive logs:** logs and handoffs may contain confidential project data. They are saved locally with private permissions; protect backups and disk storage, and do not share `~/.patchrondo`.
 10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group; native Windows terminates only the direct child, so WSL2 remains recommended. POSIX private permissions are not translated into Windows ACLs by the program.
@@ -410,9 +531,10 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 10, 2026 ran **74 tests**: on Windows
-(Python 3.13) **73 passed and 1 POSIX process-group test was skipped**; on WSL2
-(Python 3.12) all 74 passed. Tests use temporary Git
+The latest local validation on October 10, 2026 ran **140 tests**: on Windows
+(Python 3.13 and Python 3.11) **137 passed and 3 POSIX tests were skipped**; on
+WSL2 (Python 3.12) all 140 passed. This local result covers the unreleased
+working tree, including automatic quota recovery. Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Full package checks are documented in
@@ -427,17 +549,21 @@ python tools/reliability_e2e.py --repeat 3 --output .test-tmp/reliability.json
 ```
 
 It uses synthetic Claude/Codex CLIs in real subprocesses for both role pairings.
-Six scenarios cover review feedback followed by a second iteration, developer
+Seven scenarios cover review feedback followed by a second iteration, developer
 quota, reviewer quota, Ctrl+C during review, a killed runner with a stale lock,
-and a task spanning three Python files with six functional tests. Signal and
-crash scenarios require POSIX and are skipped on native Windows; use WSL2 for
-full coverage. Select scenarios with repeatable `--scenario` options.
+a task spanning three Python files with six functional tests, and automatic
+resume after a reviewer usage limit. Signal and crash scenarios require POSIX
+and are skipped on native Windows; use WSL2 for full coverage. Select scenarios
+with repeatable `--scenario` options.
 
-The driver invokes resume after each injected failure and checks that completed
-development and tests are preserved when resuming review. After a crash it first
-verifies that ordinary resume refuses the stale lock, then uses `--unlock` after
-the runner has exited. This is test-driver automation; PatchRondo does not
-automatically retry a real quota failure.
+In the quota, interruption and crash scenarios the driver invokes resume after
+each injected failure and checks that completed development and tests are preserved
+when resuming review. After a crash it first verifies that ordinary resume
+refuses the stale lock, then uses `--unlock` after the runner has exited. That
+is test-driver automation. The `auto-resume` scenario instead starts a single
+runner with `--auto-resume`: the synthetic reviewer reports `Retry after 300
+seconds`, the runner saves its plan, waits on a virtual clock without the task
+lock and retries by itself. No scenario waits for or measures a real quota.
 
 The optional JSON report records checks, iterations, attempted provider calls,
 test runs, changed files, total elapsed time and provider-call timings. Quality
@@ -485,6 +611,7 @@ resumption after an interruption have not been checked with real accounts. Detai
 - Optional embedding-based reranking and decision-log indexing, if lexical retrieval proves insufficient.
 - Dedicated OS sandbox for tests (Docker/VM with minimal privileges).
 - Record real-provider check results per platform and CLI version; extend the check to resumption after an interruption.
+- Compare quota-reset parsing with the messages of real CLI versions; consider named time zones and a way to keep a retry plan attended without a foreground process.
 - Approval requests for risky tools and notifications.
 - Stall detection based on Git/test changes and support for multiple projects in one state directory.
 

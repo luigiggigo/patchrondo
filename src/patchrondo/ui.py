@@ -131,7 +131,8 @@ def overview(home: Path) -> dict:
                     "test_command_lines": [join_command(cmd) for cmd in tests.get("commands") or []
                                            if isinstance(cmd, list) and all(isinstance(x, str) for x in cmd)],
                     "max_iterations": cfg["workflow"]["max_iterations"],
-                    "rag_enabled": cfg["rag"]["enabled"]}
+                    "rag_enabled": cfg["rag"]["enabled"],
+                    "recovery_enabled": cfg["recovery"]["enabled"]}
         error = None
     except (OSError, ValueError, RuntimeError, KeyError, json.JSONDecodeError) as exc:
         settings, error = None, str(exc)

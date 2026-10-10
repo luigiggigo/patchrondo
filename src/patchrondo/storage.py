@@ -43,6 +43,10 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+class LockBusy(RuntimeError):
+    """The task lock exists: a run is active, or it is stale and needs a manual check."""
+
+
 class TaskLock:
     """Single host lock; manual recovery after power loss with --unlock."""
 
@@ -72,7 +76,7 @@ class TaskLock:
         try:
             fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError as exc:
-            raise RuntimeError("Task is already running or the lock is stale. Check the process before using --unlock") from exc
+            raise LockBusy("Task is already running or the lock is stale. Check the process before using --unlock") from exc
         self.owner = True
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump({"pid": os.getpid(), "time": now()}, stream)
