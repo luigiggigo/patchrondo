@@ -712,8 +712,9 @@ alone, or the runs on Python 3.11 and WSL2. Its cause is not known.
 - **Browsers and platforms.** Chrome on native Windows only. Not Firefox,
   Safari or Edge; not Linux or macOS desktops. The server ran under WSL2 only
   in the unit tests; no browser was pointed at it there. The `ps`-based
-  process check for systems without `/proc` (macOS, BSD) was not run at all.
-  CI has not run on this code.
+  process check for systems without `/proc` (macOS, BSD) was not run locally,
+  and CI had not run on this code at the time of writing; the follow-up below
+  records its first run.
 - **POSIX-only actions in a browser.** *Stop* and *Release lock and resume*
   were tested through the API under WSL2 (a real interrupt of a synthetic
   child; the `--unlock` flag reaching a mocked start), not by clicking them.
@@ -742,6 +743,58 @@ alone, or the runs on Python 3.11 and WSL2. Its cause is not known.
 - Rondo's states use two images, motion and a mark; dedicated illustrations
   are listed in `docs/DESIGN.md` as work to do.
 - The interface is in English only.
+
+### Follow-up: the first CI run and two test defects on macOS (October 10, 2026)
+
+The maintainer committed and pushed the 0.2.0 tree as `c82a345`.
+[GitHub CI run 38084131923](https://github.com/luigiggigo/patchrondo/actions/runs/38084131923)
+(read with `gh` on October 10, 2026) failed: the four Linux and Windows jobs
+passed, and both `macos-latest` jobs (Python 3.11 and 3.13) ended with 245
+passed, 2 failed and 1 skipped of 248. The tests that start real child
+processes passed there, so that run did exercise the `ps`-based process check.
+Both failures were defects of tests added with 0.2, not of the runtime:
+
+| Test | Cause | Fix |
+|---|---|---|
+| `test_a_waiting_process_blocks_a_second_automatic_run_only` | `patch("patchrondo.app.subprocess.Popen")` replaces `Popen` for the whole `subprocess` module. Without `/proc` the process check starts `ps` through it, so under the patch it received a mock and answered "unknown"; the waiting process counted as unverified and the second run was accepted (202 instead of 409). | The test hands `ps` to the real `Popen` and mocks only the start of the run. |
+| `test_a_rewrite_within_the_timestamp_granularity_is_still_seen` | The background scan of the event hub reads through the same cache while the test pins the file signature. A scan between the pin and the next save stored the previous text as settled, and the test then read it back (`'Other' != 'Settled'`). The scan runs every 0.5 s; on the macOS runners the test took about 1.3 s with its setup. | The test holds the scan lock while the signature is pinned. |
+
+The second defect needs a signature that does not follow the file, which only
+the test creates: the runtime reads the signature before the file, so a scan
+can pair an old signature with newer text (read again on the next scan) but
+not a new signature with older text.
+
+Both failures were reproduced under WSL2 before the fix, with the messages of
+the CI log: the first with `procinfo._procfs` replaced so that the `ps` path
+is taken, the second with `os.fsync` delayed by 0.2 s (three runs of three).
+With the fix the same commands passed (one run, and three of three).
+
+Checks rerun after the fix, which changed `tests/test_ui.py` only, on October
+10, 2026, with scripted or synthetic providers and no provider call:
+
+- **Suite: 248 tests.** Native Windows with Python 3.13.3 and with Python
+  3.11: 243 passed, 5 skipped, exit status 0 on both. WSL2 with Python 3.12.3:
+  247 passed, 1 skipped, exit status 0.
+- **Protections**, native Windows, Python 3.13.3: 52 of 52 removed
+  safeguards detected, exit status 0.
+- **Real clock**, WSL2: 10 of 10 checks passed, the retry 0.04 s after the
+  planned time, exit status 0.
+- **Reliability driver** (`--repeat 3`): WSL2 42 passed, 0 failed, 0 skipped;
+  native Windows 30 passed, 0 failed, 12 skipped; exit status 0 on both.
+- **Packages.** `python -m build` into a directory outside the repository
+  produced `patchrondo-0.2.0.tar.gz` and `patchrondo-0.2.0-py3-none-any.whl`;
+  `twine check` passed both.
+- **Publication scanner:** exit status **1**, 91 files checked, the same four
+  findings as above (`debug.log` and the three binary assets). Not a clean
+  scan.
+
+Not verified: the fix on macOS. Its conditions were imitated under WSL2, and
+no CI run covers it until it is pushed. The whole suite under the imitation of
+a system without `/proc` ended with 246 passed, 1 failed and 1 skipped; the
+failure, `test_interface_restart_during_a_run_recovers_the_real_state`, is a
+limit of the imitation, which does not reach the real child that test starts,
+so parent and child disagree on the process token. That test passed in both
+macOS jobs of the run above.
 
 ## Remaining limitations
 

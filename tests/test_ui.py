@@ -684,8 +684,10 @@ class RunTests(ServerCase):
                                "max_consecutive_retries": 3, "provider": "codex", "schedule_source": "backoff", "stop_reason": None}})
         save_json(self.path / runinfo.MARKERS / f"{os.getpid()}.json", {"pid": os.getpid(), "start": procinfo.identity(), "auto_resume": True})
         self.assertEqual(self.get("/api/snapshot")[1]["tasks"][0]["runtime"]["activity"], "waiting_retry")
-        with patch("patchrondo.app.subprocess.Popen") as popen:
-            self.mocked(popen)
+        popen, real = unittest.mock.MagicMock(), subprocess.Popen
+        self.mocked(popen)
+        # The patch replaces Popen for every module, and without /proc (macOS) the process check starts `ps` with it.
+        with patch("patchrondo.app.subprocess.Popen", lambda args, **options: (real if args[0] == "ps" else popen)(args, **options)):
             for body in ({}, {"auto_resume": True}):
                 response, data = self.post(self.run_url, body)
                 self.assertEqual(response.status, 409, data)
@@ -889,16 +891,18 @@ class LiveTests(ServerCase):
     def test_a_rewrite_within_the_timestamp_granularity_is_still_seen(self):
         """Two saves can leave a file with the same time and size: a recently written file is always read again."""
         file = self.path / "state.json"
-        with patch("patchrondo.app._signature", return_value=(time.time_ns(), 100, 1)):
-            self.change(title="First")
-            first = self.app._state(file)["title"]
-            self.change(title="Other")
-            second = self.app._state(file)["title"]
-        self.assertEqual((first, second), ("First", "Other"))
-        with patch("patchrondo.app._signature", return_value=(time.time_ns() - 10 ** 10, 100, 1)):
-            self.change(title="Settled")
-            self.assertEqual(self.app._state(file)["title"], "Settled")  # a different signature: read
-            self.assertIs(self.app._state(file), self.app._state(file))  # unchanged and old enough: cached
+        # The background scan uses the same cache: under a pinned signature it could store the text before a save as settled.
+        with self.hub.scan_lock:
+            with patch("patchrondo.app._signature", return_value=(time.time_ns(), 100, 1)):
+                self.change(title="First")
+                first = self.app._state(file)["title"]
+                self.change(title="Other")
+                second = self.app._state(file)["title"]
+            self.assertEqual((first, second), ("First", "Other"))
+            with patch("patchrondo.app._signature", return_value=(time.time_ns() - 10 ** 10, 100, 1)):
+                self.change(title="Settled")
+                self.assertEqual(self.app._state(file)["title"], "Settled")  # a different signature: read
+                self.assertIs(self.app._state(file), self.app._state(file))  # unchanged and old enough: cached
 
     def test_a_client_that_missed_events_is_told_to_resynchronize(self):
         snapshot = self.hub.snapshot()
