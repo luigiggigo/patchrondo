@@ -40,7 +40,10 @@ listed under *Engine*.
   "Tests passed", "Codex: changes requested"), grouped by iteration.
 - Log viewer for the run output and every saved transcript: only the end of a
   file is loaded, earlier output on request, new output is appended while a
-  task runs, with Follow, Wrap, jump and Copy.
+  task runs, with Follow, Wrap, jump and Copy. (Corrected on October 11, 2026:
+  an answer that arrived after another file had been chosen was drawn into
+  that file's view, and a change noticed while a file was opening made the
+  page read that file again from its first byte.)
 - Changed files of a task with a bounded diff and the text of new files.
 
 ### Projects and settings

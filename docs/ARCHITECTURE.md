@@ -503,4 +503,6 @@ with `fetch`, not `EventSource`, so the token stays in a header.
 The task page takes its header from the summary in the stream and fetches the
 task's detail whenever that summary changes. Logs are read by byte offset in
 slices of at most 256 kB, by an identifier taken from the task's own file
-listing.
+listing. The log viewer numbers each opening of a file and sends one request
+at a time for it; an answer is used only if no file has been opened since its
+request was sent, so a late answer cannot reach the view of another file.

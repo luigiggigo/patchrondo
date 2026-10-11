@@ -261,7 +261,7 @@ function activityPanel() {
 }
 
 function logsPanel(projectId, taskId) {
-  let files = [], current = null, start = 0, next = 0, size = 0, follow = true, loading = false;
+  let files = [], current = null, start = 0, next = 0, size = 0, follow = true, loading = false, opened = 0;
   const select = h("select", { class: "input log-select", "aria-label": "Log file", onchange: () => open(select.value) });
   const info = h("span", { class: "muted num log-info" });
   const view = h("div", { class: "log-view", tabindex: "0", role: "log", "aria-label": "Log output" });
@@ -292,53 +292,63 @@ function logsPanel(projectId, taskId) {
     info.textContent = `${bytes(size)}${start > 0 ? ` · showing the last ${bytes(next - start)}` : ""}`;
     earlier.hidden = start <= 0;
   };
+  const behind = () => { const known = files.find((file) => file.id === current); return Boolean(known && known.size !== next); };
 
+  // Every open() starts a new turn and one request at a time reads for it. An answer is used only while its turn
+  // is still the current one: by then another file may be shown, or the same file may have been opened again.
   async function open(id) {
+    const turn = ++opened;
     current = id;
     start = next = 0;
+    loading = true;
+    let shown = false;
     clear(view, h("div", { class: "log-status" }, "Loading…"));
     try {
       const data = await api.get(url(-LOG_CHUNK, LOG_CHUNK));
-      if (current !== id) return;
+      if (turn !== opened) return;
       ({ offset: start, next, size } = data);
       clear(view, earlier, data.text ? chunk(data.text) : h("div", { class: "log-status" }, "This file is empty."));
       describe();
       view.scrollTop = view.scrollHeight;
+      shown = true;
     } catch (error) {
-      clear(view, h("div", { class: "log-status" }, `This log cannot be read: ${error.message}`));
-    }
+      if (turn === opened) clear(view, h("div", { class: "log-status" }, `This log cannot be read: ${error.message}`));
+    } finally { if (turn === opened) loading = false; }
+    if (shown && behind()) append(); // the file grew while its end was being read
   }
 
   async function loadEarlier() {
     if (loading || start <= 0) return;
     loading = true;
+    const turn = opened;
     try {
       const from = Math.max(0, start - LOG_CHUNK);
       const data = await api.get(url(from, start - from));
+      if (turn !== opened) return;
       const before = view.scrollHeight;
       earlier.after(chunk(data.text));
       start = data.offset;
       describe();
       view.scrollTop += view.scrollHeight - before; // keep the text the reader was looking at in place
-    } catch (error) { toastError(error); } finally { loading = false; }
+    } catch (error) { if (turn === opened) toastError(error); } finally { if (turn === opened) loading = false; }
   }
 
   async function append() {
     if (loading || !current) return;
     loading = true;
+    const turn = opened;
     try {
-      const id = current;
       let data;
       do {
         data = await api.get(url(next, LOG_CHUNK));
-        if (current !== id) return;
-        if (data.size < next) { await open(id); return; } // the file was replaced: start over
+        if (turn !== opened) return;
+        if (data.size < next) { await open(current); return; } // the file was replaced: start over
         if (data.text) { view.querySelector(".log-status")?.remove(); view.append(chunk(data.text)); }
         ({ next, size } = data);
       } while (!data.eof);
       describe();
       if (follow) view.scrollTop = view.scrollHeight;
-    } catch { /* the next update retries */ } finally { loading = false; }
+    } catch { /* the next update retries */ } finally { if (turn === opened) loading = false; }
   }
 
   return { el, update(detail) {
@@ -355,8 +365,7 @@ function logsPanel(projectId, taskId) {
     });
     if (!current || !files.some((file) => file.id === current)) { open(files[0].id); select.value = files[0].id; return; }
     select.value = current;
-    const known = files.find((file) => file.id === current);
-    if (known && known.size !== next) append();
+    if (behind()) append();
   } };
 }
 

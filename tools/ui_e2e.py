@@ -744,6 +744,8 @@ def scenario_quality(env: Env) -> None:
     line = "2026-10-10 12:00:00 synthetic log line with some text to make it realistically long ✓\n"
     (big / "ui-run.log").write_text("FIRST LINE OF THE LOG\n" + line * 70000 + "LAST LINE OF THE LOG\n", encoding="utf-8", newline="\n")
     log_size = (big / "ui-run.log").stat().st_size
+    (big / "runs" / "iteration-1").mkdir(parents=True)
+    (big / "runs" / "iteration-1" / "developer.log").write_text("ONLY IN THE OTHER LOG\n", encoding="utf-8", newline="\n")
     env.start()
     env.open()
     project_id = env.projects()[0]["id"]
@@ -793,6 +795,33 @@ def scenario_quality(env: Env) -> None:
     page.js("(q('.log-toolbar .switch').click(), true)")
     env.expect("turning Follow on jumps to the newest output", "q('.log-view').scrollHeight - q('.log-view').scrollTop - q('.log-view').clientHeight < 24")
     env.shot("task-logs-large")
+
+    # Switching files while a request is unanswered: a late answer never reaches the view of another file.
+    hold = """(() => { const real = window.fetch;
+        window.fetch = (...args) => { window.fetch = real; const answer = real.apply(window, args);
+          return new Promise((resolve, reject) => { window.releaseHeld = () => answer.then(resolve, reject); }); };
+        %s; const held = window.fetch === real; window.fetch = real; return held; })()"""
+    choose = "(q('.log-select').value = %s, q('.log-select').dispatchEvent(new Event('change')), true)"
+    env.check("the request for earlier output is held back", page.js(hold % "byText('Load earlier output').click()"))
+    page.js(choose % json.dumps("iteration-1/developer.log"))
+    env.expect("another log file opens while that request is unanswered", "q('.log-view').textContent.includes('ONLY IN THE OTHER LOG')", 6)
+    page.js("(window.releaseHeld(), new Promise((r) => setTimeout(() => r(true), 400)))")
+    shown = page.js("[qa('.log-chunk').map((part) => part.textContent).join(''), q('.log-info').textContent, byText('Load earlier output') ? 'offered' : 'not offered']")
+    env.check("a late answer for the previous file is not drawn into the file now shown",
+              shown == ["ONLY IN THE OTHER LOG\n", "22 B", "not offered"], str(shown)[:300])
+    env.check("the request that opens a log is held back", page.js(hold % (choose % json.dumps("run"))))
+    with (big / "ui-run.log").open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write("APPENDED WHILE OPENING\n")
+    time.sleep(3)
+    shown = page.js("q('.log-view').textContent")
+    env.check("nothing else is read into the view while a log is still opening", shown == "Loading…", f"{len(shown)} characters: {shown[:120]}")
+    page.js("(window.releaseHeld(), true)")
+    env.expect("the log then opens at its end and catches up", "q('.log-view').textContent.includes('APPENDED WHILE OPENING')", 8)
+    drawn = page.js("q('.log-view').textContent.length")
+    env.check("and still draws only its tail", drawn < 400_000 and not page.js("q('.log-view').textContent.includes('FIRST LINE OF THE LOG')"), f"{drawn} characters")
+    before = page.js("q('.log-view').textContent.length")
+    page.click(text="Load earlier output")
+    env.expect("earlier output can be loaded again after the switch", f"q('.log-view').textContent.length > {before}", 6)
 
     # Keyboard and focus.
     env.go("")

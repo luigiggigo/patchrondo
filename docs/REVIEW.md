@@ -1150,6 +1150,75 @@ Not verified:
 - The page's side of it in a browser. The browser check opens streams while
   the scan is running and does not wait for it to stop.
 
+### Follow-up: a late answer could be drawn into another log file (October 11, 2026)
+
+Found by review of `logsPanel` in `static/js/views/task.js`. "Load earlier
+output" sent a request and, when the answer came, inserted its text into the
+view and took its offset as the start of what was shown. It did not check
+which file the view showed by then. If another file was chosen while the
+request was unanswered, the view of that file received text of the previous
+one, and the size line and the "Load earlier output" button described the
+wrong file.
+
+The new check for this showed a second defect of the same kind. While the
+request that opens a file was unanswered, the viewer's position in that file
+was zero. A change to the task noticed in that time started the request for
+new output from that position: the whole file was read from its first byte in
+200 kB slices and drawn. In the check this drew 6,020,090 characters of a
+6 MB log whose last 200 kB should have been shown.
+
+**Fix.** Each opening of a file has a number. Opening, earlier output and new
+output share one request at a time, and an answer is used only if its number
+is still the current one; an error of a superseded request is not shown
+either. A file that grew while its end was being read is brought up to date
+when the opening completes. The comparison by file identifier that the
+opening and the new output used before is replaced by the number, because it
+could not tell a file from the same file opened again.
+
+`tools/ui_e2e.py` has eight new checks in the `quality` scenario. They hold
+back one answer in the page, choose another file or change the log on disk,
+and then release it. Against the previous `task.js` (`ee34619`) on native
+Windows two of them failed: "a late answer for the previous file is not drawn
+into the file now shown" and "nothing else is read into the view while a log
+is still opening". No entry was added to `MUTATIONS`: the unit tests do not
+run the page, so they cannot notice this safeguard being removed.
+
+Checks rerun on the final code on October 11, 2026, with scripted or
+synthetic providers and no provider call:
+
+- **Suite: 269 tests.** Native Windows 11 (10.0.26200) with Python 3.13.3 and
+  with Python 3.11.3: 264 passed, 5 skipped, exit status 0 on both. WSL2 with
+  Python 3.12.3: 268 passed, 1 skipped, exit status 0.
+- **Reliability driver** (`--repeat 3`): WSL2 42 passed, 0 failed, 0 skipped;
+  native Windows 30 passed, 0 failed, 12 skipped; exit status 0 on both.
+- **Protections**, native Windows, Python 3.13.3: 61 of 61 removed
+  safeguards detected, exit status 0.
+- **Real clock**, WSL2: 10 of 10 checks passed, the retry 0.03 s after the
+  planned time, exit status 0.
+- **Browser check** (`python tools/ui_e2e.py`), native Windows, Chrome
+  154.0.8037.99 headless, Python 3.13.3, one run: 177 passed, 0 failed, exit
+  status 0.
+- **Packages.** `python -m build` into a directory outside the repository
+  produced `patchrondo-0.2.0.tar.gz` and `patchrondo-0.2.0-py3-none-any.whl`;
+  `twine check` passed both.
+- **Publication scanner:** exit status **1**, 92 files checked, the same four
+  findings as above (`debug.log` and the three binary assets). Not a clean
+  scan.
+
+Not verified, and one defect left as it was:
+
+- When the request that opens a file fails, the view shows the error and the
+  next change to the task reads the file from its first byte, as before this
+  change. For a small file that is a retry; for a large one it loads all of
+  it. Seen by reading the code, not reproduced, and not changed here.
+- The change in Edge, on macOS, and in CI. It is local and unpushed;
+  [run 38143812643](https://github.com/luigiggigo/patchrondo/actions/runs/38143812643)
+  (read with `gh` on October 11, 2026, completed successfully) covers
+  `ee34619`, the commit before it, and CI does not run the browser check.
+- The defect with a slow answer from a real server. Requests to the local
+  server are answered in milliseconds, so both defects were produced only by
+  holding an answer back in the page.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:
