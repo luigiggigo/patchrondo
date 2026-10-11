@@ -1087,6 +1087,69 @@ Limits that remain:
   of one are checked against the process table of the other, so a marker
   written by one side can be judged gone by the other.
 
+### Follow-up: a page could connect to a hub whose scan had just stopped (October 11, 2026)
+
+Found by review of `live.Hub._loop`. With no listener and no request for
+fifteen seconds the scanning thread ends. It made that decision in one section
+under the hub's lock and cleared `Hub.thread` in a second one. A `subscribe`
+that ran between the two was counted too late to keep the thread, and still
+found `Hub.thread` set, so it started no other. The thread then ended. The
+stream of that page stayed open and received heartbeats, so the page neither
+reconnected nor marked itself as disconnected, and showed no change until
+something asked for a snapshot, which scans and starts the thread again.
+
+**Fix.** The decision and the withdrawal are one section. A listener is either
+counted before the thread decides, and the thread goes on, or arrives after
+the thread has withdrawn, and `_ensure_running` starts a new one. Nothing else
+in the hub changed.
+
+`tests/test_ui.py` has a new class, `LiveIdleTests`, with two tests on a hub
+over a stub application. The first subscribes at the exact point of the
+defect, from the scanning thread as it leaves the section in which it found
+the hub idle, and then expects a live thread and events without a snapshot
+request. Against the previous `live.py` (`45259fd`) on native Windows with
+Python 3.13.3 it failed with "a listener was left without a scanning thread".
+The second covers the ordinary case, which had no test: the thread ends when
+nobody listens and the next listener starts one. One entry was added to
+`MUTATIONS`; it restores the two separate sections.
+
+Checks rerun on the final code on October 11, 2026, with scripted or
+synthetic providers and no provider call:
+
+- **Suite: 269 tests.** Native Windows 11 (10.0.26200) with Python 3.13.3 and
+  with Python 3.11.3: 264 passed, 5 skipped, exit status 0 on both. WSL2 with
+  Python 3.12.3: 268 passed, 1 skipped, exit status 0.
+- **Reliability driver** (`--repeat 3`): WSL2 42 passed, 0 failed, 0 skipped;
+  native Windows 30 passed, 0 failed, 12 skipped; exit status 0 on both.
+- **Protections**, native Windows, Python 3.13.3: 61 of 61 removed
+  safeguards detected, exit status 0.
+- **Real clock**, WSL2: 10 of 10 checks passed, the retry 0.04 s after the
+  planned time, exit status 0.
+- **Browser check** (`python tools/ui_e2e.py`), native Windows, Chrome
+  154.0.8037.99 headless, Python 3.13.3, one run: 169 passed, 0 failed, exit
+  status 0.
+- **Packages.** `python -m build` into a directory outside the repository
+  produced `patchrondo-0.2.0.tar.gz` and `patchrondo-0.2.0-py3-none-any.whl`;
+  `twine check` passed both.
+- **Publication scanner:** exit status **1**, 92 files checked, the same four
+  findings as above (`debug.log` and the three binary assets). Not a clean
+  scan.
+
+Not verified:
+
+- The defect in a running server. It needs a subscription in the instant
+  between two acquisitions of one lock, after fifteen idle seconds. The page
+  asks for a snapshot just before each stream, which renews the time of last
+  use, so with the page the thread would also have to be suspended between
+  the two sections for that whole exchange. It was produced only by placing
+  the subscription there in a test, and was not observed in use.
+- The change on macOS, and in CI. It is local and unpushed;
+  [run 38137546425](https://github.com/luigiggigo/patchrondo/actions/runs/38137546425)
+  (read with `gh` on October 11, 2026, completed successfully) covers
+  `45259fd`, the commit before it.
+- The page's side of it in a browser. The browser check opens streams while
+  the scan is running and does not wait for it to stop.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:

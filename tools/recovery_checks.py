@@ -214,6 +214,13 @@ MUTATIONS = [
     Mutation("import check not repeated under the registry mutex", "workspace.py",
              "            self._refuse_registered(self._listed(data), repo, home)\n", "",
              ("test_workspace.OvertakenRegistrationTests",)),
+    # A listener that subscribes while the scanning thread ends for inactivity must not be left without one.
+    Mutation("idle scanning thread withdrawn after the check, not with it", "live.py",
+             "                if self.listeners == 0 and time.monotonic() - self.last_use > IDLE_SECONDS:\n"
+             "                    self.thread = None\n                    return\n",
+             "                idle = self.listeners == 0 and time.monotonic() - self.last_use > IDLE_SECONDS\n"
+             "            if idle:\n                with self.cond:\n                    self.thread = None\n                return\n",
+             ("test_ui.LiveIdleTests",)),
 ]
 
 

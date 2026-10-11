@@ -16,7 +16,7 @@ import unittest
 import unittest.mock
 from unittest.mock import patch
 
-from patchrondo import __version__
+from patchrondo import __version__, live
 from patchrondo.app import PACKAGE_ROOT, RunsAtExit, browse
 from patchrondo.cli import main
 from patchrondo.commands import join_command, split_command
@@ -1012,6 +1012,75 @@ class LiveTests(ServerCase):
         self.stop()
         self.assertLess(time.monotonic() - started, 3)
         self.assertEqual(response.fp.read(), b"")
+
+
+class Source:
+    """What the hub needs from the application: a view to collect and the event that a write sets."""
+
+    def __init__(self):
+        self.changed = threading.Event()
+
+    def collect(self):
+        return {"projects": {}, "tasks": {"P/T": {"title": "Watched"}}, "settings": None, "providers": None, "error": None}
+
+
+class Overtaken(threading.Condition):
+    """Calls `arrive` once, the first time the scanning thread leaves a section guarded by the condition."""
+
+    def __init__(self, arrive):
+        super().__init__()
+        self.arrive = arrive
+
+    def __exit__(self, *args):
+        result = super().__exit__(*args)
+        if threading.current_thread().name == "patchrondo-live" and self.arrive is not None:
+            arrive, self.arrive = self.arrive, None
+            arrive()
+        return result
+
+
+class LiveIdleTests(unittest.TestCase):
+    """With no listener the scanning thread ends; whoever arrives at that moment must still be served."""
+
+    def hub(self, arrive=None):
+        hub = live.Hub(Source(), interval=0.01)
+        self.addCleanup(hub.close)
+        if arrive is not None:
+            hub.cond = Overtaken(lambda: arrive(hub))
+        return hub
+
+    def test_a_listener_that_arrives_while_the_thread_ends_still_receives_events(self):
+        ended = []
+
+        def arrive(hub):
+            # The thread has just found the hub idle. Before the fix it had not yet withdrawn itself here.
+            ended.append(threading.current_thread())
+            hub.subscribe()
+
+        hub = self.hub(arrive)
+        with patch.object(live, "IDLE_SECONDS", -1):  # idle on the first pass
+            hub._ensure_running()
+            self.assertTrue(wait_for(lambda: ended))
+            ended[0].join(5)
+        self.assertFalse(ended[0].is_alive())
+        self.assertEqual(hub.listeners, 1)
+        self.assertIsNot(hub.thread, ended[0])
+        self.assertTrue(hub.thread is not None and hub.thread.is_alive(), "a listener was left without a scanning thread")
+        events = hub.wait(hub.epoch, 0, 5)  # nobody asks for a snapshot: only the thread can produce these
+        self.assertIn(("task", "P/T"), [(event["type"], event["key"]) for event in events])
+
+    def test_the_thread_ends_when_nobody_listens_and_the_next_listener_starts_one(self):
+        hub = self.hub()
+        with patch.object(live, "IDLE_SECONDS", -1):
+            hub._ensure_running()
+            first = hub.thread
+            self.assertTrue(wait_for(lambda: hub.thread is None))
+            first.join(5)
+            self.assertFalse(first.is_alive())
+        self.assertEqual(hub.seq, 0)  # it ended without scanning
+        hub.subscribe()
+        self.assertTrue(hub.thread is not None and hub.thread.is_alive())
+        self.assertTrue(hub.wait(hub.epoch, 0, 5))
 
 
 class DemoTests(unittest.TestCase):

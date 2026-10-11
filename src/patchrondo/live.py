@@ -69,12 +69,12 @@ class Hub:
             self.app.changed.clear()
             if self.closed:
                 return
+            # One critical section with `_ensure_running`: a listener that arrives now either is counted
+            # here or finds no thread and starts one. It must never find a thread that has decided to end.
             with self.cond:
-                idle = self.listeners == 0 and time.monotonic() - self.last_use > IDLE_SECONDS
-            if idle:
-                with self.cond:
+                if self.listeners == 0 and time.monotonic() - self.last_use > IDLE_SECONDS:
                     self.thread = None
-                return
+                    return
             try:
                 self.scan()
             except Exception:  # noqa: BLE001 - a failed scan is retried; listeners keep their last view

@@ -89,7 +89,10 @@ listed under *Engine*.
   `fetch`, so the session token stays in a header. A gap, a server restart or
   a lost connection leads to a new snapshot; while disconnected the page shows
   the last confirmed state with its time. A hidden tab releases its
-  connection.
+  connection. With no page listening the periodic scan stops after fifteen
+  seconds and starts again with the next page. (Corrected on October 11, 2026:
+  a page that connected at the instant the scan stopped could be left without
+  one, and then received heartbeats but no changes until it reconnected.)
 
 ### Engine
 

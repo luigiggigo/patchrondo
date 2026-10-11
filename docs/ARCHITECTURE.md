@@ -490,7 +490,11 @@ task or global section, numbered within an `epoch` that changes when the
 server restarts. `GET /api/snapshot` returns the view with its number;
 `GET /api/events` then delivers later events and a heartbeat every ten
 seconds. A client that asks for events the hub no longer holds, or with
-another epoch, receives `resync` and loads a snapshot. The page applies an
+another epoch, receives `resync` and loads a snapshot. With no listener and
+no request for fifteen seconds the scanning thread ends. It decides that and
+withdraws itself in one section under the hub's lock, the same one in which a
+listener is counted and a missing thread is started, so a listener that
+arrives at that moment starts a new thread. The page applies an
 event only when its number is the next one, reconnects with backoff, falls
 back to polling snapshots if the stream cannot be kept open, and marks the
 state as last confirmed at a given time while disconnected. The stream is read
