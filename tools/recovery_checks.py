@@ -222,6 +222,10 @@ MUTATIONS = [
              "            if idle:\n                with self.cond:\n                    self.thread = None\n                return\n",
              ("test_ui.LiveIdleTests",)),
     # Live activity only observes: it decides nothing, hides internal reasoning and cannot fail a step.
+    Mutation("activity reclassifies a reported CLI error", "providers.py",
+             "                outputs = [\"\\n\".join(part for part in (reported, result.stderr.strip()) if part)]\n",
+             "                outputs = [\"\\n\".join(part for part in (reported, result.stderr.strip()) if part), stdout.strip()]\n",
+             ("test_live_activity",)),
     Mutation("reviewer progress recorded as a verdict", "streams.py",
              "        if self.role == \"reviewer\" and _VERDICT.search(text):", "        if False:", ("test_activity",)),
     Mutation("Codex reasoning kept in the transcript", "streams.py",

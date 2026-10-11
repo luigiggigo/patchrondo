@@ -8,6 +8,20 @@ October 11, 2026. The [technical review](docs/REVIEW.md) records validation
 by revision and platform. The engine of 0.1.0 is unchanged except as listed
 below.
 
+### Failure classification — October 11, 2026
+
+Local correction; not pushed.
+
+- A reported streaming CLI error is classified only from its diagnostic and
+  standard error. Activity messages and event names no longer turn an ordinary
+  failure into a quota or authentication failure. In particular, Claude's
+  `error_max_turns` alongside a `rate_limit_event` no longer schedules quota
+  recovery. No new provider message form or stream event type is parsed.
+- Regression coverage checks both adapters, genuine stderr diagnostics, and
+  the task's pause without a recovery plan. A mutation check protects the
+  classification boundary. The [technical review](docs/REVIEW.md) records the
+  local validation of this correction separately from the published source.
+
 ### Live activity of the agents
 
 Added on October 11, 2026. Checked with scripted CLIs only: no authorized real

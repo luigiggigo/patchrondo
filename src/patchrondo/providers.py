@@ -312,9 +312,10 @@ class OfficialCLI:
             outputs = [part.strip() for part in (result.stderr, stdout) if part.strip()] or [""]
             shown = outputs
             if reported:
-                # What the CLI itself reported as its error decides before agent text in the stream can.
-                outputs = ["\n".join(part for part in (reported, result.stderr.strip()) if part), stdout.strip()]
-                shown = outputs[:1]
+                # Classify only the CLI's error and stderr, even if neither names a known failure.
+                # Activity text and event names are not diagnostics (for example rate_limit_event).
+                outputs = ["\n".join(part for part in (reported, result.stderr.strip()) if part)]
+                shown = outputs
             shown = "\n".join(short_log(part, 1200 // len(shown)) for part in shown)
             raise classified_failure(f"{provider}/{role} exit={result.returncode}: {shown}",
                                      outputs[0], provider, self.clock(), "\n".join(outputs[1:]))

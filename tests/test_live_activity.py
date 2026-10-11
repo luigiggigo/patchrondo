@@ -197,6 +197,27 @@ class StreamingAdapterTests(unittest.TestCase):
         soft = jsonl({"type": "item.completed", "item": {"id": "e", "type": "error", "message": "skipped a hook"}})
         self.assertEqual(self.failure("codex", "developer", (soft, Result(1, "", "Segmentation fault"), None)).kind, "agent_error")
 
+    def test_reported_errors_are_not_reclassified_from_activity(self):
+        cases = (
+            ("claude", {"type": "rate_limit_event"},
+             {"type": "result", "is_error": True, "subtype": "error_max_turns"}),
+            ("claude", text("Implemented the quota and unauthorized handlers"),
+             {"type": "result", "is_error": True, "result": "Request failed"}),
+            ("codex", said("Implemented the rate limit middleware"),
+             {"type": "turn.failed", "error": {"message": "Request failed"}}),
+        )
+        for provider, progress, final in cases:
+            with self.subTest(provider=provider, progress=progress):
+                error = self.failure(provider, "developer", (jsonl(progress, final), Result(1, "", ""), None))
+                self.assertEqual((error.kind, error.retry_at, error.retry_after_seconds),
+                                 ("agent_error", None, None))
+                # A real diagnostic on stderr still decides, including its explicit reset.
+                error = self.failure(provider, "developer", (jsonl(progress, final),
+                                     Result(1, "", "Usage limit reached. Retry after 3600 seconds."), None))
+                self.assertEqual((error.kind, error.retry_after_seconds), ("quota", 3600))
+                error = self.failure(provider, "developer", (jsonl(progress, final), Result(1, "", "Not logged in"), None))
+                self.assertEqual(error.kind, "authentication")
+
     def test_a_timeout_keeps_its_kind_and_what_was_seen(self):
         error = self.failure("claude", "developer", (jsonl(text("Reading files")), Result(124, "", "", timed_out=True), None))
         self.assertEqual((error.kind, error.provider), ("timeout", "claude"))
@@ -463,6 +484,25 @@ class EngineActivityTests(EngineCase):
         calls = len(self.cli.calls())
         again = run_task(self.home, task_id, auto_resume=True, clock=clock)
         self.assertEqual((again["recovery"], len(self.cli.calls())), (plan, calls))
+
+    def test_turn_limit_with_quota_activity_does_not_schedule_recovery(self):
+        task_id, path = self.task()
+        stream = jsonl({"type": "rate_limit_event"},
+                       {"type": "result", "is_error": True, "subtype": "error_max_turns"})
+
+        def stopped(argv, cwd, **kwargs):
+            kwargs["on_stdout"](stream)
+            return Result(1, "", "")
+
+        with patch("patchrondo.providers.execute", side_effect=stopped) as execute:
+            state = run_task(self.home, task_id, auto_resume=True, clock=lambda: OBSERVED)
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual((state["status"], state["phase"], state["last_error"]["kind"]),
+                         ("paused", "develop", "agent_error"))
+        self.assertIn("error_max_turns", state["last_error"]["message"])
+        self.assertIsNone(state["recovery"])
+        self.assertNotIn("recovery_scheduled", [entry["event"] for entry in state["history"]])
+        self.assertFalse((path / ".run.lock").exists())
 
     def test_a_crash_in_the_middle_of_a_line_pauses_the_task_and_keeps_the_journal_readable(self):
         self.cli.script(developer={"crash_once": True, "says": ["Before the crash"]})

@@ -354,6 +354,11 @@ If an agent reaches a quota, times out or is interrupted, the task becomes
 patchrondo resume T-a1b2c3d4e5f6
 ```
 
+Claude's `error_max_turns` means the configured `workflow.claude_max_turns`
+was reached (12 by default), not that the account quota is exhausted. Increase
+that limit in the project's workflow settings for a larger task, then resume.
+Automatic quota recovery does not address this limit.
+
 To let the same process wait for a usage limit to reset and retry by itself, see
 [Automatic quota recovery](#automatic-quota-recovery-opt-in). It is disabled by
 default.
@@ -529,7 +534,9 @@ now without automatic recovery stays possible in both cases.
   is read first; standard output decides only when standard error names no
   specific cause, and a reset time stated on either is used. Wording of a login
   failure takes precedence over wording of a usage limit in the same text,
-  because waiting cannot fix a login. An unrelated error that mentions a limit
+  because waiting cannot fix a login. When a streaming CLI reports an error,
+  only that diagnostic and standard error are classified; activity messages
+  and event names cannot override them. An unrelated diagnostic that mentions a limit
   is retried too. The retry limit bounds the cost: with the defaults, at most
   three extra calls.
 - **Real limit messages have not been observed.** No test has hit a real usage

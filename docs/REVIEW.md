@@ -26,12 +26,12 @@ running, so no passing result is claimed for the complete run.
 [Run 38148014405](https://github.com/luigiggigo/patchrondo/actions/runs/38148014405)
 completed successfully for the preceding commit `345d339`. CI does not run
 the browser checks or authenticated providers. Neither run covers subsequent
-local documentation edits.
+local changes.
 
 The dated sections below retain the scope and results of the checks made at
 each stage. Earlier references to local validation describe those checks,
-not the current publication status. The latest recorded local suite has 344
-tests; live activity has been checked with scripted CLIs only.
+not the current publication status. The live-activity addition recorded 344
+tests; later local corrections have their own validation records below.
 
 The documentation-status refresh on October 11, 2026 changed five tracked
 Markdown files and local, ignored `AGENTS.md`. On native Windows, six files
@@ -40,6 +40,44 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Local streaming failure correction (October 11, 2026)
+
+This section covers the local working-tree correction to `providers.py`, its
+two regression tests and its mutation protection. Existing task logs showed
+Claude ending at the configured 12-turn limit with `error_max_turns`. The
+transcript also named an unknown `rate_limit_event`, which caused the adapter
+to misclassify the failure as quota and schedule unnecessary recovery attempts.
+The correction classifies a reported CLI error only from that diagnostic and
+stderr, without using activity text as a fallback. No new provider message
+form or stream event type is parsed, and no workflow limit is changed.
+Existing task state and history are not rewritten by this correction.
+
+Both regression tests failed against the previous implementation (exit status
+1 each): three adapter subcases classified activity as quota/authentication,
+and one engine assertion detected recovery for the turn-limit failure. With
+the correction, the adapter/live-activity/protection-pattern tests passed:
+37 tests in 19.510 s, exit status 0. Tests use simulated
+providers; inspecting existing logs did not start an authenticated provider.
+
+Validation after the final runtime, test and tool edits:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 346 tests, 340 passed, 6 skipped, 305.783 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 346 tests, 340 passed, 6 skipped, 306.889 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 346 tests, 345 passed, 1 skipped, 114.194 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Protections, first attempt | Native Windows: intentionally terminated because of slow execution; no complete result claimed | -1 |
+| Protections, complete run | WSL2, Python 3.12.3: 70/70 removed safeguards detected, 0 missed | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.04 s after the planned time | 0 |
+| Browser, all nine scenarios | Native Windows, Python 3.13.3, Chrome 154.0.8037.99 headless: 234 passed, 0 failed | 0 |
+| Build and `twine check` | Native Windows: sdist and wheel built outside the repository; both packages passed | 0 / 0 |
+| Publication scanner | 98 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass; its findings still require local review before
+publication. No push, publication or real-provider validation was performed.
 
 ## Assessment
 

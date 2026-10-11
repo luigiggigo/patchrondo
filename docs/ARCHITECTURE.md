@@ -576,10 +576,13 @@ review as before. A stream that contained events but no result is an
 `empty_output` failure, never an answer assembled from messages. A reviewer's
 message that contains a verdict word or a `"verdict"` key is recorded as
 withheld, and its `StructuredOutput` tool call without its content. Failure
-classification keeps its order: what the CLI reported as its error, together
-with standard error, is the text that decides; the transcript is the secondary
-text, as standard output was. The step's `stdout` log is the transcript when a
-stream was read: bounded like the captured output, and without reasoning.
+classification uses what the CLI reported as its error together with standard
+error. When that diagnostic is available, the transcript cannot change its
+classification or supply a reset time: activity messages and event names are
+not failure diagnostics. Without a reported error, the previous standard-error
+and standard-output fallback still applies. The step's `stdout` log is the
+transcript when a stream was read: bounded like the captured output, and
+without reasoning.
 
 **The journal.** `activity.Journal` appends to `<task>/activity.jsonl`, created
 with mode 0600. The first line identifies the journal (`J-` and twelve
