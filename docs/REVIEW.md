@@ -2,8 +2,8 @@
 
 Initial review: October 8, 2026. Local follow-up: October 9, 2026. Real-provider
 checks and the automatic quota recovery change: October 10, 2026. PatchRondo
-0.2 (interface, several projects, process truth): October 10, 2026, as a local
-working tree.
+0.2 (interface, several projects, process truth): October 10, 2026. Live
+activity and publication-status update: October 11, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -11,10 +11,41 @@ repository was present in those original directories. A local, ignored
 Each section below says which code it covers: a published commit or a local
 working tree at its date.
 
+## Current source and CI status (October 11, 2026)
+
+The 0.2.0 source, including the interface, its follow-up fixes and live
+activity, is published on `main` at
+[`c9f6e1e`](https://github.com/luigiggigo/patchrondo/commit/c9f6e1e4b94494b0268cfd51734e563114dbd237).
+The remote commit, empty tag list and empty GitHub Releases list were checked
+with `gh` on October 11, 2026 (exit status 0). There is no tagged release.
+
+[CI run 38164218154](https://github.com/luigiggigo/patchrondo/actions/runs/38164218154)
+for `c9f6e1e` was in progress when checked with `gh` on October 11, 2026:
+the four Linux/macOS jobs had passed and the two Windows jobs were still
+running, so no passing result is claimed for the complete run.
+[Run 38148014405](https://github.com/luigiggigo/patchrondo/actions/runs/38148014405)
+completed successfully for the preceding commit `345d339`. CI does not run
+the browser checks or authenticated providers. Neither run covers subsequent
+local documentation edits.
+
+The dated sections below retain the scope and results of the checks made at
+each stage. Earlier references to local validation describe those checks,
+not the current publication status. The latest recorded local suite has 344
+tests; live activity has been checked with scripted CLIs only.
+
+The documentation-status refresh on October 11, 2026 changed five tracked
+Markdown files and local, ignored `AGENTS.md`. On native Windows, six files
+passed UTF-8, LF, no-BOM and final-newline checks; all 36 local links and
+anchors resolved; the changelog has one 0.2.0 entry matching package metadata
+and no pending-release section. The documentation checks and `git diff
+--check` exited with status 0. Runtime, tests and tools were unchanged; the
+validation scope for this refresh was documentation only.
+
 ## Assessment
 
-The initial **0.1.0 alpha/MVP source** is public on
-[GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026.
+PatchRondo's source is public on
+[GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026,
+now including 0.2.0 and live activity on `main`.
 Responsibilities are clearly separated between the CLI, state machine,
 adapters, process handling, Git and persistence. There are no Python runtime
 dependencies. Explicit test
@@ -252,9 +283,10 @@ cancel older runs on the same branch or PR.
 - Local YAML structure checks covered triggers, all six combinations, the
   job-level guard, runner labels, timeout, cancellation, permissions, install
   and test commands, and the absence of artifact/cache actions. Changed text
-  files passed UTF-8, LF and diff whitespace checks. These are local checks;
-  the restored workflow has not been pushed or run on GitHub, and this change
-  has not been tested locally on Linux or macOS.
+  files passed UTF-8, LF and diff whitespace checks. At that check the
+  restored workflow had not yet been pushed or run on GitHub, and the change
+  had not been tested locally on Linux or macOS. Subsequent CI results are
+  recorded below and in the current status above.
 - The publication scanner exited with status 1 and four pre-existing findings:
   ignored `debug.log` and the three binary images
   `docs/assets/rondo-mascot-v1.png`, `src/patchrondo/static/rondo.webp` and
@@ -562,7 +594,8 @@ without provider calls:
   Publication scanner: exit status **1**, 53 files checked, the same four
   findings. Not a clean scan.
 
-This third follow-up is local: it has not been pushed and no CI run covers it.
+The checks above were recorded locally before this follow-up was pushed.
+It is now included in the published source; see the current status above.
 
 Not verified:
 
@@ -583,9 +616,9 @@ Not verified:
 
 ## PatchRondo 0.2: interface, projects and process truth (October 10, 2026)
 
-Scope: the 0.2.0 working tree on one development machine. At the time of
-writing nothing of it was committed or pushed, so the GitHub repository and
-its CI runs do not contain or cover it. No provider call was made and no plan
+Scope: local checks of the 0.2.0 working tree on one development machine,
+before its source publication. Subsequent commits and CI results are recorded
+below and in the current status above. No provider call was made and no plan
 quota was used: every run in these checks used scripted or synthetic
 providers. CLI status commands (`--version`, login status) were replaced by
 fixed answers in the tests and, in the installed-package check, the provider
@@ -788,9 +821,9 @@ Checks rerun after the fix, which changed `tests/test_ui.py` only, on October
   findings as above (`debug.log` and the three binary assets). Not a clean
   scan.
 
-Not verified: the fix on macOS. Its conditions were imitated under WSL2, and
-no CI run covers it until it is pushed. The whole suite under the imitation of
-a system without `/proc` ended with 246 passed, 1 failed and 1 skipped; the
+At this local check, the fix had not been verified on macOS. Its conditions
+were imitated under WSL2; subsequent CI status is recorded above. The whole
+suite under the imitation of a system without `/proc` ended with 246 passed, 1 failed and 1 skipped; the
 failure, `test_interface_restart_during_a_run_recovers_the_real_state`, is a
 limit of the imitation, which does not reach the real child that test starts,
 so parent and child disagree on the process token. That test passed in both
@@ -914,7 +947,8 @@ listed.
 
 Not verified:
 
-- Either change on macOS, and in CI. Both are local and unpushed;
+- At this local check, neither change had been checked on macOS or in CI;
+  both are now in the published source (see the current status above).
   [run 38086345062](https://github.com/luigiggigo/patchrondo/actions/runs/38086345062)
   (read with `gh` on October 11, 2026, concluded successfully) covers
   `4e9cc6c`, the commit before them.
@@ -989,7 +1023,8 @@ synthetic providers and no provider call:
 
 Not verified:
 
-- The change on macOS, and in CI. It is local and unpushed;
+- At this local check, the change had not been checked on macOS or in CI;
+  it is now in the published source (see the current status above).
   [run 38132089056](https://github.com/luigiggigo/patchrondo/actions/runs/38132089056)
   (read with `gh` on October 11, 2026, all six jobs successful) covers
   `8d79f7d`, the commit before it.
@@ -1063,7 +1098,8 @@ synthetic providers and no provider call:
 
 Not verified:
 
-- The change on macOS, and in CI. It is local and unpushed;
+- At this local check, the change had not been checked on macOS or in CI;
+  it is now in the published source (see the current status above).
   [run 38134941472](https://github.com/luigiggigo/patchrondo/actions/runs/38134941472)
   (read with `gh` on October 11, 2026, completed successfully) covers
   `115d151`, the commit before it.
@@ -1143,7 +1179,8 @@ Not verified:
   use, so with the page the thread would also have to be suspended between
   the two sections for that whole exchange. It was produced only by placing
   the subscription there in a test, and was not observed in use.
-- The change on macOS, and in CI. It is local and unpushed;
+- At this local check, the change had not been checked on macOS or in CI;
+  it is now in the published source (see the current status above).
   [run 38137546425](https://github.com/luigiggigo/patchrondo/actions/runs/38137546425)
   (read with `gh` on October 11, 2026, completed successfully) covers
   `45259fd`, the commit before it.
@@ -1211,7 +1248,8 @@ Not verified, and one defect left as it was:
   next change to the task reads the file from its first byte, as before this
   change. For a small file that is a retry; for a large one it loads all of
   it. Seen by reading the code, not reproduced, and not changed here.
-- The change in Edge, on macOS, and in CI. It is local and unpushed;
+- The change in Edge. At this local check it had not been checked on macOS
+  or in CI; it is now in the published source (see the current status above).
   [run 38143812643](https://github.com/luigiggigo/patchrondo/actions/runs/38143812643)
   (read with `gh` on October 11, 2026, completed successfully) covers
   `ee34619`, the commit before it, and CI does not run the browser check.
@@ -1334,8 +1372,8 @@ synthetic providers and no provider call:
   are in `js/live.js` and neither was exercised in a browser.
 - **Other browsers and systems.** Chrome on native Windows only. WSL2 has no
   browser. Not Edge, Firefox, Safari, Linux or macOS.
-- **CI.** The change is local and uncommitted; no CI run covers it, and CI
-  does not run the browser check.
+- **CI.** The change is published in `c9f6e1e`; the current status above
+  records its CI run. CI does not run the browser check.
 
 **Limits of this addition.**
 

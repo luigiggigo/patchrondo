@@ -31,7 +31,9 @@
 
 **Version 0.2.0.** The source has been public on
 [GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026
-(0.1.0). The repository has no version tags or GitHub Releases; the
+(0.1.0). The 0.2.0 interface and live activity are published as source on
+`main` (checked October 11, 2026, commit `c9f6e1e`). The repository has no
+version tags or GitHub Releases; the
 [changelog](CHANGELOG.md) says what each version contains and the
 [technical review](docs/REVIEW.md) what was checked, where and when.
 
@@ -706,13 +708,12 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest local validation on October 10, 2026 ran **248 tests** on the 0.2.0
-working tree: on native Windows (Python 3.13 and Python 3.11) **243 passed and
-5 were skipped** (four POSIX-only tests and the POSIX interrupt test of the
-interface); on WSL2 (Python 3.12) **247 passed and 1 was skipped** (a test of
-the native Windows refusal). This is a local result: 0.2.0 had not been pushed,
-so no CI run covers it; the [technical review](docs/REVIEW.md) records which
-earlier commits passed the CI workflow. Tests use temporary Git
+The latest recorded local validation on October 11, 2026 ran **344 tests**,
+including live activity: on native Windows (Python 3.13 and Python 3.11)
+**338 passed and 6 were skipped**; on WSL2 (Python 3.12) **343 passed and 1
+was skipped**, all with exit status 0. These local results are separate from
+GitHub CI; the [technical review](docs/REVIEW.md#current-source-and-ci-status-october-11-2026)
+records the current published commit and its CI status. Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Full package checks are documented in

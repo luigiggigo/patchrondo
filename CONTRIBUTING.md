@@ -95,8 +95,11 @@ you are entitled to contribute. Report security issues through `SECURITY.md`.
 
 ## Documentation and version history
 
-The 0.1.0 source is public. Record changes under the version they belong to in
-`CHANGELOG.md`, and say there whether they are local, pushed, tagged or released.
+The 0.2.0 source, including the interface and live activity, is public on
+`main`. Record changes in dated entries under their existing version in
+`CHANGELOG.md`; update that entry when source is pushed. Verify the remote
+commit, tags and GitHub Releases before describing publication status, and
+keep source publication distinct from a tagged release.
 Keep the README, architecture and security notes consistent with the code, and
 label validation results with their date and scope. Historical CI results do not
 verify newer local changes. Follow `docs/PUBLISHING.md` for subsequent updates.

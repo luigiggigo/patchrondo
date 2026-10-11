@@ -10,12 +10,14 @@ quota recovery and the reliability tools) was pushed to `main` as source on
 October 9 and 10, 2026; the CI runs for those commits are recorded in
 [REVIEW.md](REVIEW.md).
 
-**0.2.0** was prepared in a local working tree on October 10, 2026. The package
-metadata and the changelog say 0.2.0. At that date nothing of it was committed
-or pushed, so no CI run covers it; [REVIEW.md](REVIEW.md) records the local
-checks. The GitHub repository has no version tags or GitHub Releases as checked
-on October 10, 2026. Source publication and a versioned release are separate
-steps; publishing to PyPI is also a separate task.
+**0.2.0** is published as source on `main`: the interface was pushed on
+October 10, 2026, and live activity on October 11, 2026, in commit `c9f6e1e`.
+The package metadata and changelog use 0.2.0.
+[REVIEW.md](REVIEW.md#current-source-and-ci-status-october-11-2026) records the
+current commit's CI status and the dated local checks. The GitHub repository
+has no version tags or GitHub Releases as checked on October 11, 2026.
+Source publication, a versioned release and publishing to PyPI are separate
+steps.
 
 The repository is already initialized and has an `origin` remote. Future updates
 do not require `git init` or creating another GitHub repository.
@@ -109,10 +111,12 @@ publication actions. They are not performed automatically by PatchRondo.
 
 ## Authenticated-provider validation
 
-One real-provider check passed on October 10, 2026 (WSL2, both pairings,
-fixture tests disabled; see [REVIEW.md](REVIEW.md)). A complete workflow
-through passing tests and approval with real Claude/Codex accounts remains
-unvalidated.
+Two real-provider checks passed on October 10, 2026 on WSL2 with Claude Code
+2.1.291 and codex-cli 0.160.1, both role pairings: the first kept fixture tests
+disabled; the second reached passing fixture tests and approved reviews (see
+[REVIEW.md](REVIEW.md)). Those checks covered 0.1.0. They have not been
+repeated for 0.2.0, and no authorized real run has confirmed live activity's
+streaming options and event formats.
 
 `tools/provider_e2e.py` automates the repeatable part. It creates a throwaway
 repository with a small change and a deterministic test, then runs both role

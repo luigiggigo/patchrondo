@@ -1,13 +1,19 @@
 # Changelog
 
-## Unreleased — live activity of the agents
+## 0.2.0 — interface first, several projects, live activity
 
-Made in a local working tree on October 11, 2026, on top of the 0.2.0 source
-on `main`. At that date it was not committed, pushed, tagged or released, and
-it had been checked with scripted CLIs only: no authorized real provider call
-has confirmed the streaming options or the event formats.
+Source published on `main` on October 10 and 11, 2026, including live activity
+in commit `c9f6e1e`. No version tags or GitHub Releases exist as checked on
+October 11, 2026. The [technical review](docs/REVIEW.md) records validation
+by revision and platform. The engine of 0.1.0 is unchanged except as listed
+below.
 
-### Added
+### Live activity of the agents
+
+Added on October 11, 2026. Checked with scripted CLIs only: no authorized real
+provider call has confirmed the streaming options or the event formats.
+
+#### Added
 
 - **Live Activity** tab in the task workspace: which agent is working, its
   latest event, the time since the step started and the iteration; the
@@ -38,7 +44,7 @@ has confirmed the streaming options or the event formats.
 - `tools/provider_e2e.py --authorize-provider-calls` also checks that both
   CLIs reported activity while they worked.
 
-### Unchanged on purpose
+#### Unchanged on purpose
 
 - The outcome of a step comes from the CLI's final result only. A stream with
   events and no result is an `empty_output` failure. A reviewer's message that
@@ -54,7 +60,7 @@ has confirmed the streaming options or the event formats.
 - A journal that cannot be written, or an observer that fails, does not fail
   the step.
 
-### Changed
+#### Changed
 
 - With a stream, `<role>.stdout.log` of a step holds the stream's transcript
   without reasoning, bounded to its first and last lines, instead of the
@@ -63,7 +69,7 @@ has confirmed the streaming options or the event formats.
 - The test stage and every agent call record their start and end in the
   journal, also with adapters that do not stream.
 
-### Tests and tools
+#### Tests and tools
 
 - Tests of the observers with real processes (output seen before the process
   ends, both streams at once with megabytes of output, timeout, interrupt, a
@@ -72,13 +78,6 @@ has confirmed the streaming options or the event formats.
   of whole tasks with a scripted CLI started as a real process.
 - `tools/ui_e2e.py`: a ninth scenario, `live`.
 - `tools/recovery_checks.py protections`: eight more safeguards.
-
-## 0.2.0 — interface first, several projects
-
-Prepared in a local working tree on October 10, 2026. At that date it was not
-committed, pushed, tagged or released; the technical review records what was
-checked and on which platforms. The engine of 0.1.0 is unchanged except where
-listed under *Engine*.
 
 ### Interface
 
