@@ -24,11 +24,11 @@ import threading
 import time
 from typing import NamedTuple
 
-from . import __version__, activity, doctor, rag, recovery, runinfo
+from . import __version__, activity, doctor, environment, providers, rag, recovery, repair, runinfo
 from .commands import join_command, split_command
 from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, config, create_task, effective_config,
-                   validate_config, validate_overrides)
-from .storage import FileMutex, now, read_json, save_json
+                   record_environment, validate_config, validate_overrides)
+from .storage import FileMutex, LockBusy, TaskLock, now, read_json, save_json
 from .workspace import NotFound, Project, Workspace
 
 TASK_ID = re.compile(r"T-[a-f0-9]{12}")
@@ -51,6 +51,10 @@ WORKFLOW_FIELDS = ("max_iterations", "agent_timeout_seconds", "test_timeout_seco
 RAG_LIMITS = {"max_chunks": (1, 50), "max_chars": (1000, 100000)}
 REPO_TTL_SECONDS = 30
 PROVIDER_TTL_SECONDS = 300
+QUICK_TITLE = 80
+ENVIRONMENT_FIELDS = ("status", "stage", "error_kind", "cause", "message", "provider", "repair", "repair_available",
+                      "repair_applied", "requires_user_action", "checked_at")
+CONFIRMABLE_REPAIRS = {"git_trust"}  # repairs that are a decision of the user and never run unattended
 
 
 class RunsAtExit(NamedTuple):
@@ -236,6 +240,7 @@ class Providers:
         self.cwd, self.on_change = cwd, on_change
         self.lock = threading.Lock()
         self.data: dict | None = None
+        self.system: dict | None = None
         self.checked_at: str | None = None
         self.checked_monotonic = 0.0
         self.checking = False
@@ -246,7 +251,8 @@ class Providers:
             if (refresh or stale) and not self.checking:
                 self.checking = True
                 threading.Thread(target=self._check, name="patchrondo-providers", daemon=True).start()
-            return {"checking": self.checking, "checked_at": self.checked_at, "providers": self.data}
+            return {"checking": self.checking, "checked_at": self.checked_at, "providers": self.data,
+                    "system": self.system}
 
     def _check(self) -> None:
         try:
@@ -257,8 +263,13 @@ class Providers:
                            "authenticated": None, "auth_method": None, "warning": f"Check failed: {exc}",
                            "hint": spec["install"], "login_command": spec["login"], "docs": spec["docs"]}
                     for name, spec in doctor.PROVIDERS.items()}
+        try:
+            system = environment.system()
+        except Exception:  # noqa: BLE001 - the indicator shows "unknown" instead of killing the thread
+            system = None
         with self.lock:
-            self.data, self.checked_at, self.checked_monotonic = data, now(), time.monotonic()
+            self.data, self.system = data, system
+            self.checked_at, self.checked_monotonic = now(), time.monotonic()
             self.checking = False
         if self.on_change:
             self.on_change()
@@ -275,6 +286,7 @@ class App:
         self.runs = threading.Condition()  # guards children, closing, starting and starting_tasks
         self.changed = threading.Event()  # set by writes here so the live stream scans at once
         self.providers = Providers(self.ws.root, on_change=self.changed.set)
+        self.environment = environment.Manager()  # checks and repairs asked for from the interface
         self._cache_lock = threading.Lock()
         self._states: dict[Path, tuple] = {}
         self._configs: dict[str, tuple] = {}
@@ -597,6 +609,9 @@ class App:
         item["verdict"] = review.get("verdict") if isinstance(review, dict) else None
         item["issues"] = len(review.get("issues") or []) if isinstance(review, dict) else 0
         item["error_kind"] = error.get("kind") if isinstance(error, dict) else error if isinstance(error, str) else None
+        item["error_category"] = repair.category(item["error_kind"])
+        checked = state.get("environment")
+        item["environment"] = {key: checked.get(key) for key in ENVIRONMENT_FIELDS} if isinstance(checked, dict) else None
         item["recovery"] = {key: plan.get(key) for key in (
             "status", "resume_at", "provider", "schedule_source", "stop_reason", "consecutive_failures",
             "max_consecutive_retries")} if isinstance(plan, dict) else None
@@ -662,6 +677,41 @@ class App:
             return {"id": task_id, "project": project.id}
 
         return self.once(payload.get("request_id"), create)
+
+    def quick_start(self, project: Project, payload: dict) -> dict:
+        """Create a task from a description and start it at once: the one-step path of the home page.
+
+        Roles default to the project's, then to the global ones; a missing
+        title is the first line of the description. Starting is exactly
+        `start_run`: the environment is checked by the run before any agent is
+        called, and the test consent of the project is neither read as given
+        nor changed. A task that was created but could not be started is
+        returned with the reason, so nothing is created twice.
+        """
+        unknown = sorted(set(payload) - {"description", "title", "developer", "reviewer", "acceptance", "request_id"})
+        if unknown:
+            raise ValueError(f"Unknown field: {', '.join(unknown)}")
+        description, title = payload.get("description"), payload.get("title")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError("Describe what should be done")
+        if title is not None and not isinstance(title, str):
+            raise ValueError("title must be a string")
+        if not title or not title.strip():
+            first = next((line.strip().lstrip("#-* ").strip() for line in description.splitlines() if line.strip()), "")
+            title = first if len(first) <= QUICK_TITLE else first[:QUICK_TITLE - 1].rstrip() + "…"
+        cfg, _ = self._config(project)
+        defaults = {**self.ws.settings()["defaults"], **((cfg or {}).get("agents") or {})}
+        roles = {role: payload.get(role) or defaults[role] for role in ("developer", "reviewer")}
+
+        def create_and_start() -> dict:
+            created = self.new_task(project, {"title": title or "Task", "description": description, **roles,
+                                              "acceptance": payload.get("acceptance", [])})
+            try:
+                return {**created, "started": True, "run": self.start_run(project, created["id"], {})}
+            except (Conflict, RuntimeError, OSError, ValueError) as exc:
+                return {**created, "started": False, "error": str(exc)}
+
+        return self.once(payload.get("request_id"), create_and_start)
 
     def _logs(self, path: Path) -> list[dict]:
         """Readable log and transcript files of a task. The viewer can only ask for an ID listed here."""
@@ -900,6 +950,54 @@ class App:
                 lines = (_text(path / RUN_LOG, tail=True) or "").strip().splitlines()
                 raise RuntimeError(f"Run exited immediately (code {code}): {lines[-1] if lines else 'see the Run log'}")
             return {"started": True, "pid": process.pid, "auto_resume": auto, "finished": True, "code": code}
+
+    def repair_task(self, project: Project, task_id, payload: dict) -> dict:
+        """Check the environment of a task again and apply the repairs that are allowed. No model is called.
+
+        Unattended repairs are tried again; a repair that is the user's
+        decision is applied only when `confirm` names it. The check holds the
+        task lock, so it never overlaps a run, and its record and events are
+        saved with the task like those of a run. With `resume`, a task that
+        is ready afterwards is started.
+        """
+        confirm, resume = payload.get("confirm", []), payload.get("resume", False)
+        if set(payload) - {"confirm", "resume"}:
+            raise ValueError("Unknown repair option")
+        if not isinstance(confirm, list) or set(confirm) - CONFIRMABLE_REPAIRS:
+            raise ValueError(f"confirm may only list: {', '.join(sorted(CONFIRMABLE_REPAIRS))}")
+        if type(resume) is not bool:
+            raise ValueError("resume must be a JSON boolean (true/false)")
+        path = self.task_path(project, task_id)
+        key = (project.id, task_id)
+        with self.run_slot(key):  # no run of this task is started while it is being checked
+            try:
+                with TaskLock(path):
+                    state = read_json(path / "state.json")
+                    if state.get("status") in {"done", "blocked"}:
+                        raise Conflict(f"Task is {state['status']}: there is nothing to repair")
+                    worktree = state.get("worktree")
+                    if not isinstance(worktree, str) or not Path(worktree).is_dir():
+                        raise Conflict("The task worktree was not found")
+                    cfg = config(project.home)
+                    previous = state.get("environment") if isinstance(state.get("environment"), dict) else None
+                    record = self.environment.check(project.home, state, live=not providers.simulated(),
+                                                    confirmed=tuple(confirm), previous=previous,
+                                                    repository=Path(cfg["repository"]))
+                    record_environment(state, record)
+                    state["updated_at"] = now()
+                    save_json(path / "state.json", state)
+            except LockBusy as exc:
+                raise Conflict("The task is running or its lock is present: it cannot be checked now") from exc
+            finally:
+                self.changed.set()
+        result = {"ready": record["status"] == "ready",
+                  "environment": {name: record.get(name) for name in ENVIRONMENT_FIELDS}}
+        if resume and result["ready"]:
+            try:
+                result["run"] = self.start_run(project, task_id, {})
+            except (Conflict, RuntimeError, OSError) as exc:
+                result["run_error"] = str(exc)  # the check itself succeeded and is saved
+        return result
 
     def stop_run(self, project: Project, task_id) -> dict:
         """Interrupt the verified processes of a task, as Ctrl+C in their terminal would.

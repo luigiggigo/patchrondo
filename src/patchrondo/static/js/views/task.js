@@ -8,7 +8,7 @@ import { ago, bytes, clock, duration, fullDate, humanize, markdown, plural } fro
 import { href, navigate, replace } from "../router.js";
 import { emptyState, rondoNote, taskMessage } from "../rondo.js";
 import { getTask, state } from "../store.js";
-import { RECOVERY_SOURCES, SEVERITY, TEST_TONE, VERDICTS, activityOf, agentName, errorOf, stopReason } from "../tasks.js";
+import { RECOVERY_SOURCES, SEVERITY, TEST_TONE, VERDICTS, activityOf, agentName, errorOf, preparation, stopReason } from "../tasks.js";
 import { activityBadge, badge, busy, button, callout, confirm, copyButton, dialog, iconButton, loadingBlock, menuItem, popover, tabs,
   toast, toastError, toggle } from "../ui.js";
 import { livePanel } from "./live.js";
@@ -128,6 +128,105 @@ function actions(task, detail) {
   return items;
 }
 
+// --- Guided fixes --------------------------------------------------------------------
+
+const CHECK_TONE = { passed: "ok", failed: "danger", skipped: "neutral" };
+
+// Everything the environment check recorded, for people who want to see it. Closed by default.
+function technicalDetails(record) {
+  const checks = (record.checks || []).filter((check) => check && typeof check === "object");
+  const repairs = (record.repairs || []).filter((entry) => entry && typeof entry === "object");
+  return h("details", { class: "technical" },
+    h("summary", {}, "Technical details"),
+    h("dl", { class: "kv tight" },
+      record.error_kind ? [h("dt", {}, "Problem code"), h("dd", { class: "mono" }, record.error_kind)] : null,
+      record.cause ? [h("dt", {}, "Cause"), h("dd", { class: "mono" }, record.cause)] : null,
+      h("dt", {}, "Checked"), h("dd", {}, `${fullDate(record.checked_at)}${record.live ? "" : " · provider commands simulated"}`)),
+    checks.length ? h("div", { class: "check-list" }, checks.map((check) => h("div", { class: "check-row" },
+      badge(check.status, CHECK_TONE[check.status] || "neutral", { dot: true }),
+      h("div", { class: "grow" }, h("div", {}, check.label || check.id), check.detail ? h("div", { class: "mono muted break" }, check.detail) : null),
+      h("span", { class: "chip mono" }, check.id)))) : null,
+    repairs.length ? [h("div", { class: "field-label" }, "Changes PatchRondo made"), h("div", { class: "check-list" }, repairs.map((entry) => h("div", { class: "check-row" },
+      badge(humanize(entry.outcome), entry.outcome === "applied" ? "ok" : entry.outcome === "unchanged" ? "neutral" : "warn"),
+      h("div", { class: "grow" }, h("div", {}, `${humanize(entry.repair)} · ${fullDate(entry.at)}`),
+        (entry.changed || []).map((change) => h("div", { class: "mono muted break" }, `${change.path}: ${change.added}`)),
+        entry.error ? h("div", { class: "mono muted break" }, entry.error) : null))))] : null);
+}
+
+async function repair(el, task, record) {
+  const trust = record.repair === "git_trust";
+  if (trust) {
+    const ok = await confirm({
+      title: "Trust this project folder?", confirmLabel: "Trust this folder and continue", iconName: "shield",
+      body: [
+        h("p", {}, "Git refuses to work in a folder that belongs to another user of this computer, to protect you from projects you did not create."),
+        h("p", {}, "If this project is yours, PatchRondo can add this project folder and the task's copy of it to the folders Git trusts for your user. ",
+          h("strong", {}, "No other folder is added, and nothing is run as administrator.")),
+      ],
+    });
+    if (!ok) return;
+  }
+  await busy(el, async () => {
+    try {
+      const result = await api.post(`/api/projects/${task.project}/tasks/${task.id}/repair`, { confirm: trust ? ["git_trust"] : [], resume: true });
+      if (result.ready && result.run) toast("Fixed and checked again. The task is running.");
+      else if (result.ready) toast(`Fixed and checked again. ${result.run_error || "Resume when you are ready."}`, { tone: result.run_error ? "warn" : "ok" });
+      else toast("The fix did not work. The technical details show what was tried.", { tone: "warn" });
+    } catch (error) { toastError(error, "Not repaired: "); }
+  });
+}
+
+// A problem found while preparing: what it means, and the one action that addresses it.
+function environmentCard(task, record, error) {
+  const guided = record.repair_available && task.runtime.can_start;
+  const go = guided ? button(record.repair === "git_trust" ? "Trust this folder and continue" : "Repair automatically",
+    { variant: "primary", iconName: "shield", onClick: () => repair(go, task, record) }) : null;
+  const provider = state.providers?.providers?.[record.provider];
+  const command = record.error_kind === "authentication" ? provider?.login_command : null;
+  return callout({ tone: "warn", iconName: "shield", title: error.title,
+    body: [h("div", {}, error.help),
+      record.error_kind === "cli_missing" && provider?.hint ? h("div", {}, provider.hint) : null,
+      command ? h("div", { class: "row wrap" }, "Run this in a terminal, then resume:", h("span", { class: "chip mono" }, command), copyButton(command, "Copy")) : null,
+      record.repair_applied && !guided ? h("div", { class: "muted" }, "PatchRondo already tried its own fix and checked again.") : null,
+      h("div", { class: "muted" }, "No agent was called and no quota was used for this check."),
+      technicalDetails(record)],
+    actions: go ? [go] : null });
+}
+
+// Tests run code of the project on this computer: they start only after an explicit decision.
+function consentCard(task, detail) {
+  const project = state.projects.get(task.project);
+  const known = detail.effective?.test_commands || [];
+  const commands = h("textarea", { class: "input mono", rows: Math.max(2, known.length), spellcheck: "false", "aria-label": "Test commands",
+    placeholder: "python -m unittest\nnpm test" });
+  commands.value = known.join("\n");
+  const trust = h("input", { type: "checkbox", id: `trust-${task.id}` });
+  const error = h("div", { class: "form-error", role: "alert" });
+  const go = button("Allow tests and resume", { variant: "primary", iconName: "flask", onClick: () => busy(go, async () => {
+    const lines = commands.value.split("\n").map((line) => line.trim()).filter(Boolean);
+    error.textContent = "";
+    if (!lines.length) { clear(error, icon("alert", "sm"), "Enter at least one test command."); commands.focus(); return; }
+    if (!trust.checked) { clear(error, icon("alert", "sm"), "Tick the box to confirm that you trust this project."); trust.focus(); return; }
+    try {
+      // The whole section is sent: consent is this decision, never something inherited.
+      await api.patch(`/api/projects/${task.project}/config`, { tests: { enabled: true, trust_acknowledged: true, commands: lines } });
+      await api.post(`/api/projects/${task.project}/tasks/${task.id}/run`, {});
+      toast("Tests are allowed for this project. The task resumed.");
+    } catch (failure) { clear(error, icon("alert", "sm"), failure.message); }
+  }) });
+  return h("section", { class: "card consent" },
+    h("div", { class: "card-head" }, h("h2", {}, "Allow this project's tests?"), badge("Your decision", "warn", { iconName: "flask" })),
+    h("div", { class: "card-body stack" },
+      h("p", {}, "A task is done only when the project's tests pass and the review approves. Tests are commands of the project that run on this computer with your permissions, so PatchRondo never starts them by itself."),
+      h("div", { class: "field" }, h("label", { class: "field-label", for: commands.id = `commands-${task.id}` }, known.length ? "These commands will run after each development step" : "Commands to run after each development step"),
+        commands, h("div", { class: "field-hint" }, "One per line, run in the task's copy of the project. You can change them later in Settings → Tests.")),
+      h("label", { class: "row consent-check", for: trust.id }, trust,
+        h("span", {}, "I trust ", h("strong", {}, project?.name || "this project"), " and allow these commands to run on this computer.")),
+      h("div", { class: "form-foot" }, error,
+        h("a", { class: "link", href: href("settings", task.project, "tests") }, "Open test settings"), go),
+      h("p", { class: "faint" }, "This applies to the whole project, not only to this task. Nothing runs until you press the button.")));
+}
+
 // --- Panels --------------------------------------------------------------------------
 
 function recoveryCard(task, plan) {
@@ -168,8 +267,21 @@ function overviewPanel() {
     const verdict = review ? VERDICTS[review.verdict] : null;
     const passed = tests.filter((test) => test.status === "passed").length;
     const overrides = data.overrides;
+    const prepare = preparation(task);
+    const record = prepare.state === "problem" && data.environment?.error_kind === error?.kind ? data.environment : null;
+    const consent = error?.kind === "tests_disabled" && task.status === "paused" && task.runtime.can_start;
+    // The consent form keeps what was typed in it: it is rebuilt only when the task or its commands change.
+    let form = null;
+    if (consent) {
+      const wanted = JSON.stringify([task.id, detail.effective?.test_commands]);
+      form = el.querySelector(".consent");
+      if (form?.dataset.for !== wanted) {
+        form = consentCard(task, detail);
+        form.dataset.for = wanted;
+      }
+    }
     // `stamp` changes with every fetched detail: timestamps in the state only have one-second resolution.
-    memo(el, [detail.stamp, task.runtime, detail.effective, detail.worktree_exists, ago(data.recovery?.resume_at)], () => [
+    memo(el, [detail.stamp, task.runtime, detail.effective, detail.worktree_exists, ago(data.recovery?.resume_at), state.providers?.providers], () => [
       h("div", { class: "stack" },
         task.runtime.activity === "stale_lock" && !task.runtime.can_unlock ? callout({ tone: "danger", iconName: "lock", title: "The lock has to be removed by hand on native Windows",
           body: ["PatchRondo found no live process for this lock, but on native Windows the engine cannot confirm that for the agent's child processes. After checking that no claude, codex or test process is still running, delete ",
@@ -179,8 +291,10 @@ function overviewPanel() {
             "PatchRondo does not assume that it is gone: while this is open the project cannot be removed, and a planned retry cannot be started a second time with automatic recovery. ",
             "If it is a PatchRondo run, stop it in its terminal. If it is another program, or it is gone, delete ",
             task.runtime.unverified.map((pid, index) => [index ? ", " : "", h("span", { class: "mono break" }, `${state.projects.get(task.project)?.home}/tasks/${task.id}/attached/${pid}.json`)]), "."] }) : null,
-        error && task.status !== "done" ? callout({ tone: task.status === "blocked" ? "danger" : "warn", iconName: "alert", title: error.title,
-          body: [h("div", {}, error.help), error.message ? h("pre", { class: "error-message" }, error.message) : null] }) : null,
+        record ? environmentCard(task, record, error)
+          : consent ? form
+          : error && task.status !== "done" ? callout({ tone: task.status === "blocked" ? "danger" : "warn", iconName: "alert", title: error.title,
+            body: [h("div", {}, error.help), error.message ? h("pre", { class: "error-message" }, error.message) : null] }) : null,
         !detail.worktree_exists ? callout({ tone: "danger", iconName: "folder", title: "The task worktree is missing", body: `Expected at ${data.worktree}. The task cannot run without it.` }) : null,
         detail.config_error ? callout({ tone: "danger", iconName: "alert", title: "The project configuration cannot be used", body: detail.config_error }) : null,
         recoveryCard({ ...task, last_error: data.last_error }, data.recovery),
@@ -603,7 +717,7 @@ export default function mount(root, route, ctx) {
       h("div", { class: "page-actions" }, actions(task, detail)),
     ]);
     el.head.dataset.tone = meta.tone;
-    memo(el.flow, [task.phase, task.status, task.runtime.activity, task.iteration, task.max_iterations], () => workflowBar(task));
+    memo(el.flow, [task.phase, task.status, task.runtime.activity, task.iteration, task.max_iterations, task.environment, task.error_kind], () => workflowBar(task));
     const message = taskMessage(task, detail?.state);
     const watch = task.runtime.active && tab !== "live";
     memo(el.note, [message, state.lastEventAt ? clock(state.lastEventAt) : "", watch], () => rondoNote(message.text, message.mood, [

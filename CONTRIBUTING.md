@@ -47,8 +47,30 @@ Use WSL2 or another POSIX host for the interruption and stale-lock scenarios;
 native Windows reports those scenarios as skipped. The JSON report includes
 objective checks and timings, not a model-quality score.
 
-After changing quota recovery, error classification, locking, process
-verification or what the interface may start, also run
+The environment check (`environment.py`, `preflight.py`, `winacl.py`,
+`repair.py`) is tested with a scripted sandbox, access lists kept in memory
+and a scripted CLI status, so those tests run on every system and start no
+CLI. Keep it that way: a check that starts a real CLI must stay behind `live`,
+and `providers.probe` must stay the only function besides the adapter that
+starts one. `tests/test_winacl.py` also exercises the real access control
+lists of temporary folders on Windows. To run the preflight in the real Codex
+sandbox, which starts the installed CLI without sending a prompt, opt in on
+native Windows:
+
+```powershell
+$env:PATCHRONDO_REAL_SANDBOX = '1'
+python -m unittest discover -s tests -p test_sandbox_real.py -v
+```
+
+Without the switch, on another system, or with a CLI that has no sandbox
+self-check, those tests are skipped; a skip is not a pass. Add a `codex
+sandbox` form only from the help of a named CLI version that you ran. Do not
+add a repair that weakens a sandbox, grants to a group, elevates, writes a
+wildcard to Git's `safe.directory`, or enables tests: when a problem cannot be
+solved without one of these, the task pauses and says why.
+
+After changing quota recovery, error classification, the environment check,
+locking, process verification or what the interface may start, also run
 `python tools/recovery_checks.py`. `protections` removes one safeguard at a
 time from a temporary copy of the sources and expects the tests named for it to
 fail; your working tree is not modified. When you add a safeguard, add
@@ -96,7 +118,8 @@ you are entitled to contribute. Report security issues through `SECURITY.md`.
 ## Documentation and version history
 
 The 0.2.0 source, including the interface and live activity, is public on
-`main`. Record changes in dated entries under their existing version in
+`main`; 0.2.1 is a local change of October 11, 2026. Record changes in dated
+entries under their existing version in
 `CHANGELOG.md`; update that entry when source is pushed. Verify the remote
 commit, tags and GitHub Releases before describing publication status, and
 keep source publication distinct from a tagged release.

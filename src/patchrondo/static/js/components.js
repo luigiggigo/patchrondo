@@ -18,10 +18,10 @@ export function miniSteps(task) {
     steps.map((step) => h("span", { class: `step-seg ${step.step} tone-${STEP_TONE[step.step]}` })));
 }
 
-// The full workflow: Develop -> Test -> Review -> Complete, with the repeat loop.
+// The full workflow: Prepare -> Develop -> Test -> Review -> Complete, with the repeat loop.
 export function workflowBar(task) {
   const steps = workflow(task);
-  const icons = { develop: "code", test: "flask", review: "eye", complete: "flag" };
+  const icons = { prepare: "shield", develop: "code", test: "flask", review: "eye", complete: "flag" };
   const max = task.max_iterations;
   return h("div", { class: "workflow card" },
     h("ol", { class: "workflow-steps", "aria-label": "Workflow" }, steps.map((step, index) => [
@@ -29,7 +29,7 @@ export function workflowBar(task) {
       h("li", { class: `workflow-step ${step.step} tone-${STEP_TONE[step.step]}`, "aria-current": ["current", "waiting", "paused", "error"].includes(step.step) ? "step" : null },
         h("span", { class: "workflow-node" }, step.step === "done" ? icon("check") : icon(icons[step.key])),
         h("span", { class: "workflow-text" }, h("span", { class: "workflow-label" }, step.label),
-          h("span", { class: "workflow-state" }, STEP_WORD[step.step]))),
+          h("span", { class: "workflow-state" }, step.detail || STEP_WORD[step.step]))),
     ])),
     h("div", { class: "workflow-loop" }, icon("repeat", "sm"),
       h("span", {}, "Review feedback and failing tests send the task back to Develop."),
@@ -56,7 +56,8 @@ export function taskRow(task, { showProject = true } = {}) {
 // Signature of everything a task row shows, for keyed updates.
 export function taskSig(task, extra = "") {
   return [task.title, task.runtime?.activity, task.phase, task.status, task.iteration, task.max_iterations, task.developer,
-    task.reviewer, ago(task.updated_at, true), state.projects.get(task.project)?.name, extra];
+    task.reviewer, ago(task.updated_at, true), state.projects.get(task.project)?.name, task.environment?.status,
+    task.environment?.stage, extra];
 }
 
 export function eventRow(event, task, { showTask = false } = {}) {

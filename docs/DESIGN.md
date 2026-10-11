@@ -95,8 +95,28 @@ Defined in `css/app.css` and built by `js/ui.js`:
 | Command palette | Ctrl/Cmd+K: navigation, projects and tasks |
 
 Task-specific pieces are in `js/components.js`: the workflow bar
-(Develop → Test → Review → Complete with the repeat loop), the four-segment
-mini workflow in list rows, the task row and the timeline event.
+(Prepare → Develop → Test → Review → Complete with the repeat loop), the
+five-segment mini workflow in list rows, the task row and the timeline event.
+*Prepare* is what PatchRondo does itself before an agent is called; its state
+is the environment check saved with the task, and it is drawn as running only
+while the backend verifies a running process.
+
+Three pieces carry the "nothing to configure" path:
+
+- **The composer** on the home page (`js/views/home.js`): one box for what
+  should be done, the project with *Choose folder…*, the two roles as small
+  selects with their defaults, a readiness badge taken from the checks the
+  backend already made, and one primary button. It is the only card with an
+  accent outline on that page. *More options* leads to the long form. What was
+  typed survives a reload of the tab.
+- **The guided fix** on the task page (`js/views/task.js`): a callout with one
+  sentence, at most one primary button, and a closed *Technical details*
+  block. Rondo's note above it says the same thing in the first person. Paths,
+  check names, access lists and system error text appear only inside the
+  details block.
+- **The test consent** on the task page: the commands, an explicit tick and
+  one button. It is a card, not a dialog, because it is a decision to read,
+  not an interruption; what was typed in it survives live updates.
 
 The Live Activity view (`js/views/live.js`) has three parts. A header says who
 is working, on which iteration, what the latest event was and how long the
@@ -137,7 +157,9 @@ motion and a status mark on the avatar, not by a different drawing.
 | First start | Setup wizard | full | one wave | none | Welcome and what PatchRondo does |
 | No project | Dashboard, Projects, Tasks | full | one wave | none | Invites to add a repository |
 | No task | Dashboard, Tasks | head | none | none | Suggests creating one |
+| Preparing | Task note | head | gentle bob | bolt, accent | Which stage he is at: the agents, the project, the safe environment, or that he is fixing an access problem |
 | Task running | Dashboard, task note | full / head | gentle bob | bolt, accent | Who is working, which phase and iteration |
+| A fix or a decision is needed | Task note | head | none | pause, amber | That a small fix is needed and which button applies it, or that the tests wait for the user's say-so |
 | Waiting for a usage limit | Task note, wizard usage step | head | slow breathing | clock, violet | That only waiting helps, and until when |
 | Needs attention | Dashboard, task note | head | none | pause, amber | What is wrong and what to do |
 | Error, blocked, stale lock | Task note | head | slight tilt, static | alert, red | The cause in plain words |

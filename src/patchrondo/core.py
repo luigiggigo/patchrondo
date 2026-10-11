@@ -1,6 +1,7 @@
 """Deterministic task state machine: develop -> test -> review -> repeat/done."""
 from __future__ import annotations
 
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 import copy
@@ -15,7 +16,8 @@ from .storage import private_dir, save_json, read_json, atomic_text, now, TaskLo
 from .gitops import repo_root, create_worktree, changes, stat, fingerprint
 from .process import execute, short_log
 from .providers import OfficialCLI, AgentFailure
-from . import activity, rag, recovery
+from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
+from . import activity, providers, rag, recovery, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -51,6 +53,9 @@ def initialize(home: Path, repo: Path) -> Path:
     private_dir(home / "tasks")
     private_dir(home / "worktrees")
     private_dir(home / "empty-hooks")
+    # Worktrees are what agents read: of everything in the state directory, only that folder is
+    # made readable by a reviewer's sandbox. An existing home gets the same from the environment check.
+    winacl.prepare(home)
     return config_file
 
 
@@ -395,6 +400,89 @@ def _report(path: Path, state: dict) -> None:
     atomic_text(path / "report.md", render_report(state))
 
 
+class EnvironmentBlocked(AgentFailure):
+    """The environment check stopped the run before a provider was called."""
+
+
+def record_environment(state: dict, record: dict) -> list[dict]:
+    """Put the record of an environment check into the task state, with its events. Returns the repairs it made."""
+    state["environment"] = record
+    repairs = record["repairs"][-record["attempts"]:] if record["attempts"] else []
+    for outcome in repairs:
+        _event(state, "environment_repaired", repair=outcome["repair"], outcome=outcome["outcome"])
+    if record["status"] != "ready":
+        _event(state, "environment_blocked", kind=record["error_kind"], cause=record["cause"])
+    return repairs
+
+
+def _environment(manager, home: Path, path: Path, state: dict, cfg: dict, *, live: bool,
+                 reviewer_only: bool = False) -> None:
+    """Check the environment before a provider is called, and stop the run when it is not ready.
+
+    The record of the check is saved with the task under `environment`,
+    whatever the outcome, so a problem and its cause stay readable after the
+    pause. A stage is saved when it starts, which is what the interface shows
+    while the check runs. The activity journal gets an attempt of its own when
+    the check starts real CLIs, repairs something or finds a problem.
+    """
+    previous = state.get("environment") if isinstance(state.get("environment"), dict) else None
+    kept = list((previous or {}).get("repairs") or [])
+    notes: list[tuple[str, dict]] = []
+    with ExitStack() as stack:
+        journal = None
+
+        def record_attempt():
+            return stack.enter_context(activity.attempt(path, iteration=state["iteration"], role="environment",
+                                                        provider="local"))
+
+        def note(event: str, **fields) -> None:
+            nonlocal journal
+            if event in {"stage", "repair"}:
+                state["environment"] = {"version": ENVIRONMENT_VERSION, "status": "checking",
+                                        "stage": fields.get("stage", "repair"), "checked_at": now(), "repairs": kept}
+                _save(path, state)
+            if live and journal is None:
+                journal = record_attempt()
+            if journal is not None:
+                journal.emit("status", status=event, **fields)
+            else:
+                notes.append((event, fields))
+
+        try:
+            record = manager.check(home, state, live=live, note=note, previous=previous, reviewer_only=reviewer_only,
+                                   repository=Path(cfg["repository"]))
+        except BaseException as exc:
+            # An unfinished check is not a result: what was saved before it stays.
+            if previous is None:
+                state.pop("environment", None)
+            else:
+                state["environment"] = previous
+            if isinstance(exc, ValueError):
+                raise RuntimeError(f"The environment check could not run: {exc}") from exc
+            raise
+        if record.get("reused"):
+            return
+        repairs = record_environment(state, record)
+        if journal is None and (repairs or record["status"] != "ready"):
+            journal = record_attempt()
+            for event, fields in notes:
+                journal.emit("status", status=event, **fields)
+        if journal is not None:
+            for outcome in repairs:
+                journal.emit("status", status="repaired", repair=outcome["repair"], outcome=outcome["outcome"],
+                             text=f"Repair {outcome['outcome'].replace('_', ' ')}: {outcome['repair'].replace('_', ' ')}")
+            for check in record["checks"]:
+                if check["status"] == "failed":
+                    journal.emit("status", status="check_failed", id=check["id"], text=f"{check['label']}: failed",
+                                 detail=check["detail"])
+        if record["status"] != "ready":
+            _save(path, state)
+            raise EnvironmentBlocked(record["message"], record["error_kind"], provider=record["provider"])
+        if journal is not None:
+            journal.emit("status", status="ready", text="The environment is ready")
+        _save(path, state)
+
+
 def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
     """The persisted `last_error`.
 
@@ -404,6 +492,8 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
     kind = getattr(exc, "kind", "interrupted" if isinstance(exc, KeyboardInterrupt) else
                    "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "system_error")
     error = {"kind": kind, "message": str(exc) or "Interrupted by the user", "at": recovery.stamp_up(at)}
+    if isinstance(exc, EnvironmentBlocked):
+        error["source"] = "environment"  # the details are in the task's `environment` record
     provider = getattr(exc, "provider", None)
     if kind == "quota":
         provider = provider or state["developer" if state["phase"] == "develop" else "reviewer"]
@@ -423,13 +513,18 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
 
 
 def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = False,
-             auto_resume: bool | None = None, clock=None, retry_of: str | None = None) -> dict:
+             auto_resume: bool | None = None, clock=None, retry_of: str | None = None, environment=None) -> dict:
     """Run one task under its lock until it completes, blocks or pauses.
 
     `auto_resume` overrides `recovery.enabled`. While recovery is active, a
     quota failure persists a retry plan before the lock is released, and no
     provider is called before a pending plan is due. `retry_of` marks a retry
     started by `recovery.supervise` for the plan with that `resume_at`.
+
+    Every run, also a resumed or retried one, checks the environment before
+    the first provider call and again before each review. `environment` is the
+    manager that does it; the default one is used unless the checks are
+    switched off with `PATCHRONDO_PREFLIGHT=0`.
     """
     cfg = config(home)
     clock = clock or recovery.utcnow
@@ -440,6 +535,9 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
     workspace = Path(saved["worktree"])
     if not workspace.is_dir():
         raise RuntimeError(f"Missing worktree: {workspace}")
+    manager = environment if environment is not None else EnvironmentManager() if environment_enabled() else None
+    # Checks that start a real CLI belong to runs that start real CLIs: not with a given adapter, not while simulated.
+    live = adapter is None and not providers.simulated()
     if adapter is None:
         adapter = OfficialCLI(timeout=cfg["workflow"]["agent_timeout_seconds"],
                               claude_turns=cfg["workflow"]["claude_max_turns"], clock=clock)
@@ -462,6 +560,8 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
         state["last_error"] = None  # historical failures remain in the event journal
         _save(path, state)
         try:
+            if manager is not None:
+                _environment(manager, home, path, state, cfg, live=live)
             while True:
                 iteration = state["iteration"]
                 run_dir = private_dir(path / "runs" / f"iteration-{iteration:03d}")
@@ -480,6 +580,9 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     _test_stage(path, state, cfg, workspace)
                 if state["phase"] == "review":
                     _check_test_context(state, cfg, workspace)
+                    if manager is not None:
+                        # Before every review; a ready result is reused only while nothing it depends on changed.
+                        _environment(manager, home, path, state, cfg, live=live, reviewer_only=True)
                     _event(state, "review_started")
                     _save(path, state)
                     context = _context(home, cfg, path, state, workspace, "reviewer")

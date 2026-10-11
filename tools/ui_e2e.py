@@ -10,7 +10,9 @@ Scenarios: first run and setup wizard; run with live updates; duplicate starts;
 interface closed and reopened during a run; reconnection; quota recovery states;
 two independent projects; a PatchRondo 0.1 home opened in place; responsive
 layout, keyboard and accessibility basics; large logs and many tasks; live
-activity of the agents while they run, across a disconnection and a reload.
+activity of the agents while they run, across a disconnection and a reload;
+starting a task with one description and one press, the test consent and a
+guided repair of a preparation problem.
 
     python tools/ui_e2e.py
     python tools/ui_e2e.py --only wizard --screenshots .test-tmp/shots
@@ -40,13 +42,13 @@ sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import browser  # noqa: E402
-from patchrondo import activity, doctor  # noqa: E402
+from patchrondo import activity, doctor, environment  # noqa: E402
 from patchrondo.commands import join_command  # noqa: E402
 from patchrondo.core import config, create_task, initialize  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
 from patchrondo.ui import DashboardServer  # noqa: E402
 
-SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality")
+SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality", "start")
 TEST_CODE = "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"
 
 # Receives the provider name explicitly; it never searches PATH. Asked to stream, it prints its
@@ -1180,8 +1182,145 @@ def scenario_live(env: Env) -> None:
     env.stop()
 
 
+class ScriptedLists:
+    """Stands in for the access control lists: unreadable folders that a repair fixes, or does not."""
+    AVAILABLE = True
+
+    def __init__(self):
+        self.status, self.fixable, self.repairs = "missing", False, 0
+
+    def inspect(self, home, worktree, sid=None):
+        return {"status": self.status, "reason": None, "sid": "S-1-5-21-0-0-0-1001", "folders": [
+            {"path": str(Path(home) / "worktrees"), "role": "container", "access": self.status, "protected": True,
+             "sddl": f"D:P({self.status})", "owner": None}]}
+
+    def repair(self, home, worktree, sid=None):
+        self.repairs += 1
+        change = {"path": str(Path(home) / "worktrees"), "role": "container", "previous_sddl": "D:P(missing)",
+                  "previous_protected": True, "added": "allow the current user read+execute"}
+        if not self.fixable:
+            return {"changed": [change], "restored": True, "error": "[WinError 5] Access is denied", "status": "missing"}
+        self.status = "granted"
+        return {"changed": [change], "restored": False, "error": None, "status": "granted"}
+
+
+class NoSandbox:
+    """The sandbox self-check is not available to this driver: it would start a real CLI."""
+
+    def identity(self):
+        return None
+
+    def unavailable(self, cwd):
+        return "Not probed by the browser check"
+
+
+def scenario_start(env: Env) -> None:
+    """One description and one press start a task; preparation, the test consent and a guided repair on the page."""
+    page = env.page
+    repo = make_repo(env.root / "zero")
+    env.start()
+    env.open()
+    page.take_problems()  # what the page of the previous, stopped server logged while it was being replaced
+    status, project = env.api("POST", "/api/projects", {"path": str(repo), "name": "zero"})
+    env.check("a new project starts with tests disabled and untrusted", status == 201 and project["config"]["tests_enabled"] is False
+              and project["config"]["trust_acknowledged"] is False, str(project))
+    env.api("PATCH", "/api/settings", {"selected_project": project["id"], "onboarding_completed": True})
+    home = Path(project["home"])
+    env.go("")
+    env.expect("the dashboard offers one box and one button to start", "Boolean(q('.composer textarea')) && Boolean(byText('Start task', '.composer button'))")
+    env.expect("the roles default to Claude developing and Codex reviewing", "qa('.composer .role-select').map((s) => s.value).join() === 'claude,codex'")
+    env.expect("the environment indicator says the computer is ready", "q('.composer-status').innerText.includes('Ready')")
+    env.check("advanced options are one link away, not in the way", page.js("Boolean(byText('More options', '.composer a')) && !q('.composer details')"))
+    env.shot("home-start")
+    before = len(env.calls())
+    page.click(text="Start task", selector=".composer button")
+    env.expect("an empty description is refused on the page", "q('.composer .form-error').innerText.includes('Describe')")
+    env.check("nothing was created for it", not list((home / "tasks").glob("T-*")))
+    env.control(mode="ok", develop_seconds=1.0, review_seconds=0.6)
+    page.fill(".composer textarea", "Create feature.txt containing the word good.")
+    page.js("(byText('Start task', '.composer button').click(), byText('Start task', '.composer button').click(), true)")  # a double press
+    env.expect("one press opens the task and starts it, with no further dialog", "location.hash.startsWith('#/tasks/P-') && !q('.dialog')", 15)
+    task_id = page.js("location.hash.split('/')[3].split('?')[0]")
+    path = home / "tasks" / task_id
+    env.check("a double press created one task", [item.name for item in (home / "tasks").glob("T-*")] == [task_id])
+    env.expect("the workflow starts with the preparation PatchRondo does itself", "qa('.workflow-label')[0].textContent === 'Prepare' && qa('.workflow-label').length === 5")
+    env.expect("the page shows the run without a reload", "q('.task-head').innerText.includes('Running') || q('.task-head').innerText.includes('Paused')", 15)
+    paused = env.wait_state(path, lambda s: s["status"] == "paused", 60)
+    env.check("the task was developed and reviewed once, then stopped at the test consent",
+              paused["last_error"]["kind"] == "tests_disabled" and [c["role"] for c in env.calls()[before:]] == ["developer", "reviewer"],
+              f"{paused['last_error']} {env.calls()[before:]}")
+    env.check("the environment check of the run is saved as ready", paused["environment"]["status"] == "ready", str(paused["environment"]))
+    env.check("starting did not enable or trust the tests", config(home)["tests"] == {"enabled": False, "trust_acknowledged": False, "commands": []},
+              str(config(home)["tests"]))
+    env.expect("the preparation step is shown as done", "qa('.workflow-step')[0].classList.contains('done')", 8)
+    env.expect("the page asks for the test consent in plain words", "Boolean(q('.consent')) && q('.consent').innerText.includes('Allow this project') && q('.consent').innerText.includes('never starts them by itself')", 8)
+    env.expect("Rondo says why it waits", "q('.rondo-note').innerText.includes('never run them without your say-so')")
+    env.shot("task-consent")
+    page.fill(".consent textarea", join_command([sys.executable, "-c", TEST_CODE]))
+    page.click(text="Allow tests and resume")
+    env.expect("the consent is refused without the explicit tick", "q('.consent .form-error').innerText.includes('Tick the box')")
+    env.check("and nothing was enabled by that press", config(home)["tests"]["enabled"] is False)
+    page.click(".consent input[type=checkbox]")
+    page.click(text="Allow tests and resume")
+    done = env.wait_state(path, lambda s: s["status"] == "done", 60)
+    env.check("the explicit consent saved the typed command, enabled and trusted",
+              config(home)["tests"] == {"enabled": True, "trust_acknowledged": True, "commands": [[sys.executable, "-c", TEST_CODE]]}, str(config(home)["tests"]))
+    env.check("the resumed run ran the tests and finished", [test["status"] for test in done["tests"]] == ["passed"], str(done["tests"]))
+    env.expect("the page shows Done without a reload", "q('.task-head').innerText.includes('Done') && qa('.workflow-step').every((step) => step.classList.contains('done'))", 10)
+    env.shot("task-started-done")
+
+    # A problem found while preparing: one sentence, one button, and the details only on request.
+    lists = ScriptedLists()
+    env.server.app.environment = environment.Manager(sandbox=NoSandbox(), check_cli=lambda name, cwd=None: PROVIDERS[name], acl=lists)
+    status, created = env.api("POST", f"/api/projects/{project['id']}/tasks", {
+        "title": "Needs a repair", "description": "Create feature.txt containing the word good.", "developer": "claude", "reviewer": "codex"})
+    second = home / "tasks" / created["id"]
+    state = read_json(second / "state.json")
+    state.update(status="paused", last_error={"kind": "sandbox_access_denied", "source": "environment", "provider": "codex",
+                                              "message": "Codex cannot read the copy of the project prepared for this task.",
+                                              "at": state["created_at"]},
+                 environment={"version": 1, "status": "repairable", "checked_at": state["created_at"], "live": True, "signature": None,
+                              "error_kind": "sandbox_access_denied", "cause": "acl_missing_read", "provider": "codex", "repair": "acl",
+                              "message": "Codex cannot read the copy of the project prepared for this task.",
+                              "repair_available": True, "repair_applied": False, "requires_user_action": True, "attempts": 1,
+                              "checks": [{"id": "acl.worktree", "stage": "sandbox", "status": "failed", "label": "The task folder is readable by the reviewer",
+                                          "detail": "container: missing. No access entry lets the reviewer's restricted token read these folders"}],
+                              "repairs": [{"repair": "acl", "at": state["created_at"], "outcome": "rolled_back", "restored": True,
+                                           "error": "[WinError 5] Access is denied", "changed": []}]})
+    save_json(second / "state.json", state)
+    calls = len(env.calls())
+    env.go(f"tasks/{project['id']}/{created['id']}")
+    env.expect("a preparation problem is explained in plain words", "Boolean(q('.callout')) && q('.task-overview').innerText.includes('Codex cannot read the project yet')", 10)
+    env.expect("exactly one action is offered for it", "Boolean(byText('Repair automatically', '.callout button')) && qa('.callout button.primary').length === 1")
+    shown = page.js("q('.task-overview .stack').innerText + q('.rondo-note').innerText")
+    env.check("no system error, command or permission jargon is on the main screen",
+              not any(word in shown for word in ("WinError", "PermissionError", "icacls", "PowerShell", "SDDL", "Traceback", "restricted token")), shown[:600])
+    env.check("the details are there, closed", page.js("Boolean(q('details.technical')) && q('details.technical').open === false"))
+    env.expect("the workflow shows the task held at preparation", "qa('.workflow-step')[0].classList.contains('paused') && qa('.workflow-step')[1].classList.contains('pending')")
+    env.shot("task-repair")
+    page.click(text="Repair automatically")
+    env.expect("a repair that does not work says so and keeps the action", "qa('.toast').some((t) => t.innerText.includes('did not work')) && Boolean(byText('Repair automatically', '.callout button'))", 15)
+    saved = read_json(second / "state.json")
+    env.check("the button really ran the repair and the check, and the task stayed recoverable",
+              lists.repairs == 1 and saved["status"] == "paused" and saved["environment"]["status"] == "repairable"
+              and [entry["event"] for entry in saved["history"]][-2:] == ["environment_repaired", "environment_blocked"], str(saved["history"]))
+    env.check("no agent was called for the check or the repair", len(env.calls()) == calls)
+    page.click("details.technical summary")
+    env.expect("the technical details name the failed check on request", "q('details.technical').open && q('details.technical').innerText.includes('acl.worktree')")
+    lists.fixable = True
+    page.click(text="Repair automatically")
+    finished = env.wait_state(second, lambda s: s["status"] == "done", 60)
+    env.check("the repair succeeded, was checked again and the task resumed by itself",
+              lists.repairs == 2 and "environment_repaired" in [entry["event"] for entry in finished["history"]]
+              and [c["role"] for c in env.calls()[calls:]] == ["developer", "reviewer"], str(env.calls()[calls:]))
+    env.expect("the page follows to Done", "q('.task-head').innerText.includes('Done')", 10)
+    env.clean_console("start")
+    env.stop()
+
+
 SCENARIO_FUNCTIONS = {"wizard": scenario_wizard, "run": scenario_run, "live": scenario_live, "restart": scenario_restart, "reconnect": scenario_reconnect,
-                      "recovery": scenario_recovery, "projects": scenario_projects, "legacy": scenario_legacy, "quality": scenario_quality}
+                      "recovery": scenario_recovery, "projects": scenario_projects, "legacy": scenario_legacy, "quality": scenario_quality,
+                      "start": scenario_start}
 
 
 def main(argv: list[str] | None = None) -> int:

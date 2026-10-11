@@ -3,7 +3,8 @@
 Initial review: October 8, 2026. Local follow-up: October 9, 2026. Real-provider
 checks and the automatic quota recovery change: October 10, 2026. PatchRondo
 0.2 (interface, several projects, process truth): October 10, 2026. Live
-activity and publication-status update: October 11, 2026.
+activity and publication-status update: October 11, 2026. Environment check,
+repairs and one-press start (0.2.1, local): October 11, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -13,20 +14,21 @@ working tree at its date.
 
 ## Current source and CI status (October 11, 2026)
 
-The 0.2.0 source, including the interface, its follow-up fixes and live
-activity, is published on `main` at
-[`c9f6e1e`](https://github.com/luigiggigo/patchrondo/commit/c9f6e1e4b94494b0268cfd51734e563114dbd237).
-The remote commit, empty tag list and empty GitHub Releases list were checked
-with `gh` on October 11, 2026 (exit status 0). There is no tagged release.
+The 0.2.0 source, including the interface, its follow-up fixes, live activity
+and the streaming failure correction, is published on `main` at
+[`6937d9f`](https://github.com/luigiggigo/patchrondo/commit/6937d9fa16d47571b7e828a39e03b408f70a1440).
+The remote commit (`git ls-remote`), the empty tag list and the empty GitHub
+Releases list were checked on October 11, 2026 (exit status 0). There is no
+tagged release.
 
-[CI run 38164218154](https://github.com/luigiggigo/patchrondo/actions/runs/38164218154)
-for `c9f6e1e` was in progress when checked with `gh` on October 11, 2026:
-the four Linux/macOS jobs had passed and the two Windows jobs were still
-running, so no passing result is claimed for the complete run.
-[Run 38148014405](https://github.com/luigiggigo/patchrondo/actions/runs/38148014405)
-completed successfully for the preceding commit `345d339`. CI does not run
-the browser checks or authenticated providers. Neither run covers subsequent
-local changes.
+Checked with `gh run list` the same day:
+[CI run 38170281475](https://github.com/luigiggigo/patchrondo/actions/runs/38170281475)
+for `6937d9f` completed successfully, and so did
+[run 38164218154](https://github.com/luigiggigo/patchrondo/actions/runs/38164218154)
+for `c9f6e1e`, which an earlier version of this section recorded as still in
+progress. CI does not run the browser checks, the real-sandbox tests or
+authenticated providers. No run covers the local 0.2.1 changes described in
+the next section.
 
 The dated sections below retain the scope and results of the checks made at
 each stage. Earlier references to local validation describe those checks,
@@ -41,10 +43,155 @@ and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
 
+## Zero configuration and self-healing (October 11, 2026)
+
+This section covers the local working tree of PatchRondo 0.2.1: the
+environment check (`environment.py`), the reviewer preflight (`preflight.py`),
+the Windows access policy (`winacl.py`), the repairs (`repair.py`), their place
+in `core.run_task`, the `/start` and `/repair` routes, the home-page composer,
+the *Prepare* step, the guided fix and the test consent on the task page, the
+two failure kinds `max_turns` and `git_dubious_ownership`, 97 new tests, 19
+new protections and one new browser scenario. Nothing of it is committed or
+pushed, and no CI run covers it. The work was done on October 11, 2026; the
+last validation runs below ended after midnight, on October 12, local time.
+
+### What was observed before anything was changed
+
+On native Windows 11 Pro (10.0.26200) with codex-cli 0.161.0 and
+`[windows] sandbox = "unelevated"`, in throwaway homes outside the repository,
+with no model call:
+
+| Observation | Result |
+|---|---|
+| `mkdir(mode=0o700)` on Python 3.13.3 | protected list of SYSTEM, Administrators and OWNER RIGHTS; no entry for the user |
+| the same on Python 3.11.3 | the list inherited from the parent folder |
+| Probe in `codex sandbox -P :read-only` on a worktree of the 3.13 home | absolute read denied, PowerShell started in `C:\WINDOWS\System32\WindowsPowerShell\v1.0`, `git -C` "cannot change to …: Permission denied" |
+| Read entry for the user on the worktree only | absolute read and `git -C` work; PowerShell still starts in `C:\`, relative read and Git discovery fail |
+| Read and execute for the user on `worktrees`, inherited | everything works; write, create and delete refused |
+| Less than read and execute on `worktrees` (list and traverse only) | PowerShell starts in `C:\` again |
+| Read entry for Users, Authenticated Users or Everyone instead of the user | works: the restricted token is checked against these, not against OWNER RIGHTS |
+| Several levels above `worktrees` that nobody but the owner can see | PowerShell starts in `C:\` until each level grants "read attributes" or its parent can be listed |
+| A junction inside a repaired worktree | the inherited entry stops at the junction; its target is unchanged |
+| The same probe in a plain folder of `%TEMP%` | the canary could be deleted: that folder inherits write entries of Codex sandbox identities |
+| PowerShell in that sandbox | constrained language mode: no .NET call is allowed |
+
+The last two rows shaped the tests: sandbox fixtures are built in a folder
+whose list is set explicitly, and the probe uses cmdlets only. The existing
+home of this computer had been repaired by hand earlier; read without writing,
+the policy judges it `granted` and would change nothing there.
+
+### Validation after the final change
+
+Every row was run after the last change to runtime code, tests or tools that
+it depends on. The last such change was to the test fixture
+(`tests/support.py`, see the regression below); the suites, the protections,
+the real-sandbox tests, the scanner and the build were run again after it. The
+reliability, real-clock and browser checks do not use the files under `tests/`
+and are recorded from the run on the final runtime and tool code.
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 443 tests, 432 passed, 11 skipped, 298.799 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 443 tests, 432 passed, 11 skipped, 292.856 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3, Git 2.43.0: 443 tests, 425 passed, 18 skipped, 119.051 s | 0 |
+| Preflight in the real Codex sandbox (opt-in) | Native Windows, codex-cli 0.161.0, Python 3.13.3: 5 tests passed, 17.033 s | 0 |
+| Preflight in the real Codex sandbox (opt-in) | Native Windows, codex-cli 0.161.0, Python 3.11.3: 5 tests passed, 17.186 s | 0 |
+| Protections | WSL2, Python 3.12.3: 89 of 89 removed safeguards detected, 0 missed (70 earlier, 19 new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (interruption and stale-lock scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.04 s after the planned time | 0 |
+| Browser, all ten scenarios | Native Windows, Python 3.13.3, Chrome 154.0.8037.99 headless: 268 passed, 0 failed (34 in the new `start` scenario) | 0 |
+| Build and `twine check` | Native Windows: `patchrondo-0.2.1.tar.gz` and the wheel built outside the repository; both passed; the wheel contains the four new modules and the interface files | 0 / 0 |
+| Publication scanner | 106 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+Documentation, after the last edit: nine Markdown files (eight tracked and the
+local, ignored `AGENTS.md`) passed UTF-8, LF, no-BOM and final-newline checks;
+all 39 local links and anchors resolved; `git diff --check` exited with
+status 0.
+
+The scanner is not a clean pass: its findings are the same four as before and
+still require local review before publication. The skipped tests are, on
+Windows, the five real-sandbox tests (opt-in) and the six POSIX-only tests
+skipped before; on WSL2, the same five, the twelve tests of real Windows
+access lists and the one skipped before. The protections were not run on
+native Windows in this round.
+
+### What each kind of check establishes
+
+- **Simulated** (the suites, reliability, real-clock, protections, browser):
+  providers are scripted; the sandbox, the access lists and the CLI status are
+  replaced where a test needs them. They establish the orchestration: a failed
+  preflight stops a run before any provider call; a repair that works lets the
+  workflow continue and one that fails leaves a resumable pause with one
+  guided action; nothing is retried in a loop; an access problem is not
+  replaced by `tests_disabled`; a run resumed after a crash is checked before
+  its next call; the turn limit and Git's ownership refusal get their own
+  kinds; no way of starting a task enables tests.
+- **Real access lists, no CLI** (`WindowsAclTests`, on both Windows Pythons):
+  the policy on the real lists of temporary folders: one entry added, private
+  folders unchanged, idempotence, exact rollback, a customized list kept, a
+  deny entry left alone, names with spaces, Unicode and special characters,
+  junctions neither repaired nor crossed.
+- **Real sandbox, no model** (`tests/test_sandbox_real.py`): the installed
+  codex-cli 0.161.0 ran its sandbox self-check. A home as restrictive as the
+  observed one is found unreadable, repaired, and then passes all nine probe
+  checks, with a second check changing nothing; the same in the layout of a
+  multi-project home and with unusual folder names; the task state stays
+  unreadable from the sandbox, and a state directory made visible by "read
+  attributes" still cannot be listed from it.
+- **Not run:** no authenticated provider was called. Whether a real Codex
+  review now reads a repaired worktree on this computer follows from the
+  self-check of the same CLI and sandbox, not from an observed review.
+
+### A regression found by these runs, and its fix
+
+In the first final round the suite failed once on native Windows with Python
+3.11.3 (442 of 443, exit status 1):
+`test_a_waiting_process_blocks_a_second_automatic_run_only` found one
+unexpected `Popen` call, `git --version`. The new report about the computer
+runs that command in the background thread of the agent status, at a moment of
+its own, and that test replaces `Popen` for the whole process. The same suite
+had passed on Python 3.13.3 minutes earlier: a race, introduced by this
+change. The shared fixture of the interface tests now replaces the report as
+it already replaced the CLI status, and the test that reads the report through
+the server compares it with the fixture; the real report is checked directly.
+All suites and the protections were run again afterwards, with the results in
+the table.
+
+Two earlier rounds on the same day found and removed: a browser check that
+counted a network error logged by the page of the previous scenario's stopped
+server, and a first form of the access policy that repaired only `worktrees`.
+The real-sandbox tests showed that form to be insufficient for the layout of a
+multi-project home, which is where "read attributes" on PatchRondo's own
+folders comes from.
+
+### Limits that remain
+
+- The sandbox is probed on native Windows only, with the one `codex sandbox`
+  form read from codex-cli 0.161.0. Another CLI version with other options is
+  not probed until its form is added; its checks are then shown as skipped.
+- Only the reviewer's read-only profile is probed. A Codex developer's
+  `workspace-write` sandbox is not.
+- The static check of the access lists models what was measured: the user,
+  Users, Authenticated Users and Everyone, allow and deny entries. Other entry
+  types and group memberships are not interpreted; when the sandbox can be
+  probed, its answer decides.
+- Lists inside the user's repository are never changed. A repository whose
+  `.git` directory the sandbox cannot read is reported as
+  `sandbox_git_failed`, not repaired.
+- Granting to an existing folder propagates to what is inside it; on a very
+  large worktree that takes time and has no timeout.
+- The login check trusts the exit status of each CLI's own status command. A
+  login it cannot confirm does not stop the run; one it reports as missing
+  does.
+- Stopping a run from the interface is still unavailable on native Windows.
+- Measurements are of one computer, one Windows build and one CLI version.
+
 ## Local streaming failure correction (October 11, 2026)
 
-This section covers the local working-tree correction to `providers.py`, its
-two regression tests and its mutation protection. Existing task logs showed
+This section covers the correction to `providers.py`, its two regression tests
+and its mutation protection, as validated in the local working tree before it
+was published in commit `6937d9f`. Existing task logs showed
 Claude ending at the configured 12-turn limit with `error_max_turns`. The
 transcript also named an unknown `rate_limit_event`, which caused the adapter
 to misclassify the failure as quota and schedule unnecessary recovery attempts.

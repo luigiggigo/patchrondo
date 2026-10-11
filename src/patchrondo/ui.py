@@ -348,8 +348,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return 202, app.start_index(app.ws.get(match.group(1)))
         if match := re.fullmatch(PROJECT + "/tasks", path):
             return 201, app.new_task(app.ws.get(match.group(1)), payload)
+        if match := re.fullmatch(PROJECT + "/start", path):
+            return 201, app.quick_start(app.ws.get(match.group(1)), payload)
         if match := re.fullmatch(TASK + "/run", path):
             return 202, app.start_run(app.ws.get(match.group(1)), unquote(match.group(2)), payload)
+        if match := re.fullmatch(TASK + "/repair", path):
+            return 200, app.repair_task(app.ws.get(match.group(1)), unquote(match.group(2)), payload)
         if match := re.fullmatch(TASK + "/stop", path):
             return 202, app.stop_run(app.ws.get(match.group(1)), unquote(match.group(2)))
         raise FileNotFoundError("Not found")

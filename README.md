@@ -29,20 +29,24 @@
   </a>
 </p>
 
-**Version 0.2.0.** The source has been public on
+**Version 0.2.1.** The source has been public on
 [GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026
 (0.1.0). The 0.2.0 interface and live activity are published as source on
-`main` (checked October 11, 2026, commit `c9f6e1e`). The repository has no
-version tags or GitHub Releases; the
+`main` (checked October 11, 2026, commit `6937d9f`). 0.2.1, the environment
+check with its repairs and the one-press start, is a local change of
+October 11, 2026 that is not published. The repository has no version tags or
+GitHub Releases; the
 [changelog](CHANGELOG.md) says what each version contains and the
 [technical review](docs/REVIEW.md) what was checked, where and when.
 
 A **local**, **resumable** Python orchestrator that delegates development to
 **Claude Code** or **OpenAI Codex CLI** and asks the other agent to review the
 result until tests and review pass or a configured limit is reached. You use
-it from a **local interface in your browser**: add your projects, create a
-task, press Run and follow the loop live. Every command-line command of 0.1 is
-still there.
+it from a **local interface in your browser**: choose a project, describe what
+should be done, press **Start task** and follow the loop live. PatchRondo
+prepares the task's copy of the project, checks the agents and the review
+sandbox, repairs what it safely can and tells you in one sentence when it
+needs you. Every command-line command of 0.1 is still there.
 
 It uses the **official CLIs** and the logins already configured on your machine.
 It does not extract OAuth tokens, use unofficial endpoints, or promise unlimited
@@ -92,9 +96,10 @@ On a new installation the first start shows a short setup: choose a local Git
 repository, check that Claude Code and Codex are installed and logged in,
 choose the default developer and reviewer, decide whether your project's tests
 may run, and read how your plan's limits are used. Nothing is written until
-the last step and no model is called. After that, create a task and press
-**Run**: Run and Resume invoke the real CLIs and consume your account quota,
-and always ask for confirmation first.
+the last step and no model is called. After that, describe a task on the home
+page and press **Start task**: that one press creates the task and starts it.
+Starting, running and resuming invoke the real CLIs and consume your account
+quota; the project's tests never run until you allow them.
 
 `init.sh` is safe to run again. Given a path (`./init.sh /path/to/repository`),
 or run from inside a Git repository other than PatchRondo's own checkout, it
@@ -121,11 +126,11 @@ the interface, not the runs it started.
 
 | Section | What you do there |
 |---|---|
-| **Home** | See the state of Claude Code and Codex, the selected project, tasks that are active, need attention, are ready or done, and recent activity. Start a task or add a project. |
+| **Home** | Start a task: the project (or *Choose folder…* for another one), what should be done, the developer and the reviewer with their defaults, a readiness indicator and one **Start task** button. Below it, the state of Claude Code and Codex, tasks that are active, need attention, are ready or done, and recent activity. |
 | **Projects** | Add a local Git repository (with a folder picker and a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
 | **Tasks** | All tasks of the selected project, or of every project, with filters and search. |
-| **Task** | Header with status, roles and iteration; the workflow *Develop → Test → Review → Repeat / Complete*; then Overview, Live Activity (what the agents are doing, while they do it), Timeline (the steps the engine recorded), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
-| **New task** | Project, title, description, acceptance criteria, developer and reviewer; under *Advanced*, limits for that task only. *Create and run* asks for confirmation before any agent is called. |
+| **Task** | Header with status, roles and iteration; the workflow *Prepare → Develop → Test → Review → Repeat / Complete*; then Overview, Live Activity (what the agents are doing, while they do it), Timeline (the steps the engine recorded), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
+| **New task** | The longer form behind *More options*: project, title, description, acceptance criteria, developer and reviewer; under *Advanced*, limits for that task only. *Create and run* asks for confirmation before any agent is called. |
 | **Settings** | Global preferences and, per project: default roles, workflow limits, tests, the Recovery Manager, local retrieval and the raw configuration. Every setting has a one-line explanation. |
 
 Things worth knowing:
@@ -140,7 +145,16 @@ Things worth knowing:
   its time, reconnects by itself and loads a fresh snapshot.
 - **Live Activity.** While a step runs, the task page shows what the agent's
   CLI reports as it reports it. See [Live Activity](#live-activity).
-- **Tests stay off until you say so.** In *Settings → Tests* you enter one
+- **Prepared for you, checked before any agent is called.** Every run first
+  checks that the agents of the task are installed and logged in, that Git
+  accepts the task's folder, and that the reviewer can read it and cannot
+  write it. What can be fixed safely is fixed and checked again; anything else
+  stops the task where it can resume, with one sentence and at most one
+  button. See [Preparation and repairs](#preparation-and-repairs).
+- **Tests stay off until you say so.** A task that needs the project's tests
+  pauses and asks on its own page: it shows the commands, wants an explicit
+  tick and resumes. Neither adding a project nor *Start task* is consent. In
+  *Settings → Tests* you enter one
   command per line and tick *I trust this repository*; the tick is asked again
   whenever the commands change. On Windows, use double quotes around arguments
   containing spaces; single quotes are literal characters. On Linux and macOS,
@@ -162,6 +176,53 @@ The server uses only the standard library, listens on `127.0.0.1` only, rejects
 foreign `Host` and `Origin` headers, accepts writes only as JSON, requires the
 session token on every API call and serves the page with a strict
 Content-Security-Policy and no external assets. See [SECURITY.md](SECURITY.md).
+
+### Preparation and repairs
+
+Before the first agent call of every run, also a resumed or automatically
+retried one, and again before each review, PatchRondo checks the environment
+of the task. No model is called for it and no quota is used. The task page
+shows it as the first step of the workflow, *Prepare*.
+
+| Stage | What is checked |
+|---|---|
+| Agents | The CLI of the developer and of the reviewer is installed and logged in (its own status command; no prompt). |
+| Project | The task worktree exists and Git accepts it. |
+| Safe environment | With a Codex reviewer: the folders are readable by the review sandbox and, on native Windows, the sandbox itself is asked. |
+
+On native Windows the last stage runs the sandbox self-check of the installed
+Codex CLI in the task worktree and compares its answers with the disk: the
+working directory of a process, the folder PowerShell starts in, a file read
+by absolute and by relative path, Git and its metadata, and that a canary
+file is intact and no file could be created. A write counts as refused only
+when the disk proves it. The command was read from the help of codex-cli
+0.161.0 and confirmed by running it there; a CLI that does not list the same
+options is not probed, and those checks are then shown as skipped. On Linux,
+macOS and WSL2 the sandbox is not probed.
+
+What PatchRondo repairs by itself is one thing, on Windows: the access control
+lists of its own folders, so that the review sandbox can read the task's copy
+of the project. It adds read access for *your* user to the `worktrees` folder
+of the project, and "read attributes" to a folder of its own above it when the
+sandbox could not otherwise see that the folder exists. It gives nothing to a
+group, removes nothing, never elevates, never follows a link or a junction,
+and leaves `tasks/`, the configuration and everything outside its home alone.
+It records what each folder had before, puts it back if the repair does not
+verify, and tries once per check.
+
+Everything else is a stop with an explanation, never a workaround:
+
+| The page says | What happened | What you can do |
+|---|---|---|
+| Codex cannot read the project yet | The repair could not be applied or did not help | **Repair automatically** tries again and resumes |
+| Git does not trust this project folder | Git reports "dubious ownership" | **Trust this folder and continue**, after a confirmation: that folder and the task's copy are recorded as trusted for your user, never a wildcard |
+| An agent is not installed / Login required | The CLI is missing or logged out | Install it or run its login command, then resume |
+| The review environment is not read-only | The sandbox could change files | Nothing is sent to the reviewer; update the CLI or its configuration |
+| Claude ran out of turns | `error_max_turns` | Raise the limit or narrow the task; this is not a usage limit and is never retried by itself |
+
+The sandbox is never weakened, approvals are never bypassed and tests are
+never enabled to get a task through. `PATCHRONDO_PREFLIGHT=0` switches the
+whole check off and a run then starts as it did in 0.2.0.
 
 ### Live Activity
 
@@ -355,9 +416,16 @@ patchrondo resume T-a1b2c3d4e5f6
 ```
 
 Claude's `error_max_turns` means the configured `workflow.claude_max_turns`
-was reached (12 by default), not that the account quota is exhausted. Increase
-that limit in the project's workflow settings for a larger task, then resume.
-Automatic quota recovery does not address this limit.
+was reached (12 by default), not that the account quota is exhausted. The task
+pauses with the failure kind `max_turns`. Increase that limit in the project's
+workflow settings for a larger task, then resume. Automatic quota recovery
+does not address this limit.
+
+A run that stops while preparing (see
+[Preparation and repairs](#preparation-and-repairs)) pauses with the kind of
+the problem, for example `sandbox_access_denied`, `git_dubious_ownership` or
+`cli_missing`, before any agent is called. `patchrondo status` shows the
+record of the check under `environment`; `resume` checks again.
 
 To let the same process wait for a usage limit to reset and retry by itself, see
 [Automatic quota recovery](#automatic-quota-recovery-opt-in). It is disabled by
@@ -381,11 +449,16 @@ are required.
 new -> [Git worktree + task.md + state.json]
            |
            v
+       environment check (no model): agents, Git, review sandbox
+           | repairs what it may, checks again; otherwise -> PAUSED
+           v
        developer CLI
            | handoff.md
            v
        test runner (local; opt-in)
            | results in state.json + log files
+           v
+       environment check again (reused while nothing it depends on changed)
            v
        reviewer CLI (read-only)
            | structured review JSON
@@ -583,7 +656,7 @@ now without automatic recovery stays possible in both cases.
       tasks/
         T-.../
           task.md
-          state.json
+          state.json            # also the last environment check, under "environment"
           handoff.md
           feedback.md
           report.md
@@ -601,7 +674,7 @@ now without automatic recovery stays possible in both cases.
               review.schema.json         # Codex
               reviewer.reply.md
               test-01.log
-      worktrees/
+      worktrees/                # the one folder made readable for a review sandbox (Windows)
         T-.../                  # isolated Git worktree for each task
 ```
 
@@ -674,8 +747,9 @@ are cleaned up automatically. *Settings → RAG → Update index now* does what
 7. **Billing and limits:** subscriptions have quotas and may support additional usage billing. The loop stops on rate limits, timeouts, errors, `BLOCKED` or the maximum iteration count. Nothing polls for quota availability. With the opt-in [automatic quota recovery](#automatic-quota-recovery-opt-in), a waiting process retries a usage-limit pause a bounded number of times; every retry uses plan quota.
 8. **Fallible LLM review:** the JSON schema checks structure, not review accuracy. Require human review before integrating changes into main or production.
 9. **Sensitive logs:** logs and handoffs may contain confidential project data. They are saved locally with private permissions; protect backups and disk storage, and do not share `~/.patchrondo`. The activity journal holds agent messages, command lines, file paths and excerpts of command output; masking of values that look like credentials is best effort, not a guarantee.
-10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group; native Windows terminates only the direct child, so WSL2 remains recommended. POSIX private permissions are not translated into Windows ACLs by the program.
-11. **The interface is local and single-user.** It is bound to the loopback interface and protected by a session token, but anyone who can read that token (your terminal output, your browser tab) can create tasks, change settings and start runs with your accounts. A repository does not become trusted by being added: its tests stay disabled until you enable them for it.
+10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group; native Windows terminates only the direct child, so WSL2 remains recommended.
+11. **Windows access control lists:** POSIX private permissions are not translated into Windows lists. On Windows the privacy of the state directory is whatever Python gives a directory made with mode `0o700`: measured on October 11, 2026, owner-only with Python 3.13.3 and inherited from the parent folder with Python 3.11.3. PatchRondo changes lists in one place only, described under [Preparation and repairs](#preparation-and-repairs): read access for your own user on the `worktrees` folder, and "read attributes" on a folder of its own above it. A Codex reviewer's read-only sandbox reads what your user may read by name on the whole disk; that is the design of that sandbox, not something PatchRondo widens.
+12. **The interface is local and single-user.** It is bound to the loopback interface and protected by a session token, but anyone who can read that token (your terminal output, your browser tab) can create tasks, change settings and start runs with your accounts. A repository does not become trusted by being added: its tests stay disabled until you enable them for it.
 
 ### Final integration
 
@@ -715,16 +789,30 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest recorded local validation on October 11, 2026 ran **344 tests**,
-including live activity: on native Windows (Python 3.13 and Python 3.11)
-**338 passed and 6 were skipped**; on WSL2 (Python 3.12) **343 passed and 1
-was skipped**, all with exit status 0. These local results are separate from
+The latest recorded local validation, of the unpublished 0.2.1 working tree,
+ran **443 tests**: on native Windows (Python 3.13 and Python 3.11)
+**432 passed and 11 were skipped**; on WSL2 (Python 3.12) **425 passed and 18
+were skipped**, all with exit status 0. The skipped ones are tests that need
+POSIX, tests of real Windows access lists, and five opt-in tests that run the
+reviewer preflight in the real Codex sandbox; those five passed on native
+Windows with both Pythons when asked for. These local results are separate from
 GitHub CI; the [technical review](docs/REVIEW.md#current-source-and-ci-status-october-11-2026)
-records the current published commit and its CI status. Tests use temporary Git
+records the current published commit and its CI status, and
+[what was checked for 0.2.1](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026).
+Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Full package checks are documented in
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The preflight can be run in the real Codex sandbox on native Windows. It
+starts the installed CLI's sandbox self-check, sends no prompt and uses no
+quota:
+
+```powershell
+$env:PATCHRONDO_REAL_SANDBOX = '1'
+python -m unittest discover -s tests -p test_sandbox_real.py -v
+```
 
 ### Browser checks of the interface (no provider quota usage)
 
@@ -736,8 +824,10 @@ The check starts the real server and drives a headless Chrome or Edge on your
 computer through the DevTools protocol, with the Python standard library only.
 Runs it starts are real `patchrondo run` processes whose provider commands
 reach a synthetic executable only; the runner refuses to start while a real
-`claude` or `codex` is reachable. Nine scenarios compare the page with the
-files on disk: first start and setup wizard; a run followed live with
+`claude` or `codex` is reachable. Ten scenarios compare the page with the
+files on disk: a task started from the home page with one description and one
+press, the test consent and a guided repair of a preparation problem; first
+start and setup wizard; a run followed live with
 duplicate starts refused; the activity of a scripted agent shown while it
 runs, across a disconnection, a reload and a CLI without streaming; the
 interface closed and reopened during a run;
@@ -754,7 +844,8 @@ about 15 ms; a list of 68 tasks appeared about 50 ms after navigation; the end
 of a 6 MB log was shown in about 0.15 seconds. These are measurements of one
 machine, not guarantees. On October 11, 2026, with the `live` scenario added,
 the same setup passed all 234 checks, and a message printed by the scripted
-CLI reached the page in about 0.2 seconds. The check needs a local Chromium-based browser and
+CLI reached the page in about 0.2 seconds. With the `start` scenario of 0.2.1
+added, it passed all 268 checks. The check needs a local Chromium-based browser and
 reports that it was skipped when there is none; it has not been run on Linux,
 macOS, Firefox or Safari, and it is not part of CI.
 

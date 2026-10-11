@@ -29,8 +29,17 @@ def make_repo(path: Path) -> Path:
     return path.resolve()
 
 
+SYSTEM = {"os": "Synthetic", "release": "1", "python": "3.11.0", "python_supported": True, "acl_policy": False,
+          "git": {"installed": True, "path": "/synthetic/git", "version": "2.50.0"}}
+
+
 class ServerCase(unittest.TestCase):
-    """Serves a temporary home. CLI status checks are replaced: no provider CLI is ever started."""
+    """Serves a temporary home. CLI status checks are replaced: no provider CLI is ever started.
+
+    So is the report about the computer: it runs `git --version` in the same
+    background thread, at a moment of its own, and tests that replace `Popen`
+    must not meet it.
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
@@ -39,6 +48,9 @@ class ServerCase(unittest.TestCase):
         checks = patch("patchrondo.app.doctor.check_all", return_value=PROVIDERS)
         self.check_all = checks.start()
         self.addCleanup(checks.stop)
+        system = patch("patchrondo.app.environment.system", return_value=SYSTEM)
+        system.start()
+        self.addCleanup(system.stop)
         self.addCleanup(self.tmp.cleanup)
         self.server = None
         self.start()

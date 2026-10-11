@@ -263,3 +263,26 @@ details.advanced .card-body { border-top: 1px solid var(--border); }
   .act-now { flex-wrap: wrap; }
   .act-now-time { text-align: left; }
 }
+
+/* --- Start a task (home) and guided fixes (task) ------------------------------------------ */
+.composer { display: flex; flex-direction: column; gap: var(--space-3); border-color: var(--accent-line); box-shadow: 0 0 0 4px var(--accent-soft); }
+.composer-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.composer-head h2 { margin: 0; }
+.composer-project { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; min-width: 0; }
+.composer-project select { width: auto; max-width: 28ch; }
+.composer-text { min-height: 104px; resize: vertical; font-size: var(--text-md, 15px); line-height: 1.5; }
+.composer-foot { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.composer-roles, .composer-status { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.role-pick { display: inline-flex; align-items: center; gap: 6px; }
+.role-pick .role-select { width: auto; height: 28px; padding-top: 0; padding-bottom: 0; }
+.technical { margin-top: var(--space-3); }
+.technical > summary { cursor: pointer; color: var(--text-2); font-weight: 560; }
+.technical[open] > summary { margin-bottom: var(--space-3); }
+.check-list { display: flex; flex-direction: column; gap: var(--space-2); margin: var(--space-2) 0 var(--space-3); }
+.check-row { display: flex; align-items: flex-start; gap: var(--space-3); font-size: var(--text-sm); }
+.check-row .badge { flex: none; min-width: 72px; justify-content: center; }
+.consent-check { align-items: flex-start; gap: var(--space-2); cursor: pointer; }
+.consent-check input { margin-top: 3px; flex: none; }
+@media (max-width: 720px) {
+  .composer-foot .btn.lg { width: 100%; justify-content: center; }
+}

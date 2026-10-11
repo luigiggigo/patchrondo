@@ -12,7 +12,7 @@ import { agentName, phaseSentence } from "../tasks.js";
 import { badge, button, toastError, toggle } from "../ui.js";
 
 const MAX_ROWS = 4000;
-const ROLES = { developer: "developer", reviewer: "reviewer", tests: "tests" };
+const ROLES = { developer: "developer", reviewer: "reviewer", tests: "tests", environment: "preparation" };
 const RUNNING = new Set(["running", "starting", "running_unverified"]);
 const STARTS = new Set(["development_started", "tests_started", "review_started"]);
 const FILTERS = [["all", "Everything"], ["message", "Messages"], ["tool", "Tools and files"], ["test", "Tests"], ["error", "Errors"]];
@@ -26,7 +26,8 @@ const TOOL_ICONS = { Read: "file", Write: "edit", Edit: "edit", MultiEdit: "edit
   Grep: "search", shell: "terminal", web_search: "search" };
 const CHANGES = { add: "Added", delete: "Deleted", update: "Changed", written: "Wrote", edited: "Edited" };
 const OUTCOMES = {
-  completed: { developer: "Development step returned", reviewer: "Review step returned · PatchRondo validates the answer next", tests: "Test run finished" },
+  completed: { developer: "Development step returned", reviewer: "Review step returned · PatchRondo validates the answer next", tests: "Test run finished",
+    environment: "Preparation finished · no agent was called for it" },
   failed: "Step failed", timeout: "Step timed out", interrupted: "Step interrupted",
 };
 
@@ -41,7 +42,9 @@ function elapsed(since) {
 }
 
 function actor(event) {
-  return event.role === "tests" ? "Project tests" : `${agentName(event.provider)} · ${ROLES[event.role] || event.role}`;
+  if (event.role === "tests") return "Project tests";
+  if (event.role === "environment") return "PatchRondo · preparation";
+  return `${agentName(event.provider)} · ${ROLES[event.role] || event.role}`;
 }
 
 // One journal event as { kind, icon, tone, title, detail, mono, state }. Nothing is inferred beyond the event.
@@ -80,7 +83,14 @@ export function describe(event) {
     }
     case "status":
       switch (event.status) {
-        case "started": return { kind: "status", icon: "play", tone: "accent", title: event.role === "tests" ? "Project tests started" : `${agentName(event.provider)} started as ${ROLES[event.role] || event.role}` };
+        case "started": return { kind: "status", icon: "play", tone: "accent", title: event.role === "tests" ? "Project tests started"
+          : event.role === "environment" ? "PatchRondo started preparing" : `${agentName(event.provider)} started as ${ROLES[event.role] || event.role}` };
+        // Recorded by the environment check: its stages, what it repaired and what it found.
+        case "stage": return { kind: "status", icon: "shield", tone: "neutral", title: event.text || humanize(event.stage || "stage") };
+        case "repair": return { kind: "status", icon: "shield", tone: "accent", title: event.text || "Applying a fix" };
+        case "repaired": return { kind: "status", icon: "shield", tone: event.outcome === "applied" ? "ok" : event.outcome === "unchanged" ? "neutral" : "warn", title: event.text || "Fix attempted" };
+        case "check_failed": return { kind: "error", icon: "alert", tone: "warn", title: event.text || "A check failed", detail: event.detail || null };
+        case "ready": return { kind: "status", icon: "check", tone: "ok", title: event.text || "Ready" };
         case "session": return { kind: "status", icon: "bolt", tone: "neutral", title: `Session opened${event.model ? ` · ${event.model}` : ""}` };
         case "retry": return { kind: "error", icon: "repeat", tone: "warn", title: `The CLI is retrying a request${event.reason ? ` · ${humanize(event.reason).toLowerCase()}` : ""}`,
           note: [event.attempt != null ? `attempt ${event.attempt}${event.max_retries != null ? ` of ${event.max_retries}` : ""}` : null,

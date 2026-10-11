@@ -1,16 +1,112 @@
 # Changelog
 
+## 0.2.1 — zero configuration and self-healing
+
+Local working tree, October 11, 2026: not committed, not pushed, no tag and no
+release. The [technical review](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026)
+records what was checked, where, and what was not. The engine keeps every
+state transition of 0.2.0; what is new runs before the first agent call and
+before each review.
+
+### Why
+
+On native Windows 11 a Codex reviewer could not read the task worktree.
+Python 3.13 creates PatchRondo's private folders with an access control list
+of SYSTEM, Administrators and OWNER RIGHTS only, and the restricted token of
+the Codex read-only sandbox (codex-cli 0.161.0, `[windows] sandbox =
+"unelevated"`) is not checked against OWNER RIGHTS. The files were there, the
+user could read them, the sandbox got "Permission denied", its shell started
+in another folder and Git failed inside it. Both findings were reproduced in a
+throwaway home before anything was changed.
+
+### Added
+
+- **Environment check** before any agent is called and again before each
+  review (`environment.py`): the CLIs of the task's roles are installed and
+  logged in, Git accepts the worktree, and the reviewer can read it and cannot
+  write it. The record is saved in the task state under `environment`, with
+  every check and its technical detail. Checks that start a real CLI run only
+  in runs that start real CLIs; with simulated providers they are reported as
+  skipped, never as passed. `PATCHRONDO_PREFLIGHT=0` switches the check off.
+- **Reviewer preflight** (`preflight.py`), without a model and without quota:
+  on native Windows the sandbox self-check of the installed Codex CLI
+  (`codex sandbox -P :read-only --include-managed-config -C <worktree> -- …`,
+  read from the help of codex-cli 0.161.0 and confirmed by running it) runs a
+  probe that reports, each on its own: the working directory of a process, the
+  location PowerShell starts in, a file read by absolute and by relative path,
+  Git and its metadata, and that a canary file is intact and no file could be
+  created. A write counts as refused only when the disk proves it. A CLI whose
+  help does not list the options is not probed.
+- **Windows access control policy** (`winacl.py`, `ctypes` only): the
+  worktrees folder of a project gets one inheritable allow entry for the
+  current user's SID with read and execute; a folder PatchRondo created above
+  it gets "read attributes" on that folder only, when the sandbox could not
+  otherwise see that it exists. Nothing is granted to a group, no deny entry
+  is removed, nothing is elevated, links and junctions are never followed, and
+  `tasks/`, `index/` and the configuration files keep their lists. Each change
+  is recorded with the list it replaced and rolled back when a later step
+  fails or the result does not verify. New homes and new projects are
+  prepared when they are created.
+- **Repairs** (`repair.py`): the access repair runs unattended, once per
+  check, followed by a new check. Trusting a folder Git refuses for its
+  ownership is offered only as a decision of the user, for the exact folders
+  of that task, never as a wildcard. Every problem has a stable code, a
+  category (`repairable`, `consent`, `action`, `temporary`, `permanent`) and a
+  sentence without system jargon.
+- **One description, one press.** The home page has a box for what should be
+  done, the project (with *Choose folder…*), the two roles with their
+  defaults, a readiness indicator and one *Start task* button. It creates the
+  task and starts it; a repeated press creates nothing twice. The longer form
+  stays under *More options*.
+- **Preparation on the page.** The workflow starts with a *Prepare* step that
+  follows the saved check. A problem found there is one sentence and one
+  button (*Repair automatically*, or *Trust this folder and continue* after a
+  confirmation); the checks, the paths and what was changed are under
+  *Technical details*.
+- **Test consent on the task page.** A task paused because the project's
+  tests are not authorized shows the commands, asks for an explicit tick and
+  resumes. Nothing else enables tests: not adding a project, not *Start task*.
+- New API routes: `POST /api/projects/<id>/start` and
+  `POST /api/projects/<id>/tasks/<task>/repair`. Task summaries carry
+  `environment` and `error_category`; the agent status carries `system`.
+
+### Changed
+
+- **Claude's turn limit has its own failure kind**, `max_turns`, decided from
+  the CLI's own `result` line (`error_max_turns`). It was `agent_error` since
+  the correction below and `quota` before it. A login or usage diagnostic on
+  standard error still decides first. It is never retried automatically. The
+  subtype is known from an observed failure, the logs of a task that stopped
+  at its 12-turn limit; it was not taken from the provider's source.
+- **Git's "dubious ownership" has its own failure kind**,
+  `git_dubious_ownership`, instead of `system_error`, with or without the
+  environment check.
+- The Windows note about access control lists in the README no longer says
+  that the program leaves them alone: see above for exactly what it changes.
+
+### Migration notes
+
+- Nothing to do. States and configurations of 0.2.0 and 0.1 are read as they
+  are; `environment` is added to a task state at its next run.
+- An existing home created by Python 3.13 on Windows is repaired at the first
+  run of a task whose reviewer is Codex: one entry on `worktrees`, and
+  `environment_repaired` in the task's history. To undo it, the previous list
+  of each changed folder is in the task state (`environment.repairs`).
+- A manual repair made earlier (read and execute for your user on the home and
+  on `worktrees`) is recognized as sufficient and left as it is.
+
 ## 0.2.0 — interface first, several projects, live activity
 
 Source published on `main` on October 10 and 11, 2026, including live activity
-in commit `c9f6e1e`. No version tags or GitHub Releases exist as checked on
+in commit `c9f6e1e` and the failure classification correction in commit
+`6937d9f`. No version tags or GitHub Releases exist as checked on
 October 11, 2026. The [technical review](docs/REVIEW.md) records validation
 by revision and platform. The engine of 0.1.0 is unchanged except as listed
 below.
 
 ### Failure classification — October 11, 2026
 
-Local correction; not pushed.
+Published on `main` in commit `6937d9f`.
 
 - A reported streaming CLI error is classified only from its diagnostic and
   standard error. Activity messages and event names no longer turn an ordinary

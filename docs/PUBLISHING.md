@@ -11,13 +11,22 @@ October 9 and 10, 2026; the CI runs for those commits are recorded in
 [REVIEW.md](REVIEW.md).
 
 **0.2.0** is published as source on `main`: the interface was pushed on
-October 10, 2026, and live activity on October 11, 2026, in commit `c9f6e1e`.
+October 10, 2026, live activity on October 11, 2026, in commit `c9f6e1e`, and
+the failure classification correction the same day in commit `6937d9f`, the
+head of `main` as checked on October 11, 2026.
 The package metadata and changelog use 0.2.0.
 [REVIEW.md](REVIEW.md#current-source-and-ci-status-october-11-2026) records the
 current commit's CI status and the dated local checks. The GitHub repository
 has no version tags or GitHub Releases as checked on October 11, 2026.
 Source publication, a versioned release and publishing to PyPI are separate
 steps.
+
+**0.2.1** (the environment check, its repairs and the one-press start) exists
+only as a local working tree of October 11, 2026. The package metadata and the
+changelog already say 0.2.1; nothing of it is committed, pushed, tagged or
+released. Its validation is recorded in
+[REVIEW.md](REVIEW.md#zero-configuration-and-self-healing-october-11-2026);
+no CI run covers it.
 
 The repository is already initialized and has an `origin` remote. Future updates
 do not require `git init` or creating another GitHub repository.

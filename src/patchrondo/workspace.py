@@ -23,6 +23,7 @@ import re
 import shutil
 import uuid
 
+from . import winacl
 from .core import VALID_AGENTS, config, initialize
 from .storage import FileMutex, now, read_json, save_json
 
@@ -189,7 +190,11 @@ class Workspace:
             return self._project(entry)
 
         try:
-            return self._update(change)
+            project = self._update(change)
+            # With the registry written, the folders above the project are known as PatchRondo's own:
+            # make the way to its worktrees visible to a reviewer's sandbox now, not at the first run.
+            winacl.prepare(project.home)
+            return project
         except BaseException:
             # Roll back only what this call created: a fresh directory with no tasks in it.
             for home in created:

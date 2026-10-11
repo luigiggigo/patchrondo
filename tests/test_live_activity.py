@@ -151,9 +151,12 @@ class StreamingAdapterTests(unittest.TestCase):
         self.assertNotIn("APPROVED", json.dumps(self.journal.events))
         # No final result at all: the step fails, however often the stream said APPROVED.
         self.assertEqual(self.failure("claude", "reviewer", (jsonl(*chatter), Result(0, "", ""), None)).kind, "empty_output")
-        # A result without an answer is not completed from the stream either.
+        # A result without an answer is not completed from the stream either: here the turns ran out.
         empty = {"type": "result", "subtype": "error_max_turns", "is_error": False}
-        self.assertEqual(self.failure("claude", "reviewer", (jsonl(*chatter, empty), Result(0, "", ""), None)).kind, "empty_output")
+        self.assertEqual(self.failure("claude", "reviewer", (jsonl(*chatter, empty), Result(0, "", ""), None)).kind, "max_turns")
+        unanswered = {"type": "result", "subtype": "success", "is_error": False}
+        self.assertEqual(self.failure("claude", "reviewer", (jsonl(*chatter, unanswered), Result(0, "", ""), None)).kind,
+                         "empty_output")
         # Codex: the answer is the last-message file, not a message in the stream.
         said_approved = jsonl(said("APPROVED"), said(json.dumps(APPROVED), "final"))
         reply = self.invoke("codex", "reviewer", (said_approved, Result(0, "", ""), json.dumps(CHANGES)))
@@ -198,19 +201,20 @@ class StreamingAdapterTests(unittest.TestCase):
         self.assertEqual(self.failure("codex", "developer", (soft, Result(1, "", "Segmentation fault"), None)).kind, "agent_error")
 
     def test_reported_errors_are_not_reclassified_from_activity(self):
+        # The turn limit is a failure of its own: never a usage limit, whatever the activity mentioned.
         cases = (
             ("claude", {"type": "rate_limit_event"},
-             {"type": "result", "is_error": True, "subtype": "error_max_turns"}),
+             {"type": "result", "is_error": True, "subtype": "error_max_turns"}, "max_turns"),
             ("claude", text("Implemented the quota and unauthorized handlers"),
-             {"type": "result", "is_error": True, "result": "Request failed"}),
+             {"type": "result", "is_error": True, "result": "Request failed"}, "agent_error"),
             ("codex", said("Implemented the rate limit middleware"),
-             {"type": "turn.failed", "error": {"message": "Request failed"}}),
+             {"type": "turn.failed", "error": {"message": "Request failed"}}, "agent_error"),
         )
-        for provider, progress, final in cases:
+        for provider, progress, final, kind in cases:
             with self.subTest(provider=provider, progress=progress):
                 error = self.failure(provider, "developer", (jsonl(progress, final), Result(1, "", ""), None))
                 self.assertEqual((error.kind, error.retry_at, error.retry_after_seconds),
-                                 ("agent_error", None, None))
+                                 (kind, None, None))
                 # A real diagnostic on stderr still decides, including its explicit reset.
                 error = self.failure(provider, "developer", (jsonl(progress, final),
                                      Result(1, "", "Usage limit reached. Retry after 3600 seconds."), None))
@@ -498,7 +502,7 @@ class EngineActivityTests(EngineCase):
             state = run_task(self.home, task_id, auto_resume=True, clock=lambda: OBSERVED)
         self.assertEqual(execute.call_count, 1)
         self.assertEqual((state["status"], state["phase"], state["last_error"]["kind"]),
-                         ("paused", "develop", "agent_error"))
+                         ("paused", "develop", "max_turns"))
         self.assertIn("error_max_turns", state["last_error"]["message"])
         self.assertIsNone(state["recovery"])
         self.assertNotIn("recovery_scheduled", [entry["event"] for entry in state["history"]])

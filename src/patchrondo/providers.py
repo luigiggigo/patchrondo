@@ -9,7 +9,7 @@ import json
 import re
 
 from . import streams
-from .process import execute, short_log
+from .process import Result, execute, short_log
 from .storage import atomic_text
 
 
@@ -45,6 +45,36 @@ _ERROR_KINDS = (
 def _classify_error(body: str) -> str:
     lowered = body.lower()
     return next((kind for kind, pattern in _ERROR_KINDS if pattern.search(lowered)), "agent_error")
+
+
+# Claude Code ends a run that used all its turns with a `result` line of this subtype. Evidence: an
+# observed failure, the logs of a task that stopped at its configured 12-turn limit (docs/REVIEW.md,
+# "Local streaming failure correction", October 11, 2026). It says nothing about the plan's usage:
+# it is its own failure and is never retried as a quota failure.
+CLAUDE_TURN_LIMIT = "error_max_turns"
+
+# The real runner. Tests and the synthetic runners replace `execute` in this module, and
+# everything that starts a provider CLI goes through it or through `probe` below.
+_execute = execute
+
+
+def simulated() -> bool:
+    """Whether provider commands are routed away from the real CLIs."""
+    return execute is not _execute
+
+
+def probe(argv: list[str], cwd: Path, *, timeout: int, on_stdout=None) -> Result:
+    """Run a model-free command of a provider CLI: its help text or its sandbox self-check.
+
+    Never used for a prompt. Refused while provider commands are simulated, so
+    a test or a synthetic run cannot start a real CLI and no call is counted
+    in one.
+    """
+    if simulated():
+        raise RuntimeError("Provider commands are simulated: no real CLI is started")
+    if argv[:1] != ["codex"] or argv[1:2] != ["sandbox"]:
+        raise ValueError("Only the sandbox self-check of the Codex CLI may be probed")
+    return _execute(argv, cwd, timeout=timeout, **({"on_stdout": on_stdout} if on_stdout is not None else {}))
 
 
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
@@ -196,6 +226,17 @@ def _claude_result(obj, observed_at: datetime | None = None, stderr: str = "") -
     return obj["result"] if isinstance(obj.get("result"), str) else None
 
 
+def _claude_subtype(final) -> str | None:
+    """Subtype of Claude's result, given the parsed object of a stream or the text of a single-result output."""
+    if isinstance(final, str):
+        try:
+            final = json.loads(final)
+        except json.JSONDecodeError:
+            return None
+    subtype = final.get("subtype") if isinstance(final, dict) else None
+    return subtype if isinstance(subtype, str) else None
+
+
 def _claude_text(body: str, observed_at: datetime | None = None, stderr: str = "") -> str:
     try:
         text = _claude_result(json.loads(body), observed_at, stderr)
@@ -303,11 +344,21 @@ class OfficialCLI:
         atomic_text(run_dir / f"{role}.stderr.log", short_log(result.stderr))
         if result.timed_out:
             raise AgentFailure(f"Timeout after {self.timeout}s for {provider}/{role}", "timeout", provider=provider)
+        turn_limit = None
+        if provider == "claude" and _claude_subtype(stream.result if stream is not None else result.stdout) == CLAUDE_TURN_LIMIT \
+                and _classify_error(result.stderr) == "agent_error":
+            # Decided from the CLI's own result, never from wording in its activity. A login or usage
+            # diagnostic on stderr still decides, as for every other failure.
+            turn_limit = AgentFailure(f"{provider}/{role} used all {self.claude_turns} turns allowed for one step "
+                                      f"without finishing ({CLAUDE_TURN_LIMIT}). Raise workflow.claude_max_turns or "
+                                      "narrow the task, then resume.", "max_turns", provider=provider)
         reported = "\n".join(stream.errors) if stream is not None else ""
         if result.returncode != 0:
             if stream is not None and not stream.recognized and streams.refused(provider, result.stderr or result.stdout):
                 refusal = next(iter((result.stderr or result.stdout).strip().splitlines()), "")
                 raise _StreamRefused(short_log(refusal, 200))
+            if turn_limit is not None:
+                raise turn_limit
             # Either stream may carry the cause or the reset; stderr comes first when both do.
             outputs = [part.strip() for part in (result.stderr, stdout) if part.strip()] or [""]
             shown = outputs
@@ -319,6 +370,8 @@ class OfficialCLI:
             shown = "\n".join(short_log(part, 1200 // len(shown)) for part in shown)
             raise classified_failure(f"{provider}/{role} exit={result.returncode}: {shown}",
                                      outputs[0], provider, self.clock(), "\n".join(outputs[1:]))
+        if turn_limit is not None:
+            raise turn_limit  # a result without an answer: the step ended at the limit, whatever the exit code
         if stream is not None and not stream.recognized:
             emit("status", status="notice", code="stream_empty",
                  text="The CLI printed no activity for this step; only its result is available.")

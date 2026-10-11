@@ -57,6 +57,15 @@ export const ERRORS = {
   empty_output: { title: "The agent returned nothing", help: "The CLI finished without a final answer. Check the logs, then resume." },
   invalid_output: { title: "The agent output was not usable", help: "Check the logs, then resume." },
   agent_error: { title: "The agent CLI failed", help: "The CLI exited with an error. The message and the logs show what it printed; resume when the cause is resolved." },
+  max_turns: { title: "Claude ran out of turns", help: "Claude used all the turns allowed for one step without finishing. This is not a usage limit, so nothing retries by itself. Raise “Claude turns per step” in Settings → Workflow or make the task smaller, then resume." },
+  sandbox_access_denied: { title: "Codex cannot read the project yet", help: "A small fix is needed so that Codex can read the copy of the project made for this task." },
+  sandbox_cwd_unavailable: { title: "Codex would start in the wrong folder", help: "A small fix is needed so that Codex starts inside the copy of the project made for this task." },
+  sandbox_not_read_only: { title: "The review environment is not read-only", help: "The reviewer could change files here, so the review was not started and nothing was sent to Codex. Update Codex CLI or check the sandbox setting in its configuration, then resume." },
+  sandbox_unverified: { title: "The review environment could not be confirmed", help: "PatchRondo could not prove that the reviewer is unable to change files, so the review was not started. Update Codex CLI, then resume." },
+  sandbox_unavailable: { title: "Codex could not start its protected environment", help: "The review needs the protected environment of Codex and it did not start on this computer. Nothing was sent to Codex. Update Codex CLI, then resume." },
+  sandbox_git_failed: { title: "Codex cannot use Git in its protected environment", help: "Nothing was sent to Codex. The technical details below show what Git answered." },
+  git_dubious_ownership: { title: "Git does not trust this project folder", help: "The folder belongs to another user of this computer, so Git refuses to work in it. If the project is yours, you can tell Git to trust this folder, and only this one." },
+  cli_missing: { title: "An agent is not installed", help: "Install it as shown in Settings → Agents, then resume. No agent was called." },
   system_error: { title: "PatchRondo hit a system error", help: "A file or Git operation failed. Check the message, then resume." },
   max_iterations_reached: { title: "Iteration limit reached", help: "The task used all its iterations without an approved review and passing tests. Review the feedback and create a follow-up task." },
   review_blocked: { title: "The reviewer blocked the task", help: "The reviewer judged that the task cannot proceed as specified. Read the review and create a new task." },
@@ -88,27 +97,55 @@ export const RECOVERY_STOPS = {
 export const stopReason = (reason) => RECOVERY_STOPS[reason] || `${humanize(reason)} is never retried automatically`;
 
 export const PHASES = [["develop", "Develop"], ["test", "Test"], ["review", "Review"], ["complete", "Complete"]];
+export const PREPARE_STAGES = {
+  agents: "Checking the agents", project: "Preparing the project", sandbox: "Checking the safe environment",
+  repair: "Fixing an access problem",
+};
+const RUNNING = ["running", "starting", "running_unverified"];
 
-// One state per phase: done | current | waiting | paused | error | next | pending.
+// The environment check of a task, as the engine saved it: none | checking | ready | problem.
+// "checking" needs a verified run; a check left unfinished by a run that died is not shown as running.
+export function preparation(task) {
+  const record = task.environment;
+  const activity = task.runtime?.activity;
+  if (!record) return { state: "none" };
+  if (record.status === "checking") return RUNNING.includes(activity) ? { state: "checking", stage: record.stage } : { state: "none" };
+  if (record.status === "ready") return { state: "ready", repaired: Boolean(record.repair_applied) };
+  // A problem counts while it is what the task is paused on; a later pause for another reason replaces it.
+  return task.status === "paused" && task.error_kind === record.error_kind ? { state: "problem", record } : { state: "none" };
+}
+
+// One state per step: done | current | waiting | paused | error | next | pending.
+// The first step is the preparation PatchRondo does itself; the others are the phases of the engine.
 export function workflow(task) {
   const index = PHASES.findIndex(([key]) => key === task.phase);
   const activity = task.runtime?.activity;
-  return PHASES.map(([key, label], position) => {
+  const prepare = preparation(task);
+  const held = prepare.state === "checking" || prepare.state === "problem";
+  const first = { key: "prepare", label: "Prepare", step: "pending" };
+  if (prepare.state === "checking") Object.assign(first, { step: "current", detail: PREPARE_STAGES[prepare.stage] });
+  else if (prepare.state === "problem") first.step = "paused";
+  else if (prepare.state === "ready" || task.status === "done") first.step = "done";
+  else if (activity === "ready") first.step = "next";
+  else if (!RUNNING.includes(activity)) first.detail = "not recorded"; // a task from before this check existed
+  return [first, ...PHASES.map(([key, label], position) => {
     let step = "pending";
     if (task.status === "done" || (index >= 0 && position < index)) step = "done";
-    else if (position === index) {
-      if (["running", "starting", "running_unverified"].includes(activity)) step = "current";
+    else if (position === index && !held) {
+      if (RUNNING.includes(activity)) step = "current";
       else if (["waiting_retry", "plan_only", "plan_unverified"].includes(activity)) step = "waiting";
       else if (["blocked", "stale_lock"].includes(activity)) step = "error";
-      else if (activity === "ready") step = "next";
+      else if (activity === "ready") step = first.step === "next" ? "pending" : "next";
       else step = "paused";
     }
     return { key, label, step };
-  });
+  })];
 }
 
 export function phaseSentence(task) {
   const dev = agentName(task.developer), rev = agentName(task.reviewer);
+  const prepare = preparation(task);
+  if (prepare.state === "checking") return PREPARE_STAGES[prepare.stage] || "Preparing";
   if (task.phase === "develop") return `${dev} is developing`;
   if (task.phase === "test") return "Project tests are running";
   if (task.phase === "review") return `${rev} is reviewing`;
@@ -118,8 +155,15 @@ export function phaseSentence(task) {
 const PAUSE_REASONS = {
   quota: "usage limit", authentication: "login required", configuration: "configuration problem",
   tests_disabled: "tests are disabled", stale_tests: "files changed after the tests", interrupted: "interrupted",
-  timeout: "timeout", invalid_review: "unreadable review",
+  timeout: "timeout", invalid_review: "unreadable review", max_turns: "Claude ran out of turns",
+  sandbox_access_denied: "Codex cannot read the project", sandbox_cwd_unavailable: "Codex would start in the wrong folder",
+  sandbox_not_read_only: "the review environment is not read-only", sandbox_unverified: "the review environment could not be confirmed",
+  sandbox_unavailable: "Codex could not start its protected environment", sandbox_git_failed: "Git does not work in the review environment",
+  git_dubious_ownership: "Git does not trust the project folder", cli_missing: "an agent is not installed",
 };
+const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git trust for this project folder" };
+const REPAIR_OUTCOMES = { applied: ["Fixed", "ok"], unchanged: ["Already in place", "neutral"], rolled_back: ["Could not fix; put back as it was", "warn"],
+  failed: ["Could not fix", "warn"] };
 
 // A persisted history entry as a sentence. Nothing here is inferred beyond the entry itself.
 export function describeEvent(event, task) {
@@ -144,6 +188,12 @@ export function describeEvent(event, task) {
     case "task_completed": return { text: "Task completed", tone: "ok", icon: "check" };
     case "task_paused": return { text: `Paused: ${PAUSE_REASONS[event.reason] || humanize(event.reason).toLowerCase()}`, tone: "warn", icon: "pause" };
     case "task_blocked": return { text: `Blocked: ${(ERRORS[event.reason]?.title || humanize(event.reason)).toLowerCase()}`, tone: "danger", icon: "x" };
+    case "environment_repaired": {
+      const [word, tone] = REPAIR_OUTCOMES[event.outcome] || [humanize(event.outcome), "neutral"];
+      return { text: `${word}: ${REPAIRS[event.repair] || humanize(event.repair).toLowerCase()}`, tone, icon: "shield", detail: "No agent was called for this" };
+    }
+    case "environment_blocked":
+      return { text: `Preparation stopped: ${PAUSE_REASONS[event.kind] || humanize(event.kind).toLowerCase()}`, tone: "warn", icon: "shield", detail: "Before any agent was called" };
     case "retrieval_failed": return { text: "Repository context could not be retrieved; the prompt was sent without it", tone: "warn", icon: "database", detail: event.message };
     case "recovery_scheduled":
       return { text: `Retry ${event.attempt ?? ""} planned for ${fullDate(event.resume_at)}`.replace("  ", " "), tone: "wait", icon: "clock",

@@ -19,6 +19,10 @@
 | `procinfo.py` | Read-only check of a process by ID and start time: alive, dead or unknown |
 | `runinfo.py` | Markers of attached `run`/`resume` processes and the process truth of one task |
 | `doctor.py` | Availability and login of the provider CLIs without model calls |
+| `environment.py` | The environment check before any provider call: agents, Git, review sandbox; one saved record per check |
+| `preflight.py` | The reviewer preflight: the probe run in the Codex sandbox self-check and the judgment of its answers against the disk |
+| `winacl.py` | Windows access control lists of the folders agents read: inspect, grant narrowly, restore (`ctypes`, Windows only) |
+| `repair.py` | The catalogue of environment problems and the two repairs: one unattended, one that needs the user's decision |
 | `commands.py` | Test command lines to and from argument arrays, with Windows or POSIX quoting |
 | `app.py` | Application layer: every operation of the interface (projects, settings, tasks, bounded file views, run start and stop) |
 | `live.py` | Snapshot and numbered change events |
@@ -114,6 +118,13 @@ Claude uses `--restricted` with only the required file read/write tools. Codex
 uses its native `workspace-write` or `read-only` sandbox. The reviewer has fewer
 permissions than the developer. The test runner remains **a host process**, so
 tests must not be enabled for untrusted code.
+
+The state directory holds two kinds of data. Task state, transcripts, the
+activity journal, locks, the retry plan and the configuration are private:
+nothing in the program gives a sandbox access to them. Worktrees are what
+agents read and write. On Windows the only access entries PatchRondo ever adds
+are for the worktrees and for the way to them; [section 12](#12-environment-check-reviewer-preflight-and-repair)
+has the policy.
 
 ## 6. Retrieval layer
 
@@ -629,3 +640,158 @@ The header of the view takes the mascot's mood and the words "is developing",
 "is reviewing" from `task.runtime` and the saved phase, and only the latest
 event and the elapsed time from the journal. An attempt without a recorded end
 is shown as running only while the backend verifies a running process.
+
+## 12. Environment check, reviewer preflight and repair
+
+A run used to learn that its environment was wrong from a failed agent call.
+Now it checks first. Nothing below changes how a step is started or judged,
+and none of it calls a model.
+
+**Where it runs.** `run_task` calls `_environment` under the task lock: once
+after the run is marked `running` and before the loop, and again in the
+review phase after the test context was checked and before `review_started`.
+That holds for a first run, a resume, a run after a crash and an automatic
+quota retry alike, because they are all `run_task`. The second call passes
+`reviewer_only`: the agents stage is not repeated, and a ready record is
+returned as it is while its `signature` still holds. The signature is a digest
+of the platform, the reviewer, the worktree path, the identity of the Codex
+executable (path, size, modification time) and the access lists of the folders
+the policy covers. A record that is not ready, or was made with simulated
+providers when the run is real, is never reused.
+
+**What "real" means.** Two of the checks start a real CLI: the login status
+(`doctor.check`) and the sandbox self-check. They belong to runs that start
+real CLIs. `run_task` computes `live = adapter is None and not
+providers.simulated()`: a run with a given adapter is not live, and neither is
+one where `patchrondo.providers.execute` was replaced, which is how tests and
+the synthetic runners simulate providers. `providers.probe` is the only other
+function that starts a provider CLI; it accepts `codex sandbox …` and nothing
+else, and refuses while providers are simulated. Checks that could not run are
+recorded as `skipped` with the reason, never as `passed`.
+
+**Stages** (`environment.Manager.check`), stopping at the first problem:
+
+| Stage | Checks | Problem codes |
+|---|---|---|
+| `agents` | `cli.<provider>` for the developer and the reviewer: installed, logged in | `cli_missing`, `authentication` |
+| `project` | `git.ownership`: `git rev-parse HEAD` in the worktree | `git_dubious_ownership` (any other Git failure is raised as before) |
+| `sandbox` | `acl.worktree` (Windows), then the nine probe checks | `sandbox_access_denied`, `sandbox_cwd_unavailable`, `sandbox_not_read_only`, `sandbox_unverified`, `sandbox_unavailable`, `sandbox_git_failed` |
+
+A login that the status command could not confirm either way does not stop the
+run. The sandbox stage applies to a Codex reviewer; a Claude reviewer is
+limited by its tool list and has no operating-system sandbox to probe.
+
+**The record.** Saved by the engine in `state.json` under `environment`, with
+the pause, whatever the outcome:
+
+```text
+status                ready | repairable | blocked   (checking while a check runs)
+error_kind, cause     stable code of the problem and the exact finding behind it
+message               one sentence for a person; no system error text
+provider, repair      the CLI concerned; the repair that addresses the problem
+repair_available      a repair exists that was not applied, or can be tried again
+repair_applied        a repair was applied during this check
+requires_user_action  nothing more happens until the user acts
+checks                [{id, stage, label, status: passed|failed|skipped, detail}]
+repairs               [{repair, at, outcome, changed: [{path, added, previous_sddl, …}], error}]
+signature, live       what a reuse depends on
+```
+
+`last_error` gets the same `kind` and `message` and `"source": "environment"`,
+through the pause path every other failure takes: `_failure`,
+`recovery.on_failure` (a non-quota failure schedules nothing) and the report.
+History gets `environment_repaired` and `environment_blocked`; a check that
+finds nothing to do adds no event. The activity journal gets an attempt with
+the role `environment` when the check is live, repairs something or finds a
+problem. While a stage runs, the record is `{"status": "checking", "stage":
+…}`; if the check cannot finish, the record saved before it is put back, so an
+unfinished check is never read as a result.
+
+**The preflight probe.** On native Windows, and only when the help of the
+installed CLI lists the options, `preflight.Sandbox` runs
+
+```text
+codex sandbox -P :read-only --include-managed-config -C <worktree> -- powershell.exe -NoProfile -NonInteractive -EncodedCommand <base64>
+codex sandbox -P :read-only --include-managed-config -C <worktree> -- cmd.exe /d /u /c cd
+```
+
+The syntax is the one printed by `codex sandbox --help` of codex-cli 0.161.0
+on native Windows, read and run there on October 11, 2026. The first command
+is the shell an agent's commands run in; the second is a plain process, whose
+directory is the one the sandbox gave it. Both are argument arrays. Paths
+reach PowerShell only inside an encoded script, as single-quoted literals with
+every quote character PowerShell recognizes doubled; a path with a control
+character is refused. That sandbox starts PowerShell in constrained language
+mode, so the script calls cmdlets only, compares paths itself and answers in
+ASCII lines `PR key=value`.
+
+| Check | Passed when |
+|---|---|
+| `sandbox.start` | the script printed its begin and end marker with the token of this probe |
+| `process.cwd` | the plain process reports the worktree (skipped when it could not be read) |
+| `shell.cwd` | PowerShell's location equals the worktree |
+| `read.absolute`, `read.relative` | the first line of the worktree's `.git` link file, read both ways, equals the one on disk |
+| `git.run` | `git rev-parse HEAD` exits 0 with the commit Git names outside the sandbox |
+| `git.metadata` | `git status --porcelain` exits 0 from the shell's own directory |
+| `write.canary` | a file PatchRondo created beside the worktree was seen, overwriting and deleting were attempted, and afterwards it is byte for byte what was written |
+| `write.create` | creating a file in the worktree was attempted and no such file exists |
+
+The canary lives in `<state>/worktrees/.patchrondo-preflight-<token>/`, so the
+worktree's Git status is not disturbed; it is removed afterwards, and one left
+by a probe that died is removed by a later probe. What the script prints about
+its writes is not evidence: `sandbox_not_read_only` is decided by the files,
+and `sandbox_unverified` means that no refusal was demonstrated. The target
+repository's tests are never run by a check.
+
+**Access policy on Windows** (`winacl.py`). Measured with codex-cli 0.161.0
+and `[windows] sandbox = "unelevated"`: the restricted token of the read-only
+sandbox reads where the list names the user, Users, Authenticated Users or
+Everyone, and not through OWNER RIGHTS; and for the shell to make a folder its
+location, the attributes of every folder on the way must be readable, which
+they are when the folder's own list says so or its parent can be listed.
+Python 3.13.3 gives a `mkdir(mode=0o700)` directory a protected list of SYSTEM,
+Administrators and OWNER RIGHTS; Python 3.11.3 does not restrict it.
+
+| Folder | Entry added for the current user's SID, when missing |
+|---|---|
+| `<state>/worktrees` | read and execute, inherited by files and sub-folders |
+| the worktree, when its list does not inherit | the same |
+| the state directory; `projects` and the home of a multi-project home | read attributes, on that folder only, and only when its parent cannot be listed |
+
+Nothing else is written: no entry for a group, no change to an existing entry,
+no deny entry removed, no folder above the home, no elevation. "Read
+attributes" opens neither content nor listing, so private files stay
+unreadable from the sandbox. A folder is managed only if it is reached from
+the state directory without a symbolic link, junction or other reparse point,
+and the worktree is directly inside `worktrees`. `repair` reads each list,
+records it (SDDL and whether it is protected) before changing it, verifies the
+result, and puts every recorded list back when a step fails or the result does
+not verify; running it again writes nothing. `initialize` and `Workspace.add`
+apply the same to a new home or project, so a worktree created later inherits
+its access.
+
+**Repairs** (`repair.py`). `acl` is the only repair in `AUTOMATIC`. It is
+applied when the lists say `missing`, once per check, and the stage is checked
+again. If the sandbox still refuses although the lists grant reading, there is
+nothing left that the policy allows: the record is `blocked`. `git_trust` runs
+only when the caller passes it in `confirmed`, which only the interface does,
+after the user confirmed it for that task: `git config --global --add
+safe.directory <folder>` for the project's repository and the task's worktree,
+skipping what is already listed and never writing a wildcard.
+
+**The interface.** `POST …/tasks/<id>/repair` runs the same check in the
+server process, under the task lock, with `confirm` limited to `git_trust`,
+saves the record and its events, and starts the run when `resume` is true and
+the record is ready. `POST /api/projects/<id>/start` is `new_task` followed by
+`start_run` under one request ID. The page shows `task.environment` and
+`task.error_category` from the summary; the *Prepare* step is `current` only
+while the saved record is `checking` and the backend verifies a running
+process.
+
+**Limits.** The sandbox is probed on native Windows only; on Linux, macOS and
+WSL2 the sandbox checks are skipped. Only the read-only profile is probed: a
+Codex developer's `workspace-write` sandbox is not. The probe reflects the
+Codex configuration at that moment. A CLI with another `codex sandbox` syntax
+is not probed until its form is read from that CLI and added. Access lists
+inside the user's repository, including its `.git` directory, are never
+changed: a repository the sandbox cannot read is reported, not repaired.

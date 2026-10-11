@@ -47,6 +47,7 @@ def render_report(state: dict) -> str:
         rows.append("No review completed")
     if state.get("last_error"):
         rows += ["", "## Block/interruption", "", f"`{state['last_error']}`"]
+    rows += _environment_rows(state.get("environment"))
     rows += _recovery_rows(state.get("recovery"))
     rows += ["", "## How to apply the changes", "",
              "The main repository is not changed automatically. Review the worktree,",
@@ -59,6 +60,26 @@ def render_report(state: dict) -> str:
             row += f" ({', '.join(notes)})" if notes else ""
         rows.append(row)
     return "\n".join(rows) + "\n"
+
+
+def _environment_rows(record) -> list[str]:
+    """The last environment check, when it found a problem or repaired something."""
+    if not isinstance(record, dict) or (record.get("status") in {"ready", "checking"} and not record.get("repairs")):
+        return []
+    rows = ["", "## Environment check", "", f"- **State**: `{record.get('status')}`"]
+    if record.get("error_kind"):
+        rows += [f"- **Problem**: `{record['error_kind']}` (cause: `{record.get('cause')}`)", f"- {record.get('message')}"]
+        rows.append("- **Repair**: " + ("available; it needs your confirmation or another attempt" if record.get("repair_available")
+                                        else "none that PatchRondo may apply"))
+    for check in record.get("checks") or []:
+        if isinstance(check, dict) and check.get("status") == "failed":
+            rows.append(f"- Failed check `{check.get('id')}`: {check.get('detail') or check.get('label')}")
+    for entry in record.get("repairs") or []:
+        if isinstance(entry, dict):
+            paths = ", ".join(f"`{change.get('path')}`" for change in entry.get("changed") or [] if isinstance(change, dict))
+            rows.append(f"- {entry.get('at')} · repair `{entry.get('repair')}` → **{entry.get('outcome')}**"
+                        + (f" on {paths}" if paths else "") + (f" ({entry.get('error')})" if entry.get("error") else ""))
+    return rows
 
 
 def _recovery_rows(recovery) -> list[str]:

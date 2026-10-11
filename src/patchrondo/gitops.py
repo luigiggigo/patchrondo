@@ -4,7 +4,30 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 import os
+import re
 import subprocess
+
+
+class GitError(RuntimeError):
+    """A Git command failed. `kind` is set when the failure has a cause of its own."""
+
+    def __init__(self, message: str, kind: str = "system_error", folder: str | None = None):
+        super().__init__(message)
+        self.kind = kind
+        self.folder = folder  # the folder Git refused, when it named one
+
+
+# Git refuses a repository that belongs to another user (safe.directory in git-config(1), Git 2.35.2
+# and later) with "fatal: detected dubious ownership in repository at '<folder>'".
+_DUBIOUS = re.compile(r"detected dubious ownership in repository at '([^'\n]+)'")
+
+
+def git_failure(output: str) -> GitError:
+    """Classify the error output of a Git command."""
+    match = _DUBIOUS.search(output)
+    if match:
+        return GitError(f"Git: {output}", "git_dubious_ownership", match.group(1))
+    return GitError(f"Git: {output}")
 
 
 def git(*args: str, cwd: Path, hooks_dir: Path | None = None) -> str:
@@ -14,7 +37,7 @@ def git(*args: str, cwd: Path, hooks_dir: Path | None = None) -> str:
     proc = subprocess.run(cmd + ["-C", str(cwd), *args], text=True,
                           encoding="utf-8", errors="replace", capture_output=True, timeout=45, check=False)
     if proc.returncode:
-        raise RuntimeError(f"Git: {proc.stderr.strip() or proc.stdout.strip()}")
+        raise git_failure(proc.stderr.strip() or proc.stdout.strip())
     return proc.stdout.rstrip("\r\n")
 
 

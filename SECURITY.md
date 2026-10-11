@@ -2,7 +2,7 @@
 
 ## Scope
 
-PatchRondo 0.2 is experimental and intended for trusted local repositories.
+PatchRondo 0.2.1 is experimental and intended for trusted local repositories.
 Git worktrees isolate changes, not host privileges. Test commands execute on the
 host with the current user's permissions. Run the whole orchestrator in a VM or
 container for unfamiliar code. Environment filtering does not prevent access to
@@ -43,6 +43,76 @@ disk until the timeout. Apply disk quotas in isolated runners. On native Windows
 process cleanup terminates the direct child only, and stale-lock recovery is
 conservative. Use WSL2 for POSIX process-group cleanup.
 
+## Environment check and repairs
+
+Before a run calls an agent, and before each review, PatchRondo checks that
+the agents are installed and logged in, that Git accepts the task worktree,
+and that a Codex reviewer's sandbox can read the worktree and cannot write it.
+The check calls no model. It exists to stop early and explain; it is not
+allowed to make a task pass by lowering a protection.
+
+**What it never does.** It never selects a weaker sandbox than the reviewer's
+`read-only`, never uses `danger-full-access` or an approval bypass, never
+elevates or asks for administrator rights, never writes `safe.directory = *`
+or any other wildcard, never enables or runs the tests of the target
+repository, and never treats *Start task*, *Resume* or an automatic retry as
+consent to any of these. When a problem cannot be solved inside these limits
+the task pauses where it can resume, and says why.
+
+**The sandbox self-check.** On native Windows the check starts
+`codex sandbox -P :read-only …` with two small commands and compares their
+answers with the disk. It runs the installed Codex CLI, with your Codex
+configuration, as your user; nothing is sent to a model. The commands are
+argument arrays, and the paths inside the PowerShell probe are single-quoted
+literals in an encoded script, so a folder name cannot become code. The probe
+tries to overwrite and delete a canary file PatchRondo created for it, and to
+create one file in the worktree: if any of that succeeds, the review is not
+started. A passing probe shows how that sandbox behaved for these operations
+at that moment; it is not a proof about everything the sandbox permits.
+
+**What it changes on Windows, by itself.** Only access control lists of
+folders PatchRondo created, and only by adding allow entries for the SID of
+the user it runs as:
+
+- read and execute, inheritable, on `<state>/worktrees`, and on a worktree
+  whose list does not inherit;
+- "read attributes", on that folder only, on the state directory and, in a
+  home with several projects, on `projects` and on the home, when the
+  sandbox could not otherwise see that the folder exists.
+
+It adds no entry for Everyone, Users or any other group, removes no entry,
+leaves a deny entry in place (and then reports the problem instead of
+repairing), does not touch folders above the home or inside your repository,
+and does not follow symbolic links, junctions or other reparse points: a
+worktree or a `worktrees` folder that is one is not repaired. Before each
+change the previous list is saved in the task state; if the repair fails or
+does not verify, the saved lists are put back. These entries let processes
+that run as you, including a sandbox restricted to your user, read the
+worktrees. They give nothing to other users of the computer. They do not open
+`tasks/`, the activity journal, the retry plan or the configuration: those
+keep the list Python gave them, which on Python 3.13 names only SYSTEM,
+Administrators and the owner. On an older Python, and on other systems, the
+Codex read-only sandbox can read whatever your user can, as it always could;
+PatchRondo does not narrow that.
+
+**What needs your decision.** If Git refuses the project folder for its
+ownership ("dubious ownership"), the page offers to trust it. Only after you
+confirm, PatchRondo runs `git config --global --add safe.directory <folder>`
+for the project's repository and for the task's worktree, and records the
+command that undoes each entry. That tells Git to run hooks and read
+configuration from a folder another user owns: confirm it only for a project
+you know. Authorizing the project's tests is likewise only ever your explicit
+action, on the task page or in *Settings → Tests*.
+
+**What is recorded.** The record of a check, in `state.json` and in the
+report, holds check names, results, folder paths, the access lists that were
+replaced (SDDL, which contains security identifiers), the version line of
+each CLI and excerpts of what Git or the probe answered. It holds no
+credentials: the login check reads only the exit status and, for Claude, the
+login method.
+
+`PATCHRONDO_PREFLIGHT=0` switches the check and its repairs off.
+
 ## Local interface
 
 `patchrondo` starts an HTTP server for the browser interface. It is meant for
@@ -64,8 +134,9 @@ everything the interface can.
 **What the interface can do.** Register a local Git repository, edit the
 project settings described in the README, create tasks, start
 `patchrondo run` for a task with `--auto-resume`, `--no-auto-resume` or
-`--unlock`, interrupt a run on POSIX, and read task state, logs, diffs and
-documents. It cannot run a command chosen by the browser: test commands are
+`--unlock`, interrupt a run on POSIX, run the environment check of a task
+with the repairs described above (the one that needs a decision only when the
+request names it), and read task state, logs, diffs and documents. It cannot run a command chosen by the browser: test commands are
 configuration, executed only by the engine, without a shell, and only when
 `tests.enabled` and `tests.trust_acknowledged` are both true for that project.
 The path of a provider executable cannot be set; the CLIs are found on `PATH`
@@ -77,8 +148,11 @@ tests through the interface requires the complete test settings with an
 explicit `trust_acknowledged: true` in the same request; consent saved earlier
 is not carried over to changed commands. A project imported from a 0.1 home
 keeps the settings it already had, including tests its owner enabled there.
-Starting or resuming a task requires confirmation in the interface and invokes
-the real provider CLIs; opening the interface makes no model calls.
+Starting or resuming a task invokes the real provider CLIs. *Start task* on the
+home page does it with that one press, and says so beside the button; *Run*,
+*Resume* and *Create and run* ask for confirmation first. Opening the
+interface makes no model calls, and no way of starting a task enables or
+trusts tests.
 
 **Files.** Static files are served from a list of package files built at
 startup. Logs and transcripts can be requested only by an identifier from the

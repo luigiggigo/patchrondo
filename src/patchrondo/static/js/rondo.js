@@ -3,7 +3,7 @@
 
 import { h, icon } from "./dom.js";
 import { ago, fullDate, plural } from "./format.js";
-import { agentName, errorOf, phaseSentence, stopReason } from "./tasks.js";
+import { agentName, errorOf, phaseSentence, preparation, stopReason } from "./tasks.js";
 
 const FULL = "/assets/rondo.webp";
 const HEAD = "/assets/rondo-head.webp";
@@ -70,7 +70,17 @@ export function taskMessage(task, state) {
     case "done": return { mood: "done", text: `All patched up! ${rev} approved and the tests passed.` };
     case "blocked": return { mood: "error", text: "I'm stuck on this one. The review explains why; a new task is the way forward." };
     case "starting": return { mood: "working", text: "Starting the run…" };
-    case "running": return { mood: "working", text: `${phaseSentence(task)} · iteration ${task.iteration}.` };
+    case "running": {
+      const prepare = preparation(task);
+      if (prepare.state === "checking") {
+        return { mood: "working", text: {
+          agents: "I'm checking that the agents are ready…", project: "I'm preparing the project…",
+          sandbox: "I'm checking that the review environment is safe…",
+          repair: "PatchRondo is fixing an access problem with the project. Nothing for you to do.",
+        }[prepare.stage] || "I'm getting things ready…" };
+      }
+      return { mood: "working", text: `${phaseSentence(task)} · iteration ${task.iteration}.` };
+    }
     case "running_unverified":
       return { mood: "attention", text: `The task is locked by a run${lock?.pid ? ` (PID ${lock.pid})` : ""}, but this computer cannot confirm that it is still alive.` };
     case "waiting_retry":
@@ -88,8 +98,14 @@ export function taskMessage(task, state) {
     case "paused": {
       const error = errorOf(state || task);
       if (error?.kind === "quota") return { mood: "waiting", text: `${agentName(error.provider)} reached a usage limit. I can only wait for it to reset; resume when it has.` };
-      if (task.verdict === "CHANGES_REQUESTED" && error?.kind === "tests_disabled")
-        return { mood: "attention", text: "I can't finish without project tests. Enable them in Settings → Tests, then resume." };
+      if (error?.kind === "tests_disabled")
+        return { mood: "attention", text: "I can't finish without the project's tests, and I never run them without your say-so. Allow them below when you are ready." };
+      const prepare = preparation(task);
+      if (prepare.state === "problem") {
+        if (prepare.record.repair === "acl") return { mood: "attention", text: "A small fix is needed so that Codex can read the project. Press Repair automatically and I'll take care of it." };
+        if (prepare.record.repair === "git_trust") return { mood: "attention", text: "Git does not trust this project folder. If the project is yours, I can tell Git to trust it — only this folder." };
+        return { mood: "attention", text: `${error?.title || "The preparation stopped"}. I stopped before calling the agent, so nothing was used.` };
+      }
       return { mood: "attention", text: error ? `${error.title}. ${error.help}` : "Paused. Resume picks up from the last checkpoint." };
     }
     case "ready": return { mood: "idle", text: `Ready when you are. ${dev} develops, ${rev} reviews.` };
