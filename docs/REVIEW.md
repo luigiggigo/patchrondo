@@ -999,6 +999,94 @@ Not verified:
   `Path.resolve` does not make equal, such as a second mount of the same
   folder. The comparison is by resolved path, as before.
 
+### Follow-up: a process that could not be verified was treated as gone (October 11, 2026)
+
+Found by review of `runinfo.runtime` and `App.remove_project`. A recorded
+process whose existence the host cannot confirm (no start token, access
+denied, a failed probe) was correctly not shown as running or waiting, but two
+actions then went on as if it were gone:
+
+- With a `scheduled` plan and such a process (`plan_unverified`),
+  `waiting_process` was false, so a second run with automatic recovery was
+  accepted beside a process that might still be waiting for the same plan.
+- `remove_project` refused only `active` tasks. A project could be removed
+  from the registry while a recovery process that could not be verified was
+  still recorded for one of its tasks, and would then retry out of sight.
+
+The engine was not at risk: the task lock and the check of the saved plan
+under it still decide every provider call. The defect was in what the
+interface allowed.
+
+**Fix.** `runtime` now returns `unverified`, the process IDs of the recorded
+processes it cannot verify, and `waiting_unverified` for `plan_unverified`.
+`active` and `waiting_process` are unchanged, so nothing unverified is shown
+as running, waiting or attended. `start_run` refuses a run with automatic
+recovery when `waiting_unverified` is set, on the same condition as for a
+verified waiting process; a run with `auto_resume: false` stays possible.
+`remove_project` refuses while any task has an entry in `unverified`. Both
+refusals are status 409 and name the process ID and the marker file. A marker
+is still deleted only when its process is verified gone; nothing new removes
+one. The task page shows *Run now* with the recovery switch off, and a note
+with the file to delete once a person has checked, as it already does for a
+stale lock on native Windows.
+
+`tests/test_runinfo.py` has two new tests and one extended; `tests/test_ui.py`
+has one new test for the run and one for the removal. Against the previous
+code on native Windows with Python 3.13.3 the removal test received 200 and
+the project was gone; the other new tests stopped at the missing fields.
+Three entries were added to `MUTATIONS`, one for each refusal and one for the
+field; each removal is detected (below), which is the evidence that the run
+test fails without its refusal. `tools/ui_e2e.py` has six new checks in the
+*recovery* scenario.
+
+Checks rerun on the final code on October 11, 2026, with scripted or
+synthetic providers and no provider call:
+
+- **Suite: 267 tests.** Native Windows 11 (10.0.26200) with Python 3.13.3 and
+  with Python 3.11.3: 262 passed, 5 skipped, exit status 0 on both. WSL2 with
+  Python 3.12.3: 266 passed, 1 skipped, exit status 0.
+- **Reliability driver** (`--repeat 3`): WSL2 42 passed, 0 failed, 0 skipped;
+  native Windows 30 passed, 0 failed, 12 skipped; exit status 0 on both.
+- **Protections**, native Windows, Python 3.13.3: 60 of 60 removed
+  safeguards detected, exit status 0.
+- **Real clock**, WSL2: 10 of 10 checks passed, the retry 0.04 s after the
+  planned time, exit status 0.
+- **Browser check** (`python tools/ui_e2e.py`), native Windows, Chrome
+  154.0.8037.99 headless, Python 3.13.3, one run: 169 passed, 0 failed, exit
+  status 0.
+- **Packages.** `python -m build` into a directory outside the repository
+  produced `patchrondo-0.2.0.tar.gz` and `patchrondo-0.2.0-py3-none-any.whl`;
+  `twine check` passed both.
+- **Publication scanner:** exit status **1**, 92 files checked, the same four
+  findings as above (`debug.log` and the three binary assets). Not a clean
+  scan.
+
+Not verified:
+
+- The change on macOS, and in CI. It is local and unpushed;
+  [run 38134941472](https://github.com/luigiggigo/patchrondo/actions/runs/38134941472)
+  (read with `gh` on October 11, 2026, completed successfully) covers
+  `115d151`, the commit before it.
+- A process that is unverifiable for a real reason. Every test uses a marker
+  without a start token for a live process ID. Access denied by the operating
+  system and a failing `ps` were not produced.
+- The run dialog for this state in a browser. The browser check confirms the
+  label, the note, the *Run now* button and both refusals through the API; it
+  does not open the dialog.
+
+Limits that remain:
+
+- A marker that can never be verified (a process ID reused by a program this
+  user may not inspect) keeps both refusals until a person deletes the file.
+  There is no button for it: the interface does not delete a marker on a
+  person's word alone.
+- An unverifiable process recorded for a task with no retry plan does not
+  refuse a start; the task lock decides, as before. It does refuse the removal
+  of the project.
+- A home used from both native Windows and WSL2 was not examined. Process IDs
+  of one are checked against the process table of the other, so a marker
+  written by one side can be judged gone by the other.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:

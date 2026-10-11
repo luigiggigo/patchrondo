@@ -520,6 +520,24 @@ def scenario_recovery(env: Env) -> None:
     env.check("the plan is kept unchanged when the waiting process ends", after["recovery"] == plan and after["status"] == "paused")
     env.check("the persisted status alone does not show as waiting", "Waiting to retry" not in page.js("q('.task-head').innerText"))
     env.shot("recovery-plan-only")
+
+    # (3b) The same plan with a recorded process that cannot be verified: not shown as waiting, not taken as gone.
+    marker = path / "attached" / f"{os.getpid()}.json"
+    save_json(marker, {"pid": os.getpid(), "start": None, "since": None, "auto_resume": True})  # no start token
+    env.expect("a waiting process that cannot be verified is shown as unverified, not as waiting",
+               "q('.task-head').innerText.includes('Retry planned · unverified') && !q('.task-head').innerText.includes('Waiting to retry')"
+               " && q('.task-overview').innerText.includes('A recorded process cannot be verified')", 10)
+    env.check("the page names the file a person has to settle", f"attached/{os.getpid()}.json" in page.js("q('.task-overview').innerText"))
+    env.check("only a run without automatic recovery is offered", page.js("Boolean(byText('Run now', '.task-head button')) && !byText('Resume', '.task-head button')"))
+    refused = env.api("POST", f"/api/projects/{project_id}/tasks/{waiting}/run", {"auto_resume": True})
+    env.check("a second automatic run is refused beside a process that cannot be verified", refused[0] == 409, str(refused))
+    kept = env.api("DELETE", f"/api/projects/{project_id}", {})
+    env.check("the project cannot be removed while a recorded process is unverified",
+              kept[0] == 409 and marker.exists() and any(p["id"] == project_id for p in env.projects()), str(kept))
+    env.shot("recovery-unverified")
+    marker.unlink()  # a person checked that the process is gone
+    env.expect("once that is settled the page is back to a plan with nothing waiting",
+               "q('.task-head').innerText.includes('nothing waiting') && Boolean(byText('Resume', '.task-head button'))", 10)
     page.js("byText('Resume', '.task-head button').click()")
     env.expect("resuming explains what the saved plan means for this run", "Boolean(q('.dialog')) && q('.dialog').innerText.includes('Automatic quota recovery')", 5)
     page.click(text="Cancel")

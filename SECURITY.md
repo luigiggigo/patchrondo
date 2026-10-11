@@ -97,7 +97,10 @@ inside it are not made clickable.
 
 **Process information.** The interface shows whether a run or a waiting
 process exists by checking the recorded process ID and start time. That check
-is for display and for refusing duplicate starts. It never removes a lock:
+is for display and for refusing duplicate starts. A process it cannot verify
+is neither shown as alive nor treated as gone: a second automatic run of that
+task and the removal of its project are refused until a person has settled
+it. It never removes a lock:
 releasing a stale lock is a confirmed action that starts
 `patchrondo run --unlock`, and the engine applies its own check to every
 recorded process. Neither that action nor Stop is available on native Windows.

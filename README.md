@@ -120,7 +120,7 @@ the interface, not the runs it started.
 | Section | What you do there |
 |---|---|
 | **Home** | See the state of Claude Code and Codex, the selected project, tasks that are active, need attention, are ready or done, and recent activity. Start a task or add a project. |
-| **Projects** | Add a local Git repository (with a folder picker and a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees. |
+| **Projects** | Add a local Git repository (with a folder picker and a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
 | **Tasks** | All tasks of the selected project, or of every project, with filters and search. |
 | **Task** | Header with status, roles and iteration; the workflow *Develop → Test → Review → Repeat / Complete*; then Overview, Activity (a timeline of what happened), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
 | **New task** | Project, title, description, acceptance criteria, developer and reviewer; under *Advanced*, limits for that task only. *Create and run* asks for confirmation before any agent is called. |
@@ -462,7 +462,10 @@ A planned retry is not a promise: it happens only while the process that is
 waiting for it stays alive. *Resume* lets you choose for that run whether to
 use automatic recovery (the run then waits for the saved time before calling
 the provider) or to run once now, which cancels the plan. A second automatic
-run is refused while one is already waiting.
+run is refused while one is already waiting, and also while a waiting process
+was recorded that the computer cannot verify (*Retry planned · unverified*):
+it is not shown as waiting, and it is not assumed to be gone. Running once
+now without automatic recovery stays possible in both cases.
 
 ### Limits of this version
 
@@ -484,6 +487,11 @@ run is refused while one is already waiting.
 - **The waiting process must stay alive.** Automatic resume happens only while
   it runs. The interface recognizes a waiting process started by 0.2 from the
   marker it writes; a process it cannot verify is shown as *unverified*.
+  While that lasts, the project cannot be removed from the list and a second
+  automatic run of the task is refused. The marker goes away by itself when
+  the process is verified gone; if it never can be, the task page shows the
+  file to delete after you have checked that the process is not a PatchRondo
+  run.
 - **Locks are never recovered automatically.** If the task lock exists when a
   retry is due, recovery stops with an error and leaves the lock and the plan
   untouched. `--unlock` applies only to the run you start by hand, never to an

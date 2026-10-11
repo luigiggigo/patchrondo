@@ -8,7 +8,9 @@ lock and the persisted state into one answer, and says "unverified" whenever
 the host cannot confirm a process.
 
 Markers and this module are for display and for refusing duplicate starts.
-They never unlock a task and never authorize a provider call.
+They never unlock a task and never authorize a provider call. A process that
+cannot be verified is neither shown as alive nor taken as gone: its marker
+stays until the process is verified gone or a person deletes the file.
 """
 from __future__ import annotations
 
@@ -133,6 +135,11 @@ def runtime(path: Path, state: dict, owned: list[subprocess.Popen] | None = None
         "can_start": startable,
         # A waiting process makes a second automatic run pointless; a manual run stays possible.
         "waiting_process": activity == "waiting_retry",
+        # A recorded waiting process that cannot be verified is not shown as waiting, and is not
+        # taken as gone either: a second automatic run is refused until a person has settled it.
+        "waiting_unverified": activity == "plan_unverified",
+        # Recorded processes that may still exist. Nothing that assumes they are gone is allowed.
+        "unverified": [entry["pid"] for entry in unverified],
         "can_stop": os.name == "posix" and bool(alive),
         # The engine re-checks every recorded PID before it removes a lock; on native Windows it cannot.
         "can_unlock": os.name == "posix" and activity == "stale_lock",

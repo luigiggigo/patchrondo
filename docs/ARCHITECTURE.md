@@ -382,7 +382,9 @@ first time the registry is read by the interface or by `patchrondo projects`.
 `projects.json` and nothing else. Worktrees are never moved, because Git
 records their absolute paths in the repository.
 
-**Removal and rollback.** Removing a project deletes its registry entry. A
+**Removal and rollback.** Removing a project deletes its registry entry. It is
+refused while one of its tasks holds a lock, has a verified process attached,
+or has a recorded process that cannot be verified (section 10). A
 removed root project is marked so that it is not registered again by itself.
 The way back from any registration is to remove the entry; the way back from
 all of 0.2 is to delete `projects.json` and `settings.json`, after which a 0.1
@@ -440,14 +442,28 @@ Children started by this interface are also known directly.
 | `interrupted` | status `running`, no lock |
 | `starting` | a process is attached and has not taken the lock yet |
 | `waiting_retry` | plan `scheduled`, a verified process with automatic resume attached |
-| `plan_unverified` | plan `scheduled`, an attached process that cannot be verified |
+| `plan_unverified` | plan `scheduled`, an attached process with automatic resume that cannot be verified |
 | `plan_only` | plan `scheduled`, no process |
 | `recovery_stopped`, `paused`, `blocked`, `ready`, `done` | from the saved state, with no process |
 
 It also says what is possible: `can_start`, `can_stop` (POSIX, a verified
-process) and `can_unlock` (POSIX, a stale lock). These answers are for display
-and for refusing duplicate starts. They never remove a lock: *Release lock and
-resume* starts `patchrondo run --unlock`, and `TaskLock` then applies its own,
+process) and `can_unlock` (POSIX, a stale lock).
+
+**A process that cannot be verified is not taken as gone.** It is not shown as
+running or waiting (`active` stays false), and its marker is never deleted on
+a guess. `runtime` lists such processes in `unverified` and sets
+`waiting_unverified` for `plan_unverified`. Until a person settles it, two
+actions that would assume the process is gone are refused with status 409: a
+second run with automatic recovery for that task, and removing its project
+from the registry. A run without automatic recovery stays possible, as beside
+a verified waiting process: it cancels the saved plan, and a process that is
+still waiting stops when it finds the plan changed or the lock taken. The marker disappears by
+itself once the process is verified gone; when it never can be (a process ID
+reused by a program this user may not inspect), the task page and the refusal
+name the file to delete after checking, as for a stale lock on native Windows.
+
+These answers are for display and for refusing duplicate starts. They never
+remove a lock: *Release lock and resume* starts `patchrondo run --unlock`, and `TaskLock` then applies its own,
 unchanged rule to the runner and to every recorded agent and test process. On
 native Windows that rule cannot confirm that a process is gone, so the
 interface does not offer the action there. *Stop* sends SIGINT to the verified

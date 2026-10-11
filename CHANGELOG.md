@@ -75,6 +75,12 @@ listed under *Engine*.
 - A second automatic run is refused while a process waits for the same task; a
   manual run now stays possible. Simultaneous or repeated starts of one task
   create one process.
+- A recorded process that cannot be verified is not taken as gone. A second
+  automatic run is refused beside a waiting process of that kind, and a
+  project is not removed from the list while one of its tasks has one; the
+  task page names the file to delete once a person has checked. (Corrected on
+  October 11, 2026: both actions used to be accepted, because only verified
+  processes counted.)
 - *Stop* interrupts a verified run or a waiting process, like Ctrl+C in its
   terminal (POSIX). *Release lock and resume* is offered when the holder of a
   lock is verified gone (POSIX); the engine still makes its own check. Native

@@ -327,6 +327,33 @@ class ProjectTests(ServerCase):
         self.assertEqual((response.status, data["code"]), (409, "conflict"))
         self.assertEqual(len(self.get("/api/snapshot")[1]["projects"]), 1)
 
+    def test_removing_a_project_with_an_unverifiable_process_is_refused(self):
+        from patchrondo import runinfo
+        project, _ = self.add_project()
+        task_id, path = self.add_task(project)
+        marker = path / runinfo.MARKERS / f"{os.getpid()}.json"
+        # No start token: the process ID exists, but nothing says that it is the recorded process.
+        save_json(marker, {"pid": os.getpid(), "start": None, "auto_resume": True})
+        state = read_json(path / "state.json")
+        waiting = {**state, "status": "paused", "last_error": {"kind": "quota", "message": "limit"},
+                   "recovery": {"status": "scheduled", "resume_at": "2099-01-01T00:00:00+00:00", "consecutive_failures": 1,
+                                "max_consecutive_retries": 3, "provider": "codex", "schedule_source": "backoff", "stop_reason": None}}
+        for saved, activity in ((state, "ready"), (waiting, "plan_unverified")):
+            with self.subTest(activity=activity):
+                save_json(path / "state.json", saved)
+                self.assertTrue(wait_for(lambda: self.get("/api/snapshot")[1]["tasks"][0]["runtime"]["activity"] == activity))
+                response, data = self.delete(f"/api/projects/{project['id']}")
+                self.assertEqual((response.status, data["code"]), (409, "conflict"), data)
+                self.assertIn(task_id, data["error"])
+                self.assertIn(f"PID {os.getpid()}", data["error"])
+                self.assertIn(str(marker), data["error"])  # how to settle it is said, not guessed
+                self.assertEqual(len(self.get("/api/snapshot")[1]["projects"]), 1)
+        self.assertTrue(marker.exists())  # the interface never removes a marker it cannot verify
+        marker.unlink()  # a person checked that the process is gone
+        response, data = self.delete(f"/api/projects/{project['id']}")
+        self.assertEqual((response.status, data.get("removed")), (200, project["id"]), data)
+        self.assertTrue((path / "state.json").is_file())
+
     def test_folder_listing_shows_folder_names_only(self):
         repo = make_repo(self.root / "repos" / "alpha")
         (self.root / "repos" / "plain").mkdir()
@@ -693,6 +720,32 @@ class RunTests(ServerCase):
                 self.assertEqual(response.status, 409, data)
                 self.assertIn("already waiting", data["error"])
             popen.assert_not_called()
+            self.assertEqual(self.post(self.run_url, {"auto_resume": False})[0].status, 202)  # a deliberate manual run
+            self.assertEqual(popen.call_args.args[0][-1], "--no-auto-resume")
+
+    def test_an_unverifiable_waiting_process_blocks_a_second_automatic_run_only(self):
+        from patchrondo import runinfo
+        state = read_json(self.path / "state.json")
+        save_json(self.path / "state.json", {**state, "status": "paused", "last_error": {"kind": "quota", "message": "limit"},
+                  "recovery": {"status": "scheduled", "resume_at": "2099-01-01T00:00:00+00:00", "consecutive_failures": 1,
+                               "max_consecutive_retries": 3, "provider": "codex", "schedule_source": "backoff", "stop_reason": None}})
+        # No start token: the process ID exists, but nothing says that it is the recorded process.
+        marker = self.path / runinfo.MARKERS / f"{os.getpid()}.json"
+        save_json(marker, {"pid": os.getpid(), "start": None, "auto_resume": True})
+        runtime = self.get("/api/snapshot")[1]["tasks"][0]["runtime"]
+        self.assertEqual((runtime["activity"], runtime["waiting_process"], runtime["waiting_unverified"], runtime["active"]),
+                         ("plan_unverified", False, True, False))  # never shown as a process that is waiting
+        popen, real = unittest.mock.MagicMock(), subprocess.Popen
+        self.mocked(popen)
+        # The patch replaces Popen for every module, and without /proc (macOS) the process check starts `ps` with it.
+        with patch("patchrondo.app.subprocess.Popen", lambda args, **options: (real if args[0] == "ps" else popen)(args, **options)):
+            for body in ({}, {"auto_resume": True}):
+                response, data = self.post(self.run_url, body)
+                self.assertEqual(response.status, 409, data)
+                self.assertIn("cannot verify", data["error"])
+                self.assertIn(f"PID {os.getpid()}", data["error"])
+            popen.assert_not_called()
+            self.assertTrue(marker.exists())
             self.assertEqual(self.post(self.run_url, {"auto_resume": False})[0].status, 202)  # a deliberate manual run
             self.assertEqual(popen.call_args.args[0][-1], "--no-auto-resume")
 

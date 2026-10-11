@@ -130,6 +130,24 @@ class RuntimeTests(unittest.TestCase):
         self.marker(os.getpid(), None)
         found = self.runtime("paused", PLAN)
         self.assertEqual((found["activity"], found["active"], found["can_stop"]), ("plan_unverified", False, False))
+        # Not shown as waiting, and not treated as gone either: the API refuses a second automatic run.
+        self.assertEqual((found["waiting_process"], found["waiting_unverified"], found["unverified"], found["can_start"]),
+                         (False, True, [os.getpid()], True))
+
+    def test_an_unverifiable_marker_is_listed_whatever_the_saved_status(self):
+        self.marker(os.getpid(), None, auto_resume=False)
+        for status, plan, activity in (("ready", None, "ready"), ("paused", None, "paused"), ("paused", PLAN, "plan_only")):
+            with self.subTest(status=status, plan=bool(plan)):
+                found = self.runtime(status, plan)
+                self.assertEqual((found["activity"], found["active"], found["waiting_unverified"], found["unverified"]),
+                                 (activity, False, False, [os.getpid()]))
+        self.assertTrue((self.path / runinfo.MARKERS / f"{os.getpid()}.json").exists())  # never removed on a guess
+
+    def test_verified_and_absent_processes_are_not_listed_as_unverified(self):
+        self.assertEqual(self.runtime("paused", PLAN)["unverified"], [])
+        self.marker(os.getpid(), procinfo.identity())
+        found = self.runtime("paused", PLAN)
+        self.assertEqual((found["activity"], found["waiting_unverified"], found["unverified"]), ("waiting_retry", False, []))
 
     def test_stopped_recovery_and_owned_children(self):
         self.assertEqual(self.runtime("paused", {**PLAN, "status": "stopped", "stop_reason": "max_consecutive_retries"})["activity"],

@@ -78,7 +78,7 @@ export function taskMessage(task, state) {
     case "plan_only":
       return { mood: "attention", text: `A retry was planned for ${fullDate(plan?.resume_at)}, but no process is waiting for it. Nothing happens until you resume.` };
     case "plan_unverified":
-      return { mood: "attention", text: `A retry is planned for ${fullDate(plan?.resume_at)}. A waiting process was recorded, but it cannot be verified here.` };
+      return { mood: "attention", text: `A retry is planned for ${fullDate(plan?.resume_at)}. A waiting process was recorded, but it cannot be verified here, so I won't start a second automatic run beside it.` };
     case "recovery_stopped":
       return { mood: "attention", text: `Automatic recovery ended: ${stopReason(plan?.stop_reason).toLowerCase()}. Resume by hand when you are ready.` };
     case "stale_lock":

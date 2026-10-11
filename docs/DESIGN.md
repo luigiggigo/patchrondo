@@ -11,7 +11,8 @@ plain ES modules, no build step.
    API (`task.runtime`). The page never infers a process from a saved status
    and never estimates progress.
 2. **Say what is known.** "Running" means a verified process. When the host
-   cannot confirm one, the label says "unverified". A saved retry plan with no
+   cannot confirm one, the label says "unverified", and nothing that would
+   assume the process is gone is offered as safe. A saved retry plan with no
    process is "Retry planned · nothing waiting", never "retrying".
 3. **One primary action per screen.** New task on the dashboard, Run or Resume
    on a task, Save on a settings form, Continue in the setup wizard.

@@ -66,6 +66,13 @@ class Conflict(Exception):
     """The requested action does not fit the current state."""
 
 
+def _unverified(path: Path, runtime: dict) -> str:
+    """What a person has to check before an unverifiable process stops counting as attached."""
+    files = ", ".join(str(path / runinfo.MARKERS / f"{pid}.json") for pid in runtime["unverified"])
+    return (f"PID {', '.join(str(pid) for pid in runtime['unverified'])}: stop it if it is a PatchRondo run; "
+            f"if it is not, or it is gone, delete {files}")
+
+
 def _text(path: Path, tail: bool = False) -> str | None:
     if not path.is_file():
         return None
@@ -495,12 +502,20 @@ class App:
         return self.project_info(renamed)
 
     def remove_project(self, project: Project) -> dict:
-        """Forget a project. Refused while one of its tasks has a lock or an attached process."""
+        """Forget a project. Refused while one of its tasks has a lock or an attached process.
+
+        A recorded process that cannot be verified counts as attached: the
+        project would disappear from the interface while it may still retry.
+        """
         for file in project.home.glob("tasks/T-*/state.json"):
             state = self._state(file) or {}
             task_id = file.parent.name
-            if runinfo.runtime(file.parent, state, self._owned((project.id, task_id)))["active"]:
+            runtime = runinfo.runtime(file.parent, state, self._owned((project.id, task_id)))
+            if runtime["active"]:
                 raise Conflict(f"Task {task_id} is running or waiting; stop it or let it finish first")
+            if runtime["unverified"]:
+                raise Conflict(f"Task {task_id} has a recorded process that this computer cannot verify "
+                               f"({_unverified(file.parent, runtime)}); the project stays until that is settled")
         try:
             self.ws.remove(project.id)
         except RuntimeError as exc:
@@ -847,6 +862,9 @@ class App:
             if runtime["waiting_process"] and auto_resume is not False:
                 raise Conflict("A process is already waiting to retry this task. Stop it, or run once now "
                                "without automatic recovery")
+            if runtime["waiting_unverified"] and auto_resume is not False:
+                raise Conflict("A process was recorded as waiting to retry this task and this computer cannot verify "
+                               f"it ({_unverified(path, runtime)}). Until then, run once now without automatic recovery")
             cfg = config(project.home)
             if not Path(str(state.get("worktree"))).is_dir():
                 raise Conflict("The task worktree was not found")

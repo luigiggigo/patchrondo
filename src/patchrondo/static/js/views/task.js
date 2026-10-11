@@ -27,13 +27,16 @@ function runDialog(task, detail) {
   const effective = detail?.effective;
   const resume = task.status !== "ready";
   const waiting = task.runtime.waiting_process;
+  // A recorded waiting process that cannot be verified may still be there: the backend allows one manual run only.
+  const once = waiting || task.runtime.waiting_unverified;
   const dev = agentName(task.developer), rev = agentName(task.reviewer);
   const providers = state.providers?.providers || {};
-  let recovery = waiting ? false : Boolean(effective?.recovery_enabled);
-  let touched = waiting;
+  let recovery = once ? false : Boolean(effective?.recovery_enabled);
+  let touched = once;
   const hint = h("div", { class: "field-hint" });
   const describe = () => {
     if (waiting) hint.textContent = "A process is already waiting for the planned retry. This runs once now instead and cancels that plan; the waiting process then stops by itself.";
+    else if (once) hint.textContent = "A waiting process was recorded for this task and cannot be verified here, so a second automatic run is refused. This runs once now and cancels the saved plan; if that process is still waiting, it then stops by itself.";
     else if (recovery && plan?.status === "scheduled") hint.textContent = `On: this run waits until ${fullDate(plan.resume_at)}, the saved retry time, before it calls ${agentName(plan.provider)}.`;
     else if (recovery) hint.textContent = "On: after a usage limit the run process stays alive, waits for the reset or a backoff and retries, within the limits in Settings → Recovery. It only waits; it never works around a limit.";
     else if (plan?.status === "scheduled") hint.textContent = "Off: runs once now. The saved retry plan is cancelled.";
@@ -62,7 +65,7 @@ function runDialog(task, detail) {
           missing.map((provider) => callout({ tone: "warn", iconName: "alert", title: `${provider.label} is ${provider.installed === false ? "not installed" : "not logged in"}`, body: provider.hint })),
           h("div", { class: "card" }, h("label", { class: "setting" },
             h("div", { class: "setting-text" }, h("div", { class: "field-label" }, "Automatic quota recovery"), hint),
-            toggle({ checked: recovery, disabled: waiting, label: "Automatic quota recovery", onChange: (value) => { recovery = value; touched = true; describe(); } }))),
+            toggle({ checked: recovery, disabled: once, label: "Automatic quota recovery", onChange: (value) => { recovery = value; touched = true; describe(); } }))),
         ],
         actions: [button("Cancel", { variant: "ghost", onClick: () => close(false) }), go],
       };
@@ -110,8 +113,9 @@ function actions(task, detail) {
   }
   if (runtime.can_unlock) items.push(button("Release lock and resume", { variant: "primary", iconName: "lock", onClick: () => unlockRun(task) }));
   else if (runtime.can_start) {
-    const label = runtime.waiting_process ? "Run now" : task.status === "ready" ? "Run" : "Resume";
-    items.push(button(label, { variant: runtime.waiting_process ? "" : "primary", iconName: "play", onClick: () => runDialog(task, detail) }));
+    const once = runtime.waiting_process || runtime.waiting_unverified;
+    const label = once ? "Run now" : task.status === "ready" ? "Run" : "Resume";
+    items.push(button(label, { variant: once ? "" : "primary", iconName: "play", onClick: () => runDialog(task, detail) }));
   }
   const more = iconButton("dots", "More actions", () => popover(more, (close) => [
     menuItem("Copy task ID", { iconName: "copy", onClick: () => { close(); navigator.clipboard?.writeText(task.id).then(() => toast("Task ID copied")); } }),
@@ -132,7 +136,7 @@ function recoveryCard(task, plan) {
   const stateLine = {
     waiting_retry: ["wait", `A process is waiting${process ? ` (PID ${process.pid})` : ""}. It retries at the planned time for as long as it keeps running.`],
     plan_only: ["warn", "Saved plan only: no process is waiting. Nothing retries until you resume."],
-    plan_unverified: ["warn", "A waiting process was recorded, but this computer cannot verify that it is alive."],
+    plan_unverified: ["warn", "A waiting process was recorded, but this computer cannot verify that it is alive. Until that is settled a second automatic run is refused; a run without automatic recovery stays possible."],
     recovery_stopped: ["warn", "Automatic recovery has ended. Resume by hand when the cause is resolved."],
     running: ["accent", "A planned retry is running now."],
   }[activity] || ["neutral", plan.status === "stopped" ? "Automatic recovery has ended." : "Recovery information saved with the task."];
@@ -168,6 +172,11 @@ function overviewPanel() {
         task.runtime.activity === "stale_lock" && !task.runtime.can_unlock ? callout({ tone: "danger", iconName: "lock", title: "The lock has to be removed by hand on native Windows",
           body: ["PatchRondo found no live process for this lock, but on native Windows the engine cannot confirm that for the agent's child processes. After checking that no claude, codex or test process is still running, delete ",
             h("span", { class: "mono break" }, `${state.projects.get(task.project)?.home}/tasks/${task.id}/.run.lock`), " and resume. WSL2 does this check for you."] }) : null,
+        task.runtime.unverified.length ? callout({ tone: "warn", iconName: "alert", title: "A recorded process cannot be verified",
+          body: [`PID ${task.runtime.unverified.join(", ")} was recorded as attached to this task, and this computer cannot tell whether that process still exists. `,
+            "PatchRondo does not assume that it is gone: while this is open the project cannot be removed, and a planned retry cannot be started a second time with automatic recovery. ",
+            "If it is a PatchRondo run, stop it in its terminal. If it is another program, or it is gone, delete ",
+            task.runtime.unverified.map((pid, index) => [index ? ", " : "", h("span", { class: "mono break" }, `${state.projects.get(task.project)?.home}/tasks/${task.id}/attached/${pid}.json`)]), "."] }) : null,
         error && task.status !== "done" ? callout({ tone: task.status === "blocked" ? "danger" : "warn", iconName: "alert", title: error.title,
           body: [h("div", {}, error.help), error.message ? h("pre", { class: "error-message" }, error.message) : null] }) : null,
         !detail.worktree_exists ? callout({ tone: "danger", iconName: "folder", title: "The task worktree is missing", body: `Expected at ${data.worktree}. The task cannot run without it.` }) : null,
