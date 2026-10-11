@@ -22,9 +22,11 @@ import re
 import secrets
 import sqlite3
 import sys
+import time
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
+from . import activity
 from .app import PACKAGE_ROOT, App, Conflict, RunsAtExit, browse, inspect_repository  # noqa: F401 - re-exported
 from .commands import join_command, split_command  # noqa: F401 - re-exported
 from .live import Hub
@@ -32,6 +34,7 @@ from .workspace import NotFound
 
 MAX_BODY = 256_000
 HEARTBEAT_SECONDS = 10
+ACTIVITY_POLL_SECONDS = 0.2  # how often an open activity stream looks at its journal
 ASSET_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
                ".webp": "image/webp", ".svg": "image/svg+xml"}
 CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}'; "
@@ -180,6 +183,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/events":
             self._events(parse_qs(url.query))
             return
+        if match := re.fullmatch(TASK + "/activity/stream", path):
+            self._activity(match.group(1), unquote(match.group(2)), parse_qs(url.query))
+            return
         self._guarded(lambda: self._read(path, parse_qs(url.query)))
 
     def _read(self, path: str, query: dict) -> tuple[int, dict]:
@@ -196,6 +202,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return 200, app.task_detail(app.ws.get(match.group(1)), unquote(match.group(2)))
         if match := re.fullmatch(TASK + "/files", path):
             return 200, app.task_files(app.ws.get(match.group(1)), unquote(match.group(2)))
+        if match := re.fullmatch(TASK + "/activity", path):
+            def one(name: str):
+                return (query.get(name) or [None])[0] or None
+            return 200, app.activity_page(app.ws.get(match.group(1)), unquote(match.group(2)), one("cursor"),
+                                          one("before"), one("limit") or activity.PAGE_EVENTS)
         if match := re.fullmatch(TASK + "/log", path):
             def first(name: str, default: str) -> str:
                 return (query.get(name) or [default])[0]
@@ -231,6 +242,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
             pass  # the client went away
         finally:
             hub.unsubscribe()
+
+    def _activity(self, project_id: str, task_id: str, query: dict) -> None:
+        """Server-sent events: what is appended to one task's activity journal after `cursor`.
+
+        Each message carries the events and the cursor that follows them, so a
+        client that reconnects with it receives nothing twice and misses
+        nothing, also from another server process. Without a cursor the stream
+        starts at the beginning of the journal, waiting for it to exist. A
+        cursor that does not fit ends the stream with "reset".
+        """
+        app, hub = self.server.app, self.server.hub
+        try:
+            path = app.task_path(app.ws.get(project_id), task_id)
+        except (NotFound, FileNotFoundError) as exc:
+            self._error(404, str(exc) or "Not found", "not_found")
+            return
+        cursor = (query.get("cursor") or [""])[0] or None
+        self._headers(200, "text/event-stream; charset=utf-8", None)
+        quiet = 0.0
+        try:
+            while not hub.closed:
+                if cursor is None:
+                    journal = activity.read(path, limit=1)["journal"]
+                    cursor = f"{journal}:0" if journal else None
+                page = activity.read(path, cursor) if cursor else None
+                if page is not None and page["reset"]:
+                    self.wfile.write(b"event: reset\ndata: {}\n\n")
+                    self.wfile.flush()
+                    return
+                if page is not None and page["next"] != cursor:
+                    cursor, quiet = page["next"], 0.0
+                    data = json.dumps({"cursor": cursor, "events": page["events"]}, ensure_ascii=False)
+                    self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    if page["more"]:
+                        continue
+                time.sleep(ACTIVITY_POLL_SECONDS)
+                quiet += ACTIVITY_POLL_SECONDS
+                if quiet >= HEARTBEAT_SECONDS:
+                    quiet = 0.0
+                    self.wfile.write(b": keep-alive\n\n")
+                    self.wfile.flush()
+        except OSError:
+            pass  # the client went away
 
     # --- writes ---------------------------------------------------------------------
 

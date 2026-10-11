@@ -1,4 +1,4 @@
-// Task workspace: header, workflow, live activity, logs, tests, review, changed files and documents.
+// Task workspace: header, workflow, live activity, timeline, logs, tests, review, changed files and documents.
 // The header follows the live summary; the panels follow the detail fetched after each change.
 
 import { api } from "../api.js";
@@ -11,9 +11,11 @@ import { getTask, state } from "../store.js";
 import { RECOVERY_SOURCES, SEVERITY, TEST_TONE, VERDICTS, activityOf, agentName, errorOf, stopReason } from "../tasks.js";
 import { activityBadge, badge, busy, button, callout, confirm, copyButton, dialog, iconButton, loadingBlock, menuItem, popover, tabs,
   toast, toastError, toggle } from "../ui.js";
+import { livePanel } from "./live.js";
 
 const TABS = [
-  ["overview", "Overview", "home"], ["activity", "Activity", "activity"], ["logs", "Logs", "terminal"], ["tests", "Tests", "flask"],
+  ["overview", "Overview", "home"], ["live", "Live Activity", "bolt"], ["activity", "Timeline", "activity"], ["logs", "Logs", "terminal"],
+  ["tests", "Tests", "flask"],
   ["review", "Review", "eye"], ["files", "Files changed", "diff"], ["handoff", "Handoff", "file"], ["report", "Report", "book"],
   ["raw", "Advanced", "code"],
 ];
@@ -508,6 +510,7 @@ export default function mount(root, route, ctx) {
   let detail = null, failure = null, destroyed = false, print = "", pending = false, queued = false;
   let autoRun = route.params.run === "1";
   let stamps = 0;
+  let visible = null; // the panel on screen; one that streams is told when it is shown and hidden
   const panels = new Map();
   const el = {
     head: h("div", { class: "task-head" }),
@@ -523,7 +526,7 @@ export default function mount(root, route, ctx) {
   function panelFor(key) {
     if (!panels.has(key)) {
       panels.set(key, {
-        overview: overviewPanel, activity: activityPanel, logs: () => logsPanel(projectId, taskId), tests: testsPanel, review: reviewPanel,
+        overview: overviewPanel, live: () => livePanel(projectId, taskId), activity: activityPanel, logs: () => logsPanel(projectId, taskId), tests: testsPanel, review: reviewPanel,
         files: () => filesPanel(projectId, taskId),
         handoff: () => documentPanel("handoff", "Developer handoff", ["No handoff yet", "The developer agent writes it at the end of each development step."]),
         report: () => documentPanel("report", "Report", ["No report yet", "PatchRondo writes it when the task completes, pauses or blocks."]),
@@ -544,6 +547,11 @@ export default function mount(root, route, ctx) {
     if (el.panel.firstChild !== panel.el) clear(el.panel, panel.el);
     const task = getTask(projectId, taskId) || detail.summary;
     panel.update(detail, task);
+    if (visible !== panel) {
+      visible?.hide?.();
+      visible = panel;
+      panel.show?.();
+    }
   }
 
   async function load() {
@@ -597,8 +605,10 @@ export default function mount(root, route, ctx) {
     el.head.dataset.tone = meta.tone;
     memo(el.flow, [task.phase, task.status, task.runtime.activity, task.iteration, task.max_iterations], () => workflowBar(task));
     const message = taskMessage(task, detail?.state);
-    memo(el.note, [message, state.lastEventAt ? clock(state.lastEventAt) : ""], () => rondoNote(message.text, message.mood,
-      h("span", { class: "faint num hide-sm", "data-tip": "When this page last received a change from the server" }, state.lastEventAt ? `live · ${clock(state.lastEventAt)}` : "")));
+    const watch = task.runtime.active && tab !== "live";
+    memo(el.note, [message, state.lastEventAt ? clock(state.lastEventAt) : "", watch], () => rondoNote(message.text, message.mood, [
+      watch ? h("a", { class: "btn sm", href: href("tasks", projectId, taskId, "live") }, icon("bolt"), "Watch live") : null,
+      h("span", { class: "faint num hide-sm", "data-tip": "When this page last received a change from the server" }, state.lastEventAt ? `live · ${clock(state.lastEventAt)}` : "")]));
     const counts = { activity: task.events || null, review: task.issues || null, logs: detail?.logs.length || null };
     tabList.update(TABS.map(([key, label, iconName]) => ({ key, label, icon: iconName, count: counts[key],
       alert: key === "review" && task.verdict && task.verdict !== "APPROVED" })), tab);
@@ -616,6 +626,6 @@ export default function mount(root, route, ctx) {
   return {
     update, tick: render,
     route(next) { const wanted = TABS.some(([key]) => key === next.tab) ? next.tab : "overview"; if (wanted !== tab) { tab = wanted; tabList.update(undefined, tab); showPanel(); } },
-    destroy() { destroyed = true; },
+    destroy() { destroyed = true; for (const panel of panels.values()) panel.destroy?.(); },
   };
 }

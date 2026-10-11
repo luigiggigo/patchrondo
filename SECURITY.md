@@ -32,8 +32,8 @@ is not held while waiting and is never removed automatically.
 
 A failed CLI call is recorded in `state.json` as `last_error`. Its `message`
 holds an excerpt of the CLI's own output, up to about 1,200 characters taken
-from standard error and standard output, and the report and the interface
-display it. Recovery adds only structured fields derived from that output: the
+from the error the CLI reported, standard error and standard output, and the
+report and the interface display it. Recovery adds only structured fields derived from that output: the
 failure kind, the provider name, a reset time and the stated wait in seconds.
 The complete captured output is in the run logs of the task directory. None of
 it is filtered for secrets, so treat task state as private project data.
@@ -94,6 +94,27 @@ contain private project data and are not filtered for secrets.
 **Untrusted content.** Text written by agents or taken from repositories is
 inserted into the page only as text. It is not interpreted as HTML, and links
 inside it are not made clickable.
+
+**Live activity.** While a step runs, PatchRondo reads what the provider CLI
+prints and records it in `activity.jsonl` in the task's private directory.
+The CLIs are started with options that change what they print
+(`--output-format stream-json --verbose`, `codex exec --json`), not what they
+may do: tools, permission mode, sandbox and login are the same. Recorded are
+the agent's public messages, the names and arguments summary of its tool
+calls, command lines and the end of their output, changed file paths, test
+commands and results, and errors. Not recorded, and not kept in the step's
+transcript either, is internal reasoning: Claude's thinking blocks and
+Codex's reasoning summaries. The content of files an agent reads is not
+recorded. Text is bounded, and values that look like credentials (assignments
+to names such as `TOKEN` or `PASSWORD`, bearer tokens, common key formats,
+private key blocks) are replaced by `[redacted]`. That filter is best effort:
+a secret in another shape is recorded as written, so the journal is private
+project data like the logs. The journal is served only through the
+authenticated API, for the task it belongs to, read-only and in bounded
+pages; it never travels in the snapshot. Nothing in it is acted upon: a
+review counts only after the engine has validated the CLI's final answer, and
+a reviewer's message that looks like a verdict is recorded as withheld.
+`PATCHRONDO_LIVE_ACTIVITY=0` starts the CLIs as before this feature.
 
 **Process information.** The interface shows whether a run or a waiting
 process exists by checking the recorded process ID and start time. That check

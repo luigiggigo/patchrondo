@@ -1,5 +1,78 @@
 # Changelog
 
+## Unreleased — live activity of the agents
+
+Made in a local working tree on October 11, 2026, on top of the 0.2.0 source
+on `main`. At that date it was not committed, pushed, tagged or released, and
+it had been checked with scripted CLIs only: no authorized real provider call
+has confirmed the streaming options or the event formats.
+
+### Added
+
+- **Live Activity** tab in the task workspace: which agent is working, its
+  latest event, the time since the step started and the iteration; the
+  agent's public messages, tool calls and their outcome, changed files, the
+  project's test commands and results, errors and the end of every attempt.
+  Rows are appended one at a time; *Follow* can be switched off; long messages
+  and outputs open in place; a filter narrows the list; the full logs are one
+  click away. The previous *Activity* tab, the steps recorded by the engine,
+  is now called *Timeline*; its address is unchanged.
+- `process.execute` accepts `on_stdout` and `on_stderr` observers that receive
+  output while the process runs. Calls without observers run as before.
+  `LineReader` reassembles lines and UTF-8 characters cut between chunks and
+  drops lines longer than 2 MB.
+- Claude Code is started with `--output-format stream-json --verbose` and
+  Codex with `codex exec --json`. Tools, permissions, sandbox, login,
+  `--json-schema`, `--output-schema` and `--output-last-message` are
+  unchanged. `streams.py` turns both streams into the same events.
+- `<task>/activity.jsonl`: a private, append-only journal with one event per
+  line. Each event carries its time, type, provider, role, iteration, attempt
+  and a sequence number that grows within the task. Retries and resumes add
+  attempts and never rewrite earlier ones; a line cut by a crash is skipped.
+- `GET /api/projects/{id}/tasks/{task}/activity` (pages by cursor) and
+  `…/activity/stream` (server-sent events), with the checks of every API
+  route. A cursor names a position in the journal, so a page that reconnects,
+  or an interface that was restarted, continues without losing or repeating
+  an event.
+- `PATCHRONDO_LIVE_ACTIVITY=0` starts the CLIs with the previous options.
+- `tools/provider_e2e.py --authorize-provider-calls` also checks that both
+  CLIs reported activity while they worked.
+
+### Unchanged on purpose
+
+- The outcome of a step comes from the CLI's final result only. A stream with
+  events and no result is an `empty_output` failure. A reviewer's message that
+  looks like a verdict is recorded as withheld, and a task is not approved
+  before the final answer is validated and the tests have passed.
+- Classification of quota, authentication and timeout failures, reset parsing,
+  the Recovery Manager, the task lock, checkpoints, handoff and report.
+- Internal reasoning (Claude thinking blocks, Codex reasoning items) is not
+  shown and not saved: not in the journal, not in the step's transcript.
+- If a CLI refuses the streaming options before it starts, the step is started
+  again with the previous options and the journal says so. No activity is
+  shown that a CLI did not report.
+- A journal that cannot be written, or an observer that fails, does not fail
+  the step.
+
+### Changed
+
+- With a stream, `<role>.stdout.log` of a step holds the stream's transcript
+  without reasoning, bounded to its first and last lines, instead of the
+  single result object. The failure message saved in `state.json` prefers the
+  error the CLI reported in its stream over raw output.
+- The test stage and every agent call record their start and end in the
+  journal, also with adapters that do not stream.
+
+### Tests and tools
+
+- Tests of the observers with real processes (output seen before the process
+  ends, both streams at once with megabytes of output, timeout, interrupt, a
+  descendant that keeps a pipe open), of the journal (appending, crash damage,
+  bounds, cursors), of both parsers with fragmented input, of the adapter and
+  of whole tasks with a scripted CLI started as a real process.
+- `tools/ui_e2e.py`: a ninth scenario, `live`.
+- `tools/recovery_checks.py protections`: eight more safeguards.
+
 ## 0.2.0 — interface first, several projects
 
 Prepared in a local working tree on October 10, 2026. At that date it was not

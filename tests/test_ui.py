@@ -16,7 +16,7 @@ import unittest
 import unittest.mock
 from unittest.mock import patch
 
-from patchrondo import __version__, live
+from patchrondo import __version__, activity, live
 from patchrondo.app import PACKAGE_ROOT, RunsAtExit, browse
 from patchrondo.cli import main
 from patchrondo.commands import join_command, split_command
@@ -121,6 +121,8 @@ class ProtectionTests(ServerCase):
                   ("GET", "/api/projects/P-00000000"), ("GET", "/api/projects/P-00000000/tasks/T-000000000000"),
                   ("GET", "/api/projects/P-00000000/tasks/T-000000000000/files"),
                   ("GET", "/api/projects/P-00000000/tasks/T-000000000000/log"),
+                  ("GET", "/api/projects/P-00000000/tasks/T-000000000000/activity"),
+                  ("GET", "/api/projects/P-00000000/tasks/T-000000000000/activity/stream"),
                   ("POST", "/api/projects"), ("POST", "/api/projects/import"), ("POST", "/api/projects/inspect"),
                   ("POST", "/api/fs/list"), ("POST", "/api/providers/refresh"), ("POST", "/api/projects/P-00000000/index"),
                   ("POST", "/api/projects/P-00000000/tasks"), ("POST", "/api/projects/P-00000000/tasks/T-000000000000/run"),
@@ -1012,6 +1014,177 @@ class LiveTests(ServerCase):
         self.stop()
         self.assertLess(time.monotonic() - started, 3)
         self.assertEqual(response.fp.read(), b"")
+
+
+class ActivityTests(ServerCase):
+    """The activity journal over HTTP: pages by cursor and a stream that continues where a client stopped."""
+
+    def setUp(self):
+        super().setUp()
+        self.project, _ = self.add_project()
+        self.task_id, self.path = self.add_task(self.project, "Watched")
+        self.base = f"/api/projects/{self.project['id']}/tasks/{self.task_id}/activity"
+
+    def journal(self, role="developer", provider="claude"):
+        journal = activity.Journal(self.path, iteration=1, role=role, provider=provider)
+        self.addCleanup(journal.close)
+        return journal
+
+    def stream(self, cursor=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", f"{self.base}/stream" + (f"?cursor={cursor}" if cursor else ""),
+                     headers={"X-PatchRondo-Token": self.server.token})
+        response = conn.getresponse()
+        self.addCleanup(conn.close)
+        return response
+
+    def message(self, response):
+        """The next message of a stream: (cursor, [event texts]), "reset", or None at its end. Heartbeats are skipped."""
+        while True:
+            lines = []
+            while True:
+                line = response.fp.readline().decode("utf-8")
+                if line in ("\n", ""):
+                    break
+                lines.append(line.rstrip("\n"))
+            if not lines:
+                return None
+            if lines[0].startswith("event: reset"):
+                return "reset"
+            if lines[0].startswith("data: "):
+                data = json.loads(lines[0].removeprefix("data: "))
+                return data["cursor"], [event.get("text") for event in data["events"]]
+
+    def test_pages_are_read_by_cursor_and_only_for_the_task_they_belong_to(self):
+        response, page = self.get(self.base)
+        self.assertEqual((response.status, page["journal"], page["events"], page["reset"]), (200, None, [], False))
+        journal = self.journal()
+        for index in range(5):
+            journal.emit("message", text=f"event {index}")
+        response, page = self.get(f"{self.base}?limit=2")
+        self.assertEqual(([event["text"] for event in page["events"]], page["more_before"]), (["event 3", "event 4"], True))
+        response, earlier = self.get(f"{self.base}?limit=10&before={page['start']}")
+        self.assertEqual([event["text"] for event in earlier["events"]], ["event 0", "event 1", "event 2"])
+        journal.emit("message", text="event 5")
+        response, later = self.get(f"{self.base}?cursor={page['next']}")
+        self.assertEqual(([event["text"] for event in later["events"]], later["reset"]), (["event 5"], False))
+        response, stale = self.get(f"{self.base}?cursor=J-000000000000:40")
+        self.assertEqual((response.status, stale["reset"], len(stale["events"])), (200, True, 6))
+        response, data = self.get(f"{self.base}?limit=many")
+        self.assertEqual((response.status, data["code"]), (400, "invalid"))
+        self.assertEqual(self.get(f"{self.base}?limit=100000")[0].status, 200)  # clamped, not an error
+        # Another task, another project, an unknown task: nothing of this journal is served.
+        other, _ = self.add_task(self.project, "Other")
+        self.assertEqual(self.get(f"/api/projects/{self.project['id']}/tasks/{other}/activity")[1]["events"], [])
+        second, _ = self.add_project("beta")
+        for path in (f"/api/projects/{second['id']}/tasks/{self.task_id}/activity",
+                     f"/api/projects/{second['id']}/tasks/{self.task_id}/activity/stream",
+                     f"/api/projects/{self.project['id']}/tasks/T-ffffffffffff/activity",
+                     f"/api/projects/{self.project['id']}/tasks/..%2F..%2Fx/activity/stream"):
+            with self.subTest(path=path):
+                response, data = self.get(path)
+                self.assertEqual((response.status, data["code"]), (404, "not_found"))
+
+    def test_the_stream_is_protected_like_every_other_route(self):
+        self.assertEqual(self.get(f"{self.base}/stream", token=False)[0].status, 401)
+        self.assertEqual(self.get(f"{self.base}/stream", host="evil.example")[0].status, 403)
+        self.assertEqual(self.get(f"{self.base}/stream?token={self.server.token}", token=False)[0].status, 401)  # never from the URL
+        response = self.stream()
+        self.assertEqual(response.status, 200)
+        self.assertTrue(response.getheader("Content-Type").startswith("text/event-stream"))
+        self.assertIn("default-src 'none'", response.getheader("Content-Security-Policy"))
+        self.assertEqual(response.getheader("Cache-Control"), "no-store")
+
+    def test_events_reach_an_open_stream_within_a_second_and_in_order(self):
+        response = self.stream()  # opened before anything was recorded: it waits for the journal
+        journal = self.journal()
+        delays = []
+        for index in range(4):
+            started = time.monotonic()
+            journal.emit("message", text=f"live {index} — è <b>testo</b>")
+            cursor, texts = self.message(response)
+            delays.append(time.monotonic() - started)
+            self.assertEqual(texts, [f"live {index} — è <b>testo</b>"])
+        self.assertLess(max(delays), 1.0, delays)
+        # A burst arrives complete and in order, however it is grouped.
+        for index in range(50):
+            journal.emit("tool", status="started", name="Read", text=f"burst {index}")
+        seen = []
+        while len(seen) < 50:
+            cursor, texts = self.message(response)
+            seen += texts
+        self.assertEqual(seen, [f"burst {index}" for index in range(50)])
+
+    def test_a_client_that_reconnects_misses_nothing_and_sees_nothing_twice(self):
+        journal = self.journal()
+        journal.emit("message", text="one")
+        first = self.stream()
+        cursor, texts = self.message(first)
+        self.assertEqual(texts, ["one"])
+        first.close()  # the tab goes away in the middle of a run
+        for name in ("two", "three"):
+            journal.emit("message", text=name)
+        second = self.stream(cursor)
+        cursor, texts = self.message(second)
+        self.assertEqual(texts, ["two", "three"])
+        journal.emit("message", text="four")
+        cursor, texts = self.message(second)
+        self.assertEqual(texts, ["four"])
+        # The interface is restarted: another server, the same journal and the same cursor.
+        self.stop()
+        journal.emit("message", text="written while no interface was running")
+        self.start()
+        third = self.stream(cursor)
+        cursor, texts = self.message(third)
+        self.assertEqual(texts, ["written while no interface was running"])
+        response, page = self.get(self.base)
+        self.assertEqual([event["text"] for event in page["events"]],
+                         ["one", "two", "three", "four", "written while no interface was running"])
+        self.assertEqual([event["seq"] for event in page["events"]], [1, 2, 3, 4, 5])
+        self.assertEqual(page["next"], cursor)
+
+    def test_a_cursor_that_does_not_fit_ends_the_stream_with_reset(self):
+        journal = self.journal()
+        journal.emit("message", text="one")
+        good = self.get(self.base)[1]["next"]
+        name, offset = good.split(":")
+        for cursor in ("J-000000000000:10", f"{name}:{int(offset) + 50}", f"{name}:{int(offset) - 3}", "nonsense", f"{name}:-5"):
+            with self.subTest(cursor=cursor):
+                response = self.stream(cursor)
+                self.assertEqual(self.message(response), "reset")
+                self.assertEqual(response.fp.readline(), b"")  # and the stream ends: the client loads the end again
+        # The journal is emptied underneath an open stream.
+        response = self.stream(good)
+        journal.close()
+        (self.path / activity.JOURNAL).write_bytes(b"")
+        self.assertEqual(self.message(response), "reset")
+
+    def test_activity_never_travels_in_the_snapshot_or_the_global_events(self):
+        hub = self.server.hub
+        hub.snapshot()
+        self.assertTrue(wait_for(lambda: self.app.providers.view()["providers"] is not None
+                                 and not self.app.providers.view()["checking"]))
+        hub.scan()
+        before = hub.snapshot()
+        journal = self.journal()
+        for index in range(30):
+            journal.emit("message", text=f"FRAGMENT-{index}")
+        hub.scan()
+        after = hub.snapshot()
+        self.assertEqual((after["seq"], after["tasks"]), (before["seq"], before["tasks"]))  # no event, no changed summary
+        self.assertNotIn("FRAGMENT", json.dumps(after))
+        detail = self.get(f"/api/projects/{self.project['id']}/tasks/{self.task_id}")[1]
+        self.assertNotIn("FRAGMENT", json.dumps(detail))
+        self.assertNotIn(activity.JOURNAL, json.dumps(detail["logs"]))
+
+    def test_closing_ends_open_activity_streams(self):
+        self.journal().emit("message", text="one")
+        response = self.stream()
+        self.assertEqual(self.message(response)[1], ["one"])
+        started = time.monotonic()
+        self.stop()
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertIsNone(self.message(response))
 
 
 class Source:

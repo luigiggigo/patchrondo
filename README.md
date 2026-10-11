@@ -122,7 +122,7 @@ the interface, not the runs it started.
 | **Home** | See the state of Claude Code and Codex, the selected project, tasks that are active, need attention, are ready or done, and recent activity. Start a task or add a project. |
 | **Projects** | Add a local Git repository (with a folder picker and a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
 | **Tasks** | All tasks of the selected project, or of every project, with filters and search. |
-| **Task** | Header with status, roles and iteration; the workflow *Develop → Test → Review → Repeat / Complete*; then Overview, Activity (a timeline of what happened), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
+| **Task** | Header with status, roles and iteration; the workflow *Develop → Test → Review → Repeat / Complete*; then Overview, Live Activity (what the agents are doing, while they do it), Timeline (the steps the engine recorded), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
 | **New task** | Project, title, description, acceptance criteria, developer and reviewer; under *Advanced*, limits for that task only. *Create and run* asks for confirmation before any agent is called. |
 | **Settings** | Global preferences and, per project: default roles, workflow limits, tests, the Recovery Manager, local retrieval and the raw configuration. Every setting has a one-line explanation. |
 
@@ -136,6 +136,8 @@ Things worth knowing:
 - **Live.** The page loads one snapshot and then receives numbered changes. If
   the connection drops it says so, keeps showing the last confirmed state with
   its time, reconnects by itself and loads a fresh snapshot.
+- **Live Activity.** While a step runs, the task page shows what the agent's
+  CLI reports as it reports it. See [Live Activity](#live-activity).
 - **Tests stay off until you say so.** In *Settings → Tests* you enter one
   command per line and tick *I trust this repository*; the tick is asked again
   whenever the commands change. On Windows, use double quotes around arguments
@@ -158,6 +160,57 @@ The server uses only the standard library, listens on `127.0.0.1` only, rejects
 foreign `Host` and `Origin` headers, accepts writes only as JSON, requires the
 session token on every API call and serves the page with a strict
 Content-Security-Policy and no external assets. See [SECURITY.md](SECURITY.md).
+
+### Live Activity
+
+PatchRondo asks both CLIs to print what they do while they work, and the
+*Live Activity* tab of a task shows it, normally within a second:
+
+- who is working (provider and role), the iteration, the time since the step
+  started and the latest event;
+- the messages the agent wrote, its tool calls and how they ended, the files
+  it changed, each test command PatchRondo ran with its exit status, errors
+  reported by the CLI, and the end of every attempt;
+- *Follow* keeps the newest row in view and switches itself off when you
+  scroll up; long messages and outputs open in place; a filter narrows the
+  list; *Full logs* opens the saved transcripts.
+
+What to know about it:
+
+- **It observes and decides nothing.** The handoff, the review verdict, the
+  tests and every pause are produced as before, from the CLI's final result.
+  What a reviewer writes while it works is progress: text that looks like a
+  verdict is shown as withheld, and a task is never approved before
+  PatchRondo has validated the final answer and the tests have passed.
+- **Internal reasoning is left out.** Claude's thinking blocks and Codex's
+  reasoning summaries are not shown, not written to the activity journal and
+  not written to the transcript saved for the step.
+- **It is recorded.** Events are appended to `activity.jsonl` in the task's
+  private directory and never rewritten: a retry or a resume adds a new
+  attempt after the earlier ones. Closing the page or the interface loses
+  nothing; reopening shows what was recorded and continues from there without
+  repeating an event. Text is bounded in length, and values that look like
+  credentials are masked on a best-effort basis. Treat the journal like the
+  logs: private project data.
+- **How the CLIs are started.** Claude Code with
+  `--output-format stream-json --verbose` instead of `--output-format json`,
+  Codex with `codex exec --json`. Tools, permissions, sandbox and login are
+  unchanged, and so are `--json-schema`, `--output-schema` and
+  `--output-last-message`. The options were read from the help of Claude Code
+  2.1.291 and 2.1.295 and of Codex CLI 0.160.1, and the Codex event format
+  from its source at `rust-v0.160.1`. No authorized real run has confirmed
+  them yet; the [real provider check](#real-provider-check-uses-plan-quota)
+  now tests exactly this.
+- **When a CLI cannot stream.** If a CLI refuses these options before it
+  starts, PatchRondo starts the step again with the previous options, and the
+  view says that the step has no live activity. Nothing is shown that was not
+  reported. Set `PATCHRONDO_LIVE_ACTIVITY=0` in the environment of
+  `patchrondo` to use the previous options always.
+- **Limits.** A CLI may buffer its own output, and Claude Code prints a
+  message when it is complete, not word by word. One attempt records up to
+  5000 events, with up to 4000 characters of a message; the end of the
+  attempt says how many events were not recorded. The view was checked in
+  Chrome on Windows with scripted CLIs only.
 
 ### Several projects, and homes created by 0.1
 
@@ -526,6 +579,7 @@ now without automatic recovery stays possible in both cases.
           feedback.md
           report.md
           ui-run.log            # output of runs started from the interface
+          activity.jsonl        # live activity: one event per line, appended by every run
           attached/<pid>.json   # present while a run or resume process is alive
           runs/
             iteration-001/
@@ -603,14 +657,14 @@ are cleaned up automatically. *Settings → RAG → Update index now* does what
 ## Security and practical limitations
 
 1. **No shell for orchestrated commands.** Python uses `subprocess.Popen([...], shell=False)`; test commands are argument arrays, not shell-interpreted strings.
-2. **Claude developer:** `--restricted --permission-mode dontAsk --tools Read,Glob,Grep,Edit,Write --allowedTools ... --disallowedTools mcp__*`. No Bash or MCP tools are authorized. **Claude reviewer:** only `Read,Glob,Grep`, with the same restricted mode.
-3. **Codex developer:** `codex --ask-for-approval never exec --sandbox workspace-write`. **Codex reviewer:** `read-only` sandbox. The runner does not use `--yolo`, approval bypasses or `danger-full-access`. Codex can execute commands allowed by its sandbox: prompt instructions do not disable tools, and personal configuration can affect behavior.
+2. **Claude developer:** `--restricted --permission-mode dontAsk --tools Read,Glob,Grep,Edit,Write --allowedTools ... --disallowedTools mcp__*`. No Bash or MCP tools are authorized. **Claude reviewer:** only `Read,Glob,Grep`, with the same restricted mode. Output is requested with `--output-format stream-json --verbose` for [Live Activity](#live-activity): that changes what is printed, not what is allowed.
+3. **Codex developer:** `codex --ask-for-approval never exec --json --sandbox workspace-write` (`--json` only makes Codex print its activity as events). **Codex reviewer:** `read-only` sandbox. The runner does not use `--yolo`, approval bypasses or `danger-full-access`. Codex can execute commands allowed by its sandbox: prompt instructions do not disable tools, and personal configuration can affect behavior.
 4. **Separate worktree:** the main repository is not edited; no automatic commit, push or merge. Worktree creation disables Git hooks for the checkout command, but **does not create an OS sandbox** or prevent every possible effect of external Git configuration.
 5. **Credentials:** prompts are sent through stdin, not shell arguments. State has private permissions on POSIX; the child environment removes several API key/secret/token variables. Local CLI credentials remain managed **by the CLIs**, not the orchestrator. Keep secrets out of the repository: file access and test scripts could expose them.
 6. **Test execution:** unlike sandboxed agent tools, test commands run **on the host with your permissions**. A malicious repository can execute arbitrary code through its test suite. For untrusted code, run **the entire orchestrator inside an isolated VM/container**, without production credentials and with appropriate network/firewall settings.
 7. **Billing and limits:** subscriptions have quotas and may support additional usage billing. The loop stops on rate limits, timeouts, errors, `BLOCKED` or the maximum iteration count. Nothing polls for quota availability. With the opt-in [automatic quota recovery](#automatic-quota-recovery-opt-in), a waiting process retries a usage-limit pause a bounded number of times; every retry uses plan quota.
 8. **Fallible LLM review:** the JSON schema checks structure, not review accuracy. Require human review before integrating changes into main or production.
-9. **Sensitive logs:** logs and handoffs may contain confidential project data. They are saved locally with private permissions; protect backups and disk storage, and do not share `~/.patchrondo`.
+9. **Sensitive logs:** logs and handoffs may contain confidential project data. They are saved locally with private permissions; protect backups and disk storage, and do not share `~/.patchrondo`. The activity journal holds agent messages, command lines, file paths and excerpts of command output; masking of values that look like credentials is best effort, not a guarantee.
 10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group; native Windows terminates only the direct child, so WSL2 remains recommended. POSIX private permissions are not translated into Windows ACLs by the program.
 11. **The interface is local and single-user.** It is bound to the loopback interface and protected by a session token, but anyone who can read that token (your terminal output, your browser tab) can create tasks, change settings and start runs with your accounts. A repository does not become trusted by being added: its tests stay disabled until you enable them for it.
 
@@ -674,9 +728,11 @@ The check starts the real server and drives a headless Chrome or Edge on your
 computer through the DevTools protocol, with the Python standard library only.
 Runs it starts are real `patchrondo run` processes whose provider commands
 reach a synthetic executable only; the runner refuses to start while a real
-`claude` or `codex` is reachable. Eight scenarios compare the page with the
+`claude` or `codex` is reachable. Nine scenarios compare the page with the
 files on disk: first start and setup wizard; a run followed live with
-duplicate starts refused; the interface closed and reopened during a run;
+duplicate starts refused; the activity of a scripted agent shown while it
+runs, across a disconnection, a reload and a CLI without streaming; the
+interface closed and reopened during a run;
 reconnection after the server restarts; the recovery states; two projects with
 separate settings and tasks; a 0.1 home opened in place; and layout from 1440
 to 480 pixels, keyboard use, accessible names, contrast, reduced motion, a
@@ -688,7 +744,9 @@ On October 10, 2026, on native Windows 11 with Chrome 154 and Python 3.13, all
 reached the page in about 0.36 to 0.46 seconds; a filter click was painted in
 about 15 ms; a list of 68 tasks appeared about 50 ms after navigation; the end
 of a 6 MB log was shown in about 0.15 seconds. These are measurements of one
-machine, not guarantees. The check needs a local Chromium-based browser and
+machine, not guarantees. On October 11, 2026, with the `live` scenario added,
+the same setup passed all 234 checks, and a message printed by the scripted
+CLI reached the page in about 0.2 seconds. The check needs a local Chromium-based browser and
 reports that it was skipped when there is none; it has not been run on Linux,
 macOS, Firefox or Safari, and it is not part of CI.
 
@@ -784,7 +842,8 @@ resumption after an interruption have not been checked with real accounts. Detai
 - Process supervision on native Windows: tracking of the whole process tree of an agent, which stale-lock recovery and Stop need before they can be offered there. (0.2 verifies single processes on Windows for display only.)
 - Approval requests for risky tools and notifications.
 - Stall detection based on Git/test changes.
-- Live output of an agent while it works (the CLIs' output is currently saved when a step ends), and a diff view per iteration.
+- Confirm live activity with authorized real runs of both CLIs, and record the result per CLI version; consider word-by-word output for Claude Code, which today would also carry thinking deltas.
+- A diff view per iteration.
 - Dedicated illustrations of Rondo for each state (see [docs/DESIGN.md](docs/DESIGN.md)).
 - Browser checks of the interface on Linux and macOS, and in Firefox and Safari.
 

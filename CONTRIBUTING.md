@@ -75,11 +75,17 @@ have them re-read on every request while you work.
   which actions are possible.
 - New endpoints go through `app.py` and get the same checks as the others in
   `ui.py`; add them to the token test in `tests/test_ui.py`.
+- Live activity only observes. What `streams.py` emits must come from a line
+  the CLI printed: add a line or item type from the CLI's documentation or
+  source and name the version; never record internal reasoning; never take a
+  step's answer from the stream. `tools/recovery_checks.py protections` removes
+  these safeguards one at a time and expects the tests to notice.
 
 Check the result in a real browser with
 `python tools/ui_e2e.py --screenshots .test-tmp/shots`. It needs a local Chrome
 or Edge (or `PATCHRONDO_BROWSER`), uses scripted providers only and covers the
-setup wizard, a live run, an interface restart during a run, reconnection, the
+setup wizard, a live run, the live activity of an agent while it runs, an
+interface restart during a run, reconnection, the
 recovery states, two projects, a 0.1 home, responsive layout, keyboard use and
 large logs. Without a browser it reports that it was skipped. It is a local
 check and not part of CI.

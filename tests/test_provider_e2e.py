@@ -21,11 +21,20 @@ GREETING = 'def greet(name):\n    return f"Hello, {name}!"\n'
 APPROVAL = json.dumps({"verdict": "APPROVED", "summary": "Meets the criteria", "issues": []})
 
 
-def simulated_cli(calls, *, reviewer_edits=False, developer_error=""):
+def simulated_cli(calls, *, reviewer_edits=False, developer_error="", silent=False):
     """Stand in for both CLIs at the adapter's subprocess boundary."""
     def run(argv, cwd, **kwargs):
         calls.append(argv)
         claude = argv[0] == "claude"
+        live = "on_stdout" in kwargs and not silent
+
+        def say(line):
+            kwargs["on_stdout"]((json.dumps(line) + "\n").encode("utf-8"))
+
+        if live:
+            # What a CLI prints while it works; the answer still comes from its final result below.
+            say({"type": "assistant", "message": {"content": [{"type": "text", "text": "Working"}]}} if claude else
+                {"type": "item.completed", "item": {"id": "m", "type": "agent_message", "text": "Working"}})
         reviewer = "--json-schema" in argv if claude else argv[argv.index("--sandbox") + 1] == "read-only"
         if reviewer:
             if reviewer_edits:
@@ -36,6 +45,9 @@ def simulated_cli(calls, *, reviewer_edits=False, developer_error=""):
         else:
             (Path(cwd) / "greeting.py").write_text(GREETING, encoding="utf-8")
             text = "## Changes\n\nAdded greeting.py"
+        if claude and live:
+            say({"type": "result", "is_error": False, "result": text})  # the last line of a stream is its result
+            return Result(0, "", "")
         if claude:
             return Result(0, json.dumps({"result": text}), "")
         Path(argv[argv.index("--output-last-message") + 1]).write_text(text, encoding="utf-8")
@@ -102,6 +114,14 @@ class ProviderCheckTests(unittest.TestCase):
         state, = [read_json(file) for file in (self.root / "state" / "tasks").glob("T-*/state.json")]
         self.assertEqual(state["status"], "done")
         self.assertEqual([item["status"] for item in state["tests"]], ["passed"])
+
+    def test_a_cli_that_reports_no_activity_fails_the_check(self):
+        code, out, calls = self.check("--authorize-provider-calls", "--pairing", "claude-codex", silent=True)
+        self.assertEqual(code, 1)
+        self.assertIn("[FAILED] both CLIs reported their activity while they worked", out)
+        self.assertIn("0 developer and 0 reviewer events", out)
+        self.assertIn("The CLI printed no activity", out)
+        self.assertIn("[ok] reviewer call returned a valid review", out)  # the loop itself still worked
 
     def test_reviewer_that_edits_the_worktree_fails_the_check(self):
         code, out, calls = self.check("--authorize-provider-calls", "--pairing", "claude-codex", reviewer_edits=True)

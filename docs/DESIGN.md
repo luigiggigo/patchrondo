@@ -98,6 +98,16 @@ Task-specific pieces are in `js/components.js`: the workflow bar
 (Develop → Test → Review → Complete with the repeat loop), the four-segment
 mini workflow in list rows, the task row and the timeline event.
 
+The Live Activity view (`js/views/live.js`) has three parts. A header says who
+is working, on which iteration, what the latest event was and how long the
+step has been running. A toolbar holds a filter, the state of the connection,
+*Follow* and a link to the full logs. The list has one row per event: time,
+a mark in the tone of the outcome, one line of text, and an expandable block
+for a long message or an output. Rows are appended and never rebuilt, so
+scroll position, focus and opened blocks survive; a tool call changes its own
+row when it ends. Off-screen rows are skipped by layout
+(`content-visibility`), and the list keeps at most 4000 rows.
+
 Every view implements the same states: loading (skeleton), empty (Rondo and an
 action), ready, error (callout with a retry where one makes sense), disabled
 (with the reason in a tooltip) and, for the whole page, connection lost (a
@@ -132,6 +142,7 @@ motion and a status mark on the avatar, not by a different drawing.
 | Needs attention | Dashboard, task note | head | none | pause, amber | What is wrong and what to do |
 | Error, blocked, stale lock | Task note | head | slight tilt, static | alert, red | The cause in plain words |
 | Review completed, task done | Task note, dashboard | head / full | two small hops | check, green | The result |
+| Live Activity header | Task, Live Activity tab | head | the motion of the task's verified state | the same mark | Nothing of his own: the lines beside him name the agent and its latest event |
 | About | About page | full | none | none | Who he is |
 
 Also: the brand mark in the sidebar, the page icon and the boot screen.
@@ -144,6 +155,9 @@ Rules:
   layout shift, never block input and stop under reduced motion.
 - One sentence at a time, in the first person, concrete and without jokes
   about failures.
+- His mood follows the verified state of the workflow (`task.runtime`), never
+  the stream of events: a burst of activity does not make him work harder, and
+  a silent step does not make him stop.
 
 ### Illustration variants that would help
 
@@ -168,7 +182,9 @@ Until they exist the fallback in the last column is what ships.
 - Every control has an accessible name; icons are decorative
   (`aria-hidden`) and never the only label.
 - Visible focus on every focusable element; dialogs trap focus and return it.
-- Live regions: Rondo's note and toasts are polite; errors are alerts.
+- Live regions: Rondo's note and toasts are polite; errors are alerts. The
+  activity list is a `log` that is not announced row by row; the one line that
+  says what the agent is doing is a polite status.
 - Keyboard: Tab order follows the reading order; arrow keys in tabs, menus,
   segmented controls, the palette and the task list; shortcuts are listed on
   the About page.
@@ -176,8 +192,8 @@ Until they exist the fallback in the last column is what ships.
 
 ## Untrusted content
 
-Task titles, descriptions, handoffs, reviews, logs, diffs and error messages
-come from repositories and agents. The page inserts them only as text nodes or
+Task titles, descriptions, handoffs, reviews, logs, diffs, error messages and
+every activity event come from repositories and agents. The page inserts them only as text nodes or
 attribute values (`js/dom.js`); no API that parses a string as HTML is used,
 Markdown is rendered by a small renderer that creates elements itself, and
 links inside such content stay plain text. `tests/test_frontend.py` enforces

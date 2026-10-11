@@ -1219,6 +1219,139 @@ Not verified, and one defect left as it was:
   server are answered in milliseconds, so both defects were produced only by
   holding an answer back in the page.
 
+### Addition: live activity of the agents (October 11, 2026)
+
+Until this change a step was visible when it ended: the adapter waited for the
+CLI and saved its output. The task page now shows what the agent's CLI reports
+while it works. `docs/ARCHITECTURE.md` section 11 describes the design; this
+entry records the decisions that were not obvious, what was checked and what
+was not.
+
+**Decisions.**
+
+- *Where the outcome comes from.* Unchanged: Claude's final `result` object,
+  or the file Codex writes with `--output-last-message`, then `parse_review`
+  and the test gate. The stream is recorded and never read back. A stream with
+  events and no result is an `empty_output` failure. A reviewer's message that
+  contains a verdict word is recorded as withheld, so the page cannot show
+  "APPROVED" before the engine has validated anything.
+- *`--include-partial-messages` is not used.* It gives text word by word, and
+  with it one line per token, including thinking deltas. Complete messages and
+  tool calls arrive as each is finished, which is what the view shows.
+- *No probe of the CLI.* Asking a CLI for its help before each step would have
+  been a second place that starts a provider CLI: the unit tests would have
+  started the real `claude` installed on this computer, and the synthetic
+  runners would have counted the probe as a provider call. Instead the step is
+  started with the streaming options, and a CLI that exits at its own
+  arguments naming one of them, before printing an event, is started once more
+  with the previous arguments. Both CLIs validate arguments before opening a
+  session, so the refused start reaches no model. `PATCHRONDO_LIVE_ACTIVITY=0`
+  selects the previous arguments from the start.
+- *One journal file per task, attempts as a field.* The cursor is then one byte
+  offset, valid across reconnections and server restarts. Appending under the
+  task lock keeps a single writer.
+- *What is not recorded.* Internal reasoning, in the journal and in the step's
+  transcript. The text a successful Claude tool returned (file content more
+  often than not): its size only. Activity is not put into the snapshot.
+
+**Evidence for the formats.** The options were read on October 11, 2026 from
+`claude --help` of Claude Code 2.1.295 (native Windows) and 2.1.291 (WSL2) and
+from `codex exec --help` of codex-cli 0.160.1 (WSL2); these commands make no
+model call. The Claude line types are those of
+https://code.claude.com/docs/en/headless, read the same day. The Codex event
+and item types are those of `codex-rs/exec/src/exec_events.rs` at
+`rust-v0.160.1`. No real provider call was made: the user had not authorized
+one.
+
+**Defects found by the checks while this was written, and fixed.**
+
+| Found by | Defect | Fix |
+|---|---|---|
+| The existing suite (111 errors on the first run) | `Journal.emit` named its first parameter `kind`, and the end of a failed attempt passed a field of the same name: every failing step raised `TypeError` from the code that must never raise, and left the journal file open. | The event type is positional-only, and the attempt records its end and closes the journal in a `finally`. |
+| A new journal test | An event longer than a journal line was reduced to its identity at once. | Collections are dropped first; the text only if the line is still too long. |
+| The publication scanner | A made-up key block in the redaction test was reported as a possible private key. | The test puts the marker together from two parts; the scanner is back to its four earlier findings. |
+| Screenshots of the new scenario | The mascot in the header of the view was drawn at the natural size of the image, and expandable blocks showed two disclosure marks. | Styles corrected. |
+| Runs of the new scenario | Two of its checks compared a count taken before an event with one taken after it. | The counts are taken once the page is known to be disconnected; the list is read with `textContent`, because rows scrolled out of view are skipped by layout. |
+
+**Checks, all rerun on the final code on October 11, 2026**, with scripted or
+synthetic providers and no provider call:
+
+- **Suite: 344 tests** (269 before; new: `test_activity`, `test_live_activity`,
+  eleven process tests, seven HTTP tests, one test of the provider check).
+  Native Windows 11 (10.0.26200) with Python 3.13.3 and with Python 3.11.3:
+  338 passed, 6 skipped, exit status 0 on both. WSL2 (kernel 6.6.87.2) with
+  Python 3.12.3: 343 passed, 1 skipped, exit status 0.
+- **Reliability driver** (`--repeat 3`): WSL2 42 passed, 0 failed, 0 skipped;
+  native Windows 30 passed, 0 failed, 12 skipped; exit status 0 on both. Its
+  synthetic CLIs ignore the streaming options and print one result, so these
+  runs also exercise a CLI that streams nothing.
+- **Protections**, native Windows, Python 3.13.3: 69 of 69 removed safeguards
+  detected, exit status 0. Eight are new: a reviewer's progress recorded as a
+  verdict; Codex reasoning and Claude thinking kept in the transcript; the
+  stream taken as the answer when the final result is missing; a step started
+  again after the CLI had begun to work; a journal that cannot be written
+  failing the step; a failing observer disturbing its process; a cursor inside
+  a line accepted.
+- **Real clock**, WSL2: 10 of 10 checks passed, the retry 0.04 s after the
+  planned time, exit status 0.
+- **Browser check** (`python tools/ui_e2e.py`), native Windows, Chrome
+  154.0.8037.99 headless, Python 3.13.3, one run of the nine scenarios:
+  234 passed, 0 failed, exit status 0. The new `live` scenario has 56
+  checks. In that run a message printed by the scripted CLI reached the page
+  in at most 0.21 s (0.205 s measured), on one machine and a local server.
+- **Packages.** `python -m build` into a directory outside the repository
+  produced `patchrondo-0.2.0.tar.gz` and `patchrondo-0.2.0-py3-none-any.whl`;
+  `twine check` passed both.
+- **Publication scanner:** exit status **1**, 98 files checked,
+  the same four findings as above (`debug.log` and the three binary assets). Not a clean scan.
+
+**The stated acceptance criteria.**
+
+| Criterion | Evidence | Result |
+|---|---|---|
+| Activity is visible while the process is still running | `test_activity_is_visible_while_the_agent_process_is_still_running` holds a scripted CLI alive and reads its messages from the journal while its PID file exists and the state says `running`; `test_output_is_seen_before_the_process_ends` does the same one level down; the browser scenario reads the first row while the developer process runs | Met with scripted CLIs |
+| Events appear within about a second | Process: under 1 s from the child's own timestamp. HTTP stream: under 1 s per event. Page: at most 0.21 s in the run above | Met on this machine |
+| The task completes exactly as before | `test_the_task_ends_exactly_as_without_live_activity` compares state, history, tests, handoff, report and saved files with and without live activity; the recovery plan is the same in `test_quota_recovery_plans_the_same_retry_with_live_activity` | Met with scripted CLIs |
+| After a restart earlier events are there and new ones arrive once | `test_a_client_that_reconnects_misses_nothing_and_sees_nothing_twice` (two connections, then another server on the same journal); the browser scenario stops the server during a run, restarts it, and later reloads the page | Met |
+| A CLI without streaming is reported and a safe fallback is used | `test_a_cli_that_refuses_the_streaming_options_runs_as_before_and_says_so`, `test_a_cli_without_streaming_runs_and_the_journal_says_why`, the last part of the browser scenario | Met for a CLI that refuses the options |
+| A reviewer is not APPROVED before final validation | `test_a_reviewer_is_not_approved_before_its_answer_is_validated`, `test_a_reviewer_without_a_final_answer_is_not_approved`, the reviewer part of the browser scenario | Met |
+
+**Not verified.**
+
+- **The real CLIs.** Everything above ran against scripted processes that
+  print what the documentation and the source say the CLIs print. Not
+  confirmed by a real run: that Claude Code's `result` line carries
+  `structured_output` when `--json-schema` is combined with `stream-json` (the
+  documentation shows it for `--output-format json`); that Codex in `--json`
+  mode reports a usage limit as `error` and `turn.failed` events with the
+  wording and exit status the classification expects; how much either CLI
+  buffers; how `claude.exe` on native Windows behaves writing to a pipe
+  instead of a file. `tools/provider_e2e.py --authorize-provider-calls` now
+  fails when a CLI reports no activity, and is the way to check this; until
+  then `PATCHRONDO_LIVE_ACTIVITY=0` restores the previous command lines.
+- **Releasing the connection of a hidden tab** (after thirty seconds) and
+  **the fallback to asking for pages** when a stream cannot be kept open: both
+  are in `js/live.js` and neither was exercised in a browser.
+- **Other browsers and systems.** Chrome on native Windows only. WSL2 has no
+  browser. Not Edge, Firefox, Safari, Linux or macOS.
+- **CI.** The change is local and uncommitted; no CI run covers it, and CI
+  does not run the browser check.
+
+**Limits of this addition.**
+
+- Claude Code's text appears per complete message, not per word.
+- `redact` recognizes common shapes of credentials and nothing else. The
+  journal holds command lines, file paths and the end of command output:
+  private project data.
+- One attempt records at most 5000 events; the journal of a task is not
+  rotated or trimmed across attempts.
+- With a stream, `<role>.stdout.log` is the transcript without reasoning,
+  limited to its first and last lines; the complete raw output of the CLI is
+  not kept anywhere.
+- On native Windows a timeout still ends only the direct child. If a
+  descendant keeps the output pipe open, reading stops two seconds after the
+  exit and the reader thread stays blocked until that descendant ends.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:
@@ -1231,6 +1364,7 @@ The remaining limitations are explicit:
 6. There was no original Git history to inspect. The review covers the supplied source, not other copies or external repositories.
 7. The 0.2 interface was checked in one browser on one platform with scripted providers; see the section above for what was not verified. It is a single-user local tool: whoever holds its session token can start runs with the user's accounts.
 8. Automatic quota recovery is opt-in and needs its foreground process to stay alive; there is no service that resumes a saved plan. Usage limits are recognized from CLI text and may be misclassified, with the retry limit as the bound. Reset times are used only in explicit forms, validated with simulated output. Locks are not recovered automatically, and native Windows cannot check recorded PIDs.
+9. Live activity was checked with scripted CLIs only. The streaming options were read from the help of the installed CLIs and the event formats from documentation and source; no authorized real run has confirmed them, including structured output of a Claude reviewer in a stream and the form of Codex's usage-limit errors in `--json` mode. The journal masks only common shapes of credentials and is not trimmed across attempts.
 
 Source publication does not establish production readiness or authenticated-CLI
 compatibility. [PUBLISHING.md](PUBLISHING.md) describes validation and publication

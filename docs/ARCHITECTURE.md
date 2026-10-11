@@ -6,9 +6,11 @@
 |---|---|
 | `cli.py` | CLI parsing, user input validation, project resolution, `init/new/run/resume/status/report/list/projects/index/search/ui/doctor` commands; no command opens the interface |
 | `core.py` | Deterministic state machine and completion criteria; configuration and task-override validation |
-| `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets |
+| `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse |
+| `streams.py` | Parsers of the two CLIs' activity streams into provider-independent events; drop internal reasoning; keep a bounded transcript |
+| `activity.py` | The activity journal of a task: bounded, redacted, append-only events, and paging through them by cursor |
 | `recovery.py` | Opt-in quota recovery: retry policy, the persisted plan and the foreground supervisor that waits without the task lock |
-| `process.py` | Process stdin/stdout, timeouts, group cleanup and filtered environment |
+| `process.py` | Process stdin/stdout, timeouts, group cleanup and filtered environment; optional observers that see output while the process runs |
 | `gitops.py` | Separate worktrees and branches, Git status |
 | `storage.py` | Atomic JSON state, private directories, locks and process PID checks |
 | `report.py` | Auditable reports with files, tests, reviews and events |
@@ -20,7 +22,7 @@
 | `commands.py` | Test command lines to and from argument arrays, with Windows or POSIX quoting |
 | `app.py` | Application layer: every operation of the interface (projects, settings, tasks, bounded file views, run start and stop) |
 | `live.py` | Snapshot and numbered change events |
-| `ui.py` | HTTP only: loopback server, request checks, routing to `app.py`, static assets, event stream |
+| `ui.py` | HTTP only: loopback server, request checks, routing to `app.py`, static assets, the event stream and the activity stream of a task |
 | `static/` | The interface: `index.html`, style sheets, ES modules and the two mascot images |
 
 Models do not call each other directly. The orchestrator invokes each model and
@@ -44,6 +46,7 @@ interface cannot bypass the lock, the checkpoints or the consent rules.
 - The orchestrator does not automatically merge, push, commit or install dependencies.
 - The task branch is separate from main. The external test runner executes project commands on the host and requires explicit consent.
 - What the interface says about a process comes from a check of that process, never from `status` alone, and a failed check is reported as unknown (section 10).
+- Live activity is an observation. The engine never reads the journal, what an agent says while it works is never its answer, and failing to observe or to record never fails a step (section 11).
 - A project is trusted for tests only by explicit consent given for that project; registering or importing one never enables tests.
 
 ## 3. Review contract
@@ -146,6 +149,8 @@ Errors have one shape, `{"error", "code"}`, with 400, 401, 403, 404, 409, 413,
 | `POST /api/projects`, `/api/projects/import`, `/api/projects/inspect` | Register a repository, register a 0.1 home in place, check a path without registering it |
 | `GET/PATCH/DELETE /api/projects/{id}`, `PATCH …/config`, `POST …/index` | Detail with the full configuration, rename, forget; edit configuration sections; update the retrieval index |
 | `POST /api/projects/{id}/tasks`, `GET …/tasks/{task}`, `…/files`, `…/log` | Create a task; state and documents; changed files; a slice of one log |
+| `GET …/tasks/{task}/activity?cursor=&before=&limit=` | A page of the task's activity journal: its end, or what follows or precedes a cursor |
+| `GET …/tasks/{task}/activity/stream?cursor=` | Server-sent events with what is appended to that journal |
 | `POST …/tasks/{task}/run`, `…/stop` | Start `patchrondo run`; interrupt it |
 | `POST /api/fs/list`, `GET /api/providers`, `POST /api/providers/refresh` | Folder names for the picker; cached CLI status |
 
@@ -224,7 +229,10 @@ headless Chrome or Edge through the DevTools protocol (`tools/browser.py`,
 standard library only). Runs it starts are real `patchrondo run` processes
 whose provider commands are routed to a synthetic executable; the runner
 refuses to start while a real `claude` or `codex` is reachable. It compares
-what the page shows with the files on disk.
+what the page shows with the files on disk. Its synthetic executable prints an
+activity stream line by line when it is started with the streaming options,
+with reasoning lines that must never be shown, and refuses those options when
+a scenario asks for a CLI without streaming.
 
 `tools/recovery_checks.py` holds two further local checks. `protections` copies
 `src/patchrondo`, `tests` and `tools` to a temporary directory, removes one
@@ -506,3 +514,115 @@ slices of at most 256 kB, by an identifier taken from the task's own file
 listing. The log viewer numbers each opening of a file and sends one request
 at a time for it; an answer is used only if no file has been opened since its
 request was sent, so a late answer cannot reach the view of another file.
+
+## 11. Live activity
+
+A step used to be visible when it ended. Now the same step is observed while
+it runs. Nothing below changes how a step is started, bounded or judged.
+
+**Reading output while the process runs.** `process.execute` takes two
+optional observers, `on_stdout` and `on_stderr`. Without them it runs exactly
+as before, with both streams redirected to temporary files. With them the
+streams are pipes: one thread per stream copies each chunk into the same
+temporary file and hands it to the observer, and a third thread writes the
+prompt to standard input, so neither a full pipe nor a large prompt can block
+the other side. The returned `Result` is built from the files as before, with
+the same bounds. Timeout, group termination, the PID file and re-raising of an
+interrupt are the same code paths. An observer that raises is not called
+again. If a descendant keeps a pipe open after the process has exited, reading
+stops two seconds after the exit. `LineReader` turns chunks of any shape into
+lines: bytes wait for their newline, so a line or a UTF-8 sequence cut between
+two chunks is decoded whole, and a line longer than 2 MB is dropped and
+counted.
+
+**Asking the CLIs to stream.** `OfficialCLI` starts Claude Code with
+`--output-format stream-json --verbose` and Codex with `codex exec --json`;
+every other argument is unchanged. `--include-partial-messages` is not used:
+it adds a line per token, and those lines also carry thinking deltas. The
+options were read from the CLIs' own help (Claude Code 2.1.291 and 2.1.295,
+Codex CLI 0.160.1), the Claude line types from its documentation and the Codex
+event types from `codex-rs/exec/src/exec_events.rs` at `rust-v0.160.1`; none
+of it has been confirmed with an authorized real run. A CLI that exits with an
+error naming one of these options, before it printed a single event, is
+started once more with the previous arguments. Both CLIs check their arguments
+before they open a session, so the refused start reached no model.
+`PATCHRONDO_LIVE_ACTIVITY=0` selects the previous arguments from the start. In
+both cases the journal says why the step has no activity.
+
+**Normalizing.** `streams.py` has one parser per CLI. Each emits events of a
+few types and nothing provider-specific:
+
+| Type | Meaning | From Claude Code | From Codex |
+|---|---|---|---|
+| `message` | public text of the agent | `text` blocks of `assistant` | `agent_message` items |
+| `tool` | a tool call: `started`, then `completed`, `failed` or `declined` | `tool_use` blocks and their `tool_result` | `command_execution`, `mcp_tool_call`, `collab_tool_call`, `web_search` items |
+| `file` | a changed file | a successful `Write`, `Edit`, `MultiEdit` or `NotebookEdit` | `file_change` items |
+| `test` | a test command of the project and its result | written by the engine | written by the engine |
+| `error` | an error the CLI or the engine reported | an `is_error` result | `error`, `turn.failed`, `error` items |
+| `status` | session opened, API retry, plan, end of a turn, the CLI's result line, notices | `system` lines, `result` | `thread.started`, `turn.completed`, `todo_list` |
+| `completion` | how the attempt ended: `completed`, `failed`, `timeout`, `interrupted` | written by the engine | written by the engine |
+
+Claude `thinking` and `redacted_thinking` blocks, Codex `reasoning` items and
+partial deltas are dropped. Lines of an unknown type are named in the
+transcript and not shown. The result of a successful Claude tool is recorded
+by its size only, because it is file content more often than not; the output
+of a Codex command by its last 1500 characters. Paths inside the worktree are
+shown relative to it.
+
+**What decides.** The parsers decide nothing. The answer of a step is still
+Claude's `result` object (`structured_output` for a review) or the file Codex
+writes with `--output-last-message`, and `core.parse_review` validates a
+review as before. A stream that contained events but no result is an
+`empty_output` failure, never an answer assembled from messages. A reviewer's
+message that contains a verdict word or a `"verdict"` key is recorded as
+withheld, and its `StructuredOutput` tool call without its content. Failure
+classification keeps its order: what the CLI reported as its error, together
+with standard error, is the text that decides; the transcript is the secondary
+text, as standard output was. The step's `stdout` log is the transcript when a
+stream was read: bounded like the captured output, and without reasoning.
+
+**The journal.** `activity.Journal` appends to `<task>/activity.jsonl`, created
+with mode 0600. The first line identifies the journal (`J-` and twelve
+hexadecimal digits). Every other line is one event with `v`, `seq`, `at` (UTC,
+milliseconds), `task`, `iteration`, `role`, `provider`, `attempt` and `type`,
+then the fields of its type. `seq` grows by one within the task: a new attempt
+reads the last number and continues, and a line left unfinished by a crash is
+closed with a newline first, so readers skip it and nothing is numbered twice.
+An attempt is one call of an agent, or one test stage; `core._invoke` and the
+test stage wrap it in `activity.attempt`, which records its start, any
+exception as an `error`, and its `completion`, and re-raises the exception
+unchanged. Text is clipped (4000 characters for a message or an output, 400
+for other fields), lists to 40 entries, a line to 24 kB, and an attempt to
+5000 events, after which only its error and completion are recorded with the
+number of events left out. `redact` masks values that look like credentials;
+it recognizes common shapes only. Every operation on the journal catches its
+own failures and switches the journal off: a step never fails because it
+could not be recorded. The engine does not read the journal.
+
+**Reading.** `activity.read` returns a page: the last events, the events
+after a cursor, or the events before one. A cursor is the journal's identity
+and a byte offset at the start of a line. Only complete lines are read, in
+pages of at most 300 events and 1 MB. A cursor from another journal, beyond
+the end of the file, or inside a line is answered with the end of the journal
+and `reset`. Because the cursor describes the file and not the server, a
+client continues exactly where it stopped after a reconnection and after a
+restart of the interface.
+
+**Transport.** `GET …/activity` serves pages and `GET …/activity/stream`
+server-sent events: the stream looks at the journal five times a second and
+sends each batch of new events with the cursor that follows them, a heartbeat
+every ten seconds, and `reset` when its cursor no longer fits. Both go through
+the checks of every API route. Activity never enters the snapshot or the
+global event stream: a task's summary does not change when its journal grows.
+
+**The page.** `js/live.js` loads the end of the journal, then follows the
+stream from that cursor. It ignores an event whose `seq` it has already shown,
+reconnects with backoff from its cursor, loads the end again after `reset`,
+falls back to asking for pages when the stream cannot be kept open, and
+releases its connection when the tab has been hidden for thirty seconds.
+`js/views/live.js` appends one row per event and never rebuilds the list; the
+started and finished events of one tool call or test command share a row.
+The header of the view takes the mascot's mood and the words "is developing",
+"is reviewing" from `task.runtime` and the saved phase, and only the latest
+event and the elapsed time from the journal. An attempt without a recorded end
+is shown as running only while the backend verifies a running process.

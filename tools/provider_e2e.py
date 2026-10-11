@@ -4,7 +4,8 @@ Runs the regular develop -> test -> review loop on a throwaway repository, once
 per pairing (Claude -> Codex and Codex -> Claude), and checks what simulated
 providers cannot: that the installed CLIs accept the adapter's arguments, that
 the developer can write inside the worktree, that the reviewer leaves it
-untouched and that both replies are extracted and parsed.
+untouched, that both replies are extracted and parsed, and that both CLIs
+accept the streaming options and report their activity while they work.
 
 Without --authorize-provider-calls it only reports installation, versions and
 login, and makes no model calls. With it, each pairing costs one developer and
@@ -33,6 +34,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from patchrondo import activity  # noqa: E402
 from patchrondo.core import create_task, initialize, run_task  # noqa: E402
 from patchrondo.gitops import changes, fingerprint, git  # noqa: E402
 from patchrondo.process import execute  # noqa: E402
@@ -119,6 +121,17 @@ def defines_greet(path: Path) -> bool:
     return any(isinstance(node, ast.FunctionDef) and node.name == "greet" for node in tree.body)
 
 
+def recorded_activity(task_path: Path) -> list[dict]:
+    """Every event in a task's activity journal, read page by page from its start."""
+    journal = activity.read(task_path, limit=1)["journal"]
+    events, cursor = [], f"{journal}:0" if journal else None
+    while cursor:
+        page = activity.read(task_path, cursor)
+        events += page["events"]
+        cursor = page["next"] if page["more"] else None
+    return events
+
+
 def run_pairing(repo: Path, home: Path, developer: str, reviewer: str, *, run_tests: bool) -> dict:
     """Run one task with the real adapter and check each stage of the loop."""
     task_id, workspace = create_task(home, title="Add a greeting helper", description=DESCRIPTION,
@@ -138,6 +151,10 @@ def run_pairing(repo: Path, home: Path, developer: str, reviewer: str, *, run_te
         expected = "loop paused at the disabled test gate"
         ended = state["status"] == "paused" and kind == "tests_disabled"
     outcome = f"status {state['status']}" + (f" · {kind}" if kind else "")
+    recorded = recorded_activity(home / "tasks" / task_id)
+    live = {role: sum(event["role"] == role and event["type"] in {"message", "tool", "file"} for event in recorded)
+            for role in ("developer", "reviewer")}
+    notices = [str(event.get("text", ""))[:200] for event in recorded if event.get("status") == "notice"]
     checks = [
         ("developer call returned a handoff",
          "development_completed" in events and reply.is_file() and reply.stat().st_size > 0, ""),
@@ -150,6 +167,8 @@ def run_pairing(repo: Path, home: Path, developer: str, reviewer: str, *, run_te
          f"verdict {review.get('verdict')}" if review else ""),
         ("reviewer left the worktree unchanged", "review_started" in events
          and state.get("test_context", {}).get("fingerprint") == fingerprint(workspace), ""),
+        ("both CLIs reported their activity while they worked", all(live.values()),
+         f"{live['developer']} developer and {live['reviewer']} reviewer events" + (f"; {notices[0]}" if notices else "")),
         (expected, ended, outcome if ended or not message else f"{outcome}: {message[:600]}"),
     ]
     return {"pairing": f"{developer} -> {reviewer}", "seconds": seconds, "checks": checks,

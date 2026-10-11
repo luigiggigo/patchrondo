@@ -126,8 +126,8 @@ MUTATIONS = [
              "    return next((kind for kind, pattern in reversed(_ERROR_KINDS) if pattern.search(lowered)), "
              "\"agent_error\")"),
     Mutation("standard output ignored beside standard error", "providers.py",
-             "streams[0], provider, self.clock(), \"\\n\".join(streams[1:]))",
-             "streams[0], provider, self.clock())"),
+             "outputs[0], provider, self.clock(), \"\\n\".join(outputs[1:]))",
+             "outputs[0], provider, self.clock())"),
     Mutation("standard output overrides a specific standard error", "providers.py",
              "    kind = _classify_error(detail)\n    if kind == \"agent_error\" and secondary:\n"
              "        kind = _classify_error(secondary)\n",
@@ -221,6 +221,33 @@ MUTATIONS = [
              "                idle = self.listeners == 0 and time.monotonic() - self.last_use > IDLE_SECONDS\n"
              "            if idle:\n                with self.cond:\n                    self.thread = None\n                return\n",
              ("test_ui.LiveIdleTests",)),
+    # Live activity only observes: it decides nothing, hides internal reasoning and cannot fail a step.
+    Mutation("reviewer progress recorded as a verdict", "streams.py",
+             "        if self.role == \"reviewer\" and _VERDICT.search(text):", "        if False:", ("test_activity",)),
+    Mutation("Codex reasoning kept in the transcript", "streams.py",
+             "            return None  # the reasoning summary is not public output", "            return True",
+             ("test_activity",)),
+    Mutation("Claude thinking kept in the transcript", "streams.py",
+             "        return {\"type\": \"assistant\", \"content\": kept, \"parent_tool_use_id\": obj.get(\"parent_tool_use_id\")}",
+             "        return True", ("test_activity",)),
+    Mutation("stream taken as the answer when the final result is missing", "providers.py",
+             "            if text is None and stream is not None and stream.recognized:\n"
+             "                raise AgentFailure(f\"Missing final result from {provider}/{role}\", \"empty_output\", provider=provider)\n",
+             "", ("test_live_activity",)),
+    Mutation("step started again after the CLI had begun to work", "providers.py",
+             "            if stream is not None and not stream.recognized and streams.refused(",
+             "            if stream is not None and streams.refused(", ("test_live_activity",)),
+    Mutation("a journal that cannot be written fails the step", "activity.py",
+             "        except Exception:  # noqa: BLE001\n            self._off()\n\n    def close",
+             "        except Exception:  # noqa: BLE001\n            raise\n\n    def close", ("test_activity",)),
+    Mutation("a failing observer disturbs the process it observes", "process.py",
+             "                except Exception:  # noqa: BLE001 - observing must never disturb the process observed\n"
+             "                    observer = None",
+             "                except Exception:  # noqa: BLE001 - observing must never disturb the process observed\n"
+             "                    raise", ("test_process",)),
+    Mutation("cursor inside a line accepted", "activity.py",
+             "    return offset if stream.read(1) == b\"\\n\" else None  # a cursor always sits at the start of a line",
+             "    return offset", ("test_activity",)),
 ]
 
 

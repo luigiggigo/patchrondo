@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import re
 
+from . import streams
 from .process import execute, short_log
 from .storage import atomic_text
 
@@ -181,34 +182,68 @@ def classified_failure(message: str, detail: str, provider: str,
     return AgentFailure(message, kind, provider=provider, **hint)
 
 
+def _claude_result(obj, observed_at: datetime | None = None, stderr: str = "") -> str | None:
+    """The answer in Claude's result object; None when the object does not carry one."""
+    if not isinstance(obj, dict):
+        return None
+    if obj.get("is_error"):
+        # The message is saved in task state: keep it an excerpt, as for a failed exit.
+        raise classified_failure(short_log(str(obj.get("result", "Claude returned is_error")), 1200),
+                                 str(obj.get("result", "")), "claude", observed_at, stderr.strip())
+    if obj.get("structured_output") is not None:
+        structured = obj["structured_output"]
+        return json.dumps(structured, ensure_ascii=False) if not isinstance(structured, str) else structured
+    return obj["result"] if isinstance(obj.get("result"), str) else None
+
+
 def _claude_text(body: str, observed_at: datetime | None = None, stderr: str = "") -> str:
     try:
-        obj = json.loads(body)
-        if isinstance(obj, dict):
-            if obj.get("is_error"):
-                # The message is saved in task state: keep it an excerpt, as for a failed exit.
-                raise classified_failure(short_log(str(obj.get("result", "Claude returned is_error")), 1200),
-                                         str(obj.get("result", "")), "claude", observed_at, stderr.strip())
-            if obj.get("structured_output") is not None:
-                structured = obj["structured_output"]
-                return json.dumps(structured, ensure_ascii=False) if not isinstance(structured, str) else structured
-            if isinstance(obj.get("result"), str):
-                return obj["result"]
+        text = _claude_result(json.loads(body), observed_at, stderr)
     except json.JSONDecodeError:
-        pass
-    return body
+        text = None
+    return body if text is None else text
+
+
+def _noted(*_args, **_fields) -> None:
+    """Stands in for a journal when a step is run without one."""
 
 
 class OfficialCLI:
+    journals = True  # `invoke` accepts the journal of the attempt and records the CLI's activity in it
+
     def __init__(self, timeout: int = 600, claude_turns: int = 12, clock=None):
         self.timeout = timeout
         self.claude_turns = claude_turns
         # Reference instant for relative waits such as "retry after 120 seconds".
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def invoke(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path) -> AgentReply:
+    def invoke(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path,
+               journal=None) -> AgentReply:
+        """Run one step with the provider's CLI and return its final answer.
+
+        The CLI is asked to print its activity while it works; what it prints
+        is recorded in `journal` and never decides the outcome. If the CLI
+        refuses the streaming options before it starts, or live activity is
+        switched off, the step runs with the options used before streaming
+        existed and the journal says so.
+        """
         if provider not in {"claude", "codex"} or role not in {"developer", "reviewer"}:
             raise ValueError("Invalid provider or role")
+        emit = journal.emit if journal is not None else _noted
+        if not streams.enabled():
+            emit("status", status="notice", code="stream_off",
+                 text=f"Live activity is switched off ({streams.SWITCH}): this step shows its result when it ends.")
+            return self._step(provider, role, prompt, workspace, run_dir, emit, live=False)
+        try:
+            return self._step(provider, role, prompt, workspace, run_dir, emit, live=True)
+        except _StreamRefused as refusal:
+            emit("status", status="notice", code="stream_unsupported",
+                 text=f"This {provider} CLI did not accept the options for live activity ({refusal}). "
+                      "The step runs without them and shows its result when it ends.")
+            return self._step(provider, role, prompt, workspace, run_dir, emit, live=False)
+
+    def _step(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path, emit, *,
+              live: bool) -> AgentReply:
         run_dir.mkdir(parents=True, exist_ok=True)
         atomic_text(run_dir / f"{role}.prompt.md", prompt)
         schema = {
@@ -227,9 +262,11 @@ class OfficialCLI:
                 }},
             },
         }
+        # Streaming only changes how output is printed: tools, permissions, sandbox and login are untouched.
         if provider == "claude":
             tools = "Read,Glob,Grep,Edit,Write" if role == "developer" else "Read,Glob,Grep"
-            argv = ["claude", "-p", "--output-format", "json", "--restricted",
+            argv = ["claude", "-p", "--output-format", *(("stream-json", "--verbose") if live else ("json",)),
+                    "--restricted",
                     "--permission-mode", "dontAsk", "--tools", tools,
                     "--allowedTools", tools, "--disallowedTools", "mcp__*",
                     "--max-turns", str(self.claude_turns)]
@@ -238,7 +275,7 @@ class OfficialCLI:
         else:
             out = run_dir / f"{role}.last-message.txt"
             out.unlink(missing_ok=True)
-            argv = ["codex", "--ask-for-approval", "never", "exec", "--sandbox",
+            argv = ["codex", "--ask-for-approval", "never", "exec", *(("--json",) if live else ()), "--sandbox",
                     "workspace-write" if role == "developer" else "read-only",
                     "--cd", str(workspace),
                     "--ephemeral", "--output-last-message", str(out)]
@@ -247,28 +284,56 @@ class OfficialCLI:
                 atomic_text(schema_path, json.dumps(schema, indent=2))
                 argv += ["--output-schema", str(schema_path)]
             argv.append("-")
+        stream = streams.open_stream(provider, role, workspace, emit) if live else None
         try:
             result = execute(argv, workspace, stdin=prompt, timeout=self.timeout,
-                             pid_file=run_dir / f"{role}.active-process.json")
+                             pid_file=run_dir / f"{role}.active-process.json",
+                             **({"on_stdout": stream.feed} if stream is not None else {}))
         except FileNotFoundError as exc:
             raise AgentFailure(f"CLI not found: {argv[0]}. Install the official CLI and authenticate it.",
                                "configuration", provider=provider) from exc
+        finally:
+            if stream is not None:
+                stream.close()  # also when the step is interrupted: what was read so far stays recorded
+        # With a stream the log is its transcript: bounded like the captured output, without internal reasoning.
+        observed = stream is not None and stream.fed
+        stdout = stream.transcript.text() if observed else result.stdout
         # These logs live outside the repository in a private directory.
-        atomic_text(run_dir / f"{role}.stdout.log", short_log(result.stdout))
+        atomic_text(run_dir / f"{role}.stdout.log", short_log(stdout))
         atomic_text(run_dir / f"{role}.stderr.log", short_log(result.stderr))
         if result.timed_out:
             raise AgentFailure(f"Timeout after {self.timeout}s for {provider}/{role}", "timeout", provider=provider)
+        reported = "\n".join(stream.errors) if stream is not None else ""
         if result.returncode != 0:
+            if stream is not None and not stream.recognized and streams.refused(provider, result.stderr or result.stdout):
+                refusal = next(iter((result.stderr or result.stdout).strip().splitlines()), "")
+                raise _StreamRefused(short_log(refusal, 200))
             # Either stream may carry the cause or the reset; stderr comes first when both do.
-            streams = [part.strip() for part in (result.stderr, result.stdout) if part.strip()] or [""]
-            shown = "\n".join(short_log(part, 1200 // len(streams)) for part in streams)
+            outputs = [part.strip() for part in (result.stderr, stdout) if part.strip()] or [""]
+            shown = outputs
+            if reported:
+                # What the CLI itself reported as its error decides before agent text in the stream can.
+                outputs = ["\n".join(part for part in (reported, result.stderr.strip()) if part), stdout.strip()]
+                shown = outputs[:1]
+            shown = "\n".join(short_log(part, 1200 // len(shown)) for part in shown)
             raise classified_failure(f"{provider}/{role} exit={result.returncode}: {shown}",
-                                     streams[0], provider, self.clock(), "\n".join(streams[1:]))
+                                     outputs[0], provider, self.clock(), "\n".join(outputs[1:]))
+        if stream is not None and not stream.recognized:
+            emit("status", status="notice", code="stream_empty",
+                 text="The CLI printed no activity for this step; only its result is available.")
+        # The answer comes from the CLI's own final result, never from a message seen while it worked.
         if provider == "claude":
-            text = _claude_text(result.stdout, self.clock(), result.stderr)
+            text = _claude_result(stream.result, self.clock(), result.stderr) if stream is not None else None
+            if text is None and stream is not None and stream.recognized:
+                raise AgentFailure(f"Missing final result from {provider}/{role}", "empty_output", provider=provider)
+            if text is None:
+                text = _claude_text(result.stdout, self.clock(), result.stderr)
         else:
             outfile = run_dir / f"{role}.last-message.txt"
             if not outfile.is_file():
+                if reported:
+                    raise classified_failure(f"{provider}/{role} returned no final response: {short_log(reported, 1200)}",
+                                             reported, provider, self.clock(), result.stderr.strip())
                 raise AgentFailure(f"Missing final response from {provider}/{role}", "empty_output", provider=provider)
             if outfile.stat().st_size > 240000:
                 raise AgentFailure("Final response is too large", "invalid_output", provider=provider)
@@ -277,3 +342,7 @@ class OfficialCLI:
             raise AgentFailure(f"Empty output from {provider}/{role}", "empty_output", provider=provider)
         atomic_text(run_dir / f"{role}.reply.md", short_log(text, 60000))
         return AgentReply(text=text, provider=provider)
+
+
+class _StreamRefused(Exception):
+    """The CLI stopped at the streaming options before starting; nothing was sent to a model."""

@@ -9,7 +9,8 @@ reach a synthetic executable, and the driver refuses to start a run while a real
 Scenarios: first run and setup wizard; run with live updates; duplicate starts;
 interface closed and reopened during a run; reconnection; quota recovery states;
 two independent projects; a PatchRondo 0.1 home opened in place; responsive
-layout, keyboard and accessibility basics; large logs and many tasks.
+layout, keyboard and accessibility basics; large logs and many tasks; live
+activity of the agents while they run, across a disconnection and a reload.
 
     python tools/ui_e2e.py
     python tools/ui_e2e.py --only wizard --screenshots .test-tmp/shots
@@ -39,37 +40,91 @@ sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import browser  # noqa: E402
-from patchrondo import doctor  # noqa: E402
+from patchrondo import activity, doctor  # noqa: E402
 from patchrondo.commands import join_command  # noqa: E402
 from patchrondo.core import config, create_task, initialize  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
 from patchrondo.ui import DashboardServer  # noqa: E402
 
-SCENARIOS = ("wizard", "run", "restart", "reconnect", "recovery", "projects", "legacy", "quality")
+SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality")
 TEST_CODE = "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"
 
-# Receives the provider name explicitly; it never searches PATH.
+# Receives the provider name explicitly; it never searches PATH. Asked to stream, it prints its
+# activity line by line while it "works", as the real CLIs do; otherwise one result at the end.
 SYNTHETIC_CLI = r'''import json, pathlib, sys, time
 root = pathlib.Path(__file__).parent
 control = json.loads((root / "control.json").read_text(encoding="utf-8"))
 provider, args = sys.argv[1], sys.argv[2:]
 sys.stdin.read()
 reviewer = ("--json-schema" in args) if provider == "claude" else ("--output-schema" in args)
+role = "reviewer" if reviewer else "developer"
+live = ("stream-json" in args) if provider == "claude" else ("--json" in args)
 with (root / "calls.jsonl").open("a", encoding="utf-8") as stream:
-    stream.write(json.dumps({"provider": provider, "role": "reviewer" if reviewer else "developer", "cwd": str(pathlib.Path.cwd())}) + "\n")
-time.sleep(control.get("review_seconds" if reviewer else "develop_seconds", 0))
+    stream.write(json.dumps({"provider": provider, "role": role, "live": live, "cwd": str(pathlib.Path.cwd())}) + "\n")
+if live and control.get("stream") is False:
+    # A CLI version without streaming output: it stops at its arguments, before any work.
+    sys.stderr.write("error: unknown option '--verbose'\n" if provider == "claude" else "error: unexpected argument '--json' found\n")
+    sys.exit(2)
+
+def say(obj):
+    if live:
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+def message(text, item):
+    with (root / "emitted.jsonl").open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"role": role, "text": text, "at": time.time()}) + "\n")
+    if provider == "claude":
+        say({"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "PRIVATE-REASONING step by step"},
+                                                          {"type": "text", "text": text}]}})
+    else:
+        say({"type": "item.completed", "item": {"id": f"r{item}", "type": "reasoning", "text": "PRIVATE-REASONING summary"}})
+        say({"type": "item.completed", "item": {"id": f"m{item}", "type": "agent_message", "text": text}})
+
+seconds = control.get("review_seconds" if reviewer else "develop_seconds", 0)
+count = max(1, control.get("messages", 3))
+if live:
+    say({"type": "system", "subtype": "init", "model": "synthetic"} if provider == "claude" else {"type": "thread.started", "thread_id": "synthetic"})
+    for number in range(count):
+        text = "Verdict: APPROVED" if reviewer and number == 0 else f"{role} step {number + 1} of {count}"
+        if number % 5 == 1:
+            text += "\nA second line with <img src=x onerror=alert(1)> and <b>markup</b> that must stay text."
+        message(text, number)
+        time.sleep(seconds / count)
+else:
+    time.sleep(seconds)
 if control.get("mode") == "quota" and reviewer:
-    print("Rate limit exceeded. Retry after 3600 seconds.", file=sys.stderr)
+    limit = "Rate limit exceeded. Retry after 3600 seconds."
+    if live and provider == "claude":
+        say({"type": "result", "subtype": "success", "is_error": True, "result": limit})
+    elif live:
+        say({"type": "error", "message": limit})
+        say({"type": "turn.failed", "error": {"message": limit}})
+    else:
+        print(limit, file=sys.stderr)
     sys.exit(1)
 if reviewer:
     payload = {"verdict": "APPROVED", "summary": "Synthetic review: the change matches the task.", "issues": []}
     text = json.dumps(payload)
 else:
+    target = str(pathlib.Path.cwd() / "feature.txt")
+    if provider == "claude":
+        say({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Write",
+                                                          "input": {"file_path": target, "content": "good"}}]}})
     pathlib.Path("feature.txt").write_text("good", encoding="utf-8")
+    if provider == "claude":
+        say({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "File created"}]}})
+    else:
+        say({"type": "item.completed", "item": {"id": "f1", "type": "file_change", "status": "completed",
+                                                "changes": [{"path": target, "kind": "add"}]}})
     text = "## Changes\n\n- Created `feature.txt`\n\n## Suggested tests\n\n- Check its content"
 if provider == "claude":
-    print(json.dumps({"structured_output": payload} if reviewer else {"result": text}))
+    final = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 2, "duration_ms": int(seconds * 1000)}
+    final.update({"structured_output": payload, "result": ""} if reviewer else {"result": text})
+    print(json.dumps(final), flush=True)
 else:
+    say({"type": "item.completed", "item": {"id": "final", "type": "agent_message", "text": text}})
+    say({"type": "turn.completed", "usage": {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5, "reasoning_output_tokens": 0}})
     pathlib.Path(args[args.index("--output-last-message") + 1]).write_text(text, encoding="utf-8")
 '''
 
@@ -150,6 +205,11 @@ class Env:
 
     def calls(self) -> list[dict]:
         file = self.fixture / "calls.jsonl"
+        return [json.loads(line) for line in file.read_text(encoding="utf-8").splitlines()] if file.exists() else []
+
+    def emitted(self) -> list[dict]:
+        """Every message the scripted CLI printed, with the time it was printed."""
+        file = self.fixture / "emitted.jsonl"
         return [json.loads(line) for line in file.read_text(encoding="utf-8").splitlines()] if file.exists() else []
 
     def run_command(self, project, task_id: str, flags: list[str]) -> list[str]:
@@ -353,11 +413,12 @@ def scenario_run(env: Env) -> None:
     env.check("two simultaneous starts give one run and one refusal", sorted(statuses) == [202, 409], str(statuses))
     env.expect("the page shows Running without a reload", "q('.task-head').innerText.includes('Running')", 8)
     env.check("the backend verifies the running process", page.js("q('.facts').innerText").count("verified") >= 1, page.js("q('.facts').innerText"))
+    env.check("a running task links to its live activity", page.js("Boolean(byText('Watch live', '.rondo-note a'))"))
     env.expect("Rondo accompanies the run", "q('.rondo-note').innerText.includes('developing') || q('.rondo-note').innerText.includes('tests') || q('.rondo-note').innerText.includes('reviewing')")
     third = env.api("POST", f"/api/projects/{project_id}/tasks/{task_id}/run", {})
     env.check("a start while running is refused", third[0] == 409, str(third))
     env.shot("task-running")
-    page.click(text="Activity", selector="[role=tab]")
+    page.click(text="Timeline", selector="[role=tab]")
     env.expect("the timeline shows development starting", "q('.timeline').innerText.includes('started development')", 8)
     env.expect("the timeline shows tests and review as they happen", "q('.timeline').innerText.includes('Tests passed') && q('.timeline').innerText.includes('started the review')", 20)
     done = env.wait_state(path, lambda s: s["status"] == "done")
@@ -707,7 +768,7 @@ def scenario_legacy(env: Env) -> None:
     env.expect("its handoff is shown", "q('.tab-panel').innerText.includes('Legacy handoff')")
     page.click(text="Logs", selector="[role=tab]")
     env.expect("its logs are shown", "q('.log-view').innerText.includes('legacy log line')", 8)
-    page.click(text="Activity", selector="[role=tab]")
+    page.click(text="Timeline", selector="[role=tab]")
     env.expect("its history is shown", "qa('.timeline .event').length === 2")
     env.go(f"settings/{registry['projects'][0]['id']}/rag")
     env.expect("a configuration without a retrieval section shows retrieval as off", "q('.settings-card .switch').checked === false", 10)
@@ -746,6 +807,18 @@ def scenario_quality(env: Env) -> None:
     log_size = (big / "ui-run.log").stat().st_size
     (big / "runs" / "iteration-1").mkdir(parents=True)
     (big / "runs" / "iteration-1" / "developer.log").write_text("ONLY IN THE OTHER LOG\n", encoding="utf-8", newline="\n")
+    # A task with recorded activity of every kind, for the layout and naming checks of the Live Activity view.
+    seeded_live = "T-000000000003"
+    writer = activity.Journal(home / "tasks" / seeded_live, iteration=1, role="developer", provider="codex")
+    writer.emit("status", status="started")
+    writer.emit("message", text="A message with a very long unbroken token " + "x" * 300 + "\nand a second line")
+    writer.emit("tool", status="started", id="c1", name="shell", kind="command", summary="python -m pytest -q " + "tests/very/long/path/" * 12)
+    writer.emit("tool", status="failed", id="c1", name="shell", kind="command", summary="python -m pytest -q", exit_code=1, output="1 failed\n" * 40)
+    writer.emit("file", path="src/" + "deeply/nested/" * 14 + "module.py", change="update")
+    writer.emit("status", status="plan", done=1, total=2, items=[{"text": "First", "completed": True}, {"text": "Second", "completed": False}])
+    writer.emit("error", kind="quota", text="Usage limit reached. " + "y" * 400)
+    writer.emit("completion", outcome="failed", kind="quota", seconds=12.5)
+    writer.close()
     env.start()
     env.open()
     project_id = env.projects()[0]["id"]
@@ -845,10 +918,11 @@ def scenario_quality(env: Env) -> None:
     page.wait("Boolean(q('[role=tablist]'))", 8, "the task tabs")
     page.js("(q('[role=tab][aria-selected=true]').focus(), true)")
     page.press("ArrowRight")
-    env.expect("arrow keys move between tabs", "q('[role=tab][aria-selected=true]').textContent.includes('Activity') && document.activeElement === q('[role=tab][aria-selected=true]')")
+    env.expect("arrow keys move between tabs", "q('[role=tab][aria-selected=true]').textContent.includes('Live Activity') && document.activeElement === q('[role=tab][aria-selected=true]')")
 
     # Accessible names, landmarks, responsive layout and themes on every page.
-    routes = ["", "tasks", f"tasks/{project_id}/T-000000000002", f"tasks/{project_id}/T-000000000002/activity", "new", "projects",
+    routes = ["", "tasks", f"tasks/{project_id}/T-000000000002", f"tasks/{project_id}/T-000000000002/activity",
+              f"tasks/{project_id}/T-000000000002/live", f"tasks/{project_id}/{seeded_live}/live", "new", "projects",
               "settings/global/general", "settings/global/agents", f"settings/{project_id}/workflow", f"settings/{project_id}/tests",
               f"settings/{project_id}/recovery", f"settings/{project_id}/rag", f"settings/{project_id}/advanced", "about", "welcome"]
     unnamed = """qa('button, a[href], input, select, textarea').filter(visible).filter((el) => {
@@ -871,7 +945,8 @@ def scenario_quality(env: Env) -> None:
                 names = page.js(unnamed)
                 if names:
                     missing.append(f"{width}px #{route}: {names[:2]}")
-            if env.shots and route in ("", f"tasks/{project_id}/T-000000000002", "new", f"settings/{project_id}/tests", "projects"):
+            if env.shots and route in ("", f"tasks/{project_id}/T-000000000002", f"tasks/{project_id}/{seeded_live}/live", "new",
+                                       f"settings/{project_id}/tests", "projects"):
                 env.shot(f"responsive-{width}-{(route or 'home').replace('/', '-')[:40]}")
     env.check("no page overflows horizontally from 1440 px down to 480 px", not failures, "; ".join(failures)[:700])
     env.check("every control has an accessible name", not missing, "; ".join(missing)[:700])
@@ -923,7 +998,189 @@ def scenario_quality(env: Env) -> None:
     env.stop()
 
 
-SCENARIO_FUNCTIONS = {"wizard": scenario_wizard, "run": scenario_run, "restart": scenario_restart, "reconnect": scenario_reconnect,
+def scenario_live(env: Env) -> None:
+    """Live Activity: agent output on the page while the agent runs; disconnect, reconnect, reload, fallback."""
+    page = env.page
+    if not (env.home / "projects.json").exists():
+        scenario_wizard(env)
+    server = env.start()
+    env.open()
+    port, token = server.server_address[1], server.token
+    env.control(mode="ok", develop_seconds=20, review_seconds=5, messages=60, stream=True)
+    task_id = env.new_task("Watched live")
+    home = env.project_home("alpha")
+    path = home / "tasks" / task_id
+    project_id = page.js("location.hash.split('/')[2]")
+    route = f"tasks/{project_id}/{task_id}/live"
+    before = len(env.calls())
+
+    def journal(kind: str | None = None, role: str | None = None) -> list[dict]:
+        file = path / "activity.jsonl"
+        if not file.exists():
+            return []
+        events = [json.loads(line) for line in file.read_text(encoding="utf-8").splitlines()[1:]]
+        return [event for event in events if (kind is None or event["type"] == kind) and (role is None or event["role"] == role)]
+
+    shown = "qa('.act-row[data-kind=message] .act-text').map((e) => e.textContent)"
+    page.click(text="Live Activity", selector="[role=tab]")
+    env.expect("the Live Activity tab says that nothing was recorded yet", "Boolean(q('.act-view')) && q('.tab-panel').innerText.includes('No live activity recorded yet')", 8)
+    env.check("no activity is shown before any exists", page.js("qa('.act-row').length") == 0 and not (path / "activity.jsonl").exists())
+    env.expect("Rondo is idle while nothing runs", "Boolean(q('.act-now .rondo-face')) && !q('.act-now .mood-bob')")
+    # When each row first appears on the page, on the same clock the scripted CLI stamps its output with.
+    page.js("""(window.liveSeen = {}, new MutationObserver(() => { for (const el of qa('.act-row[data-kind=message] .act-text'))
+        if (!(el.textContent in window.liveSeen)) window.liveSeen[el.textContent] = Date.now(); }).observe(q('.act-list'), { childList: true, subtree: true }), true)""")
+    env.run_task()
+    env.expect("the first agent message appears on the page", "qa('.act-row[data-kind=message]').length >= 1", 12)
+    state = read_json(path / "state.json")
+    env.check("and the agent process was still running when it did", state["status"] == "running" and state["phase"] == "develop"
+              and not (path / "handoff.md").exists() and any(path.glob("runs/iteration-*/developer.active-process.json")), json.dumps(state)[:300])
+    env.expect("the view names the agent, its role and the iteration", "q('.act-now-who').innerText.includes('Claude · developer · iteration 1 of ')", 8)
+    env.expect("and says what it is doing, from the latest event", "q('.act-now-doing').innerText.trim().length > 0 && !q('.act-now-doing').innerText.includes('Nothing has been recorded')")
+    first = page.js("q('.act-clock') ? q('.act-clock').textContent : ''")
+    time.sleep(1.4)
+    second = page.js("q('.act-clock') ? q('.act-clock').textContent : ''")
+    env.check("the elapsed time of the step advances", "elapsed" in first and first != second, f"{first!r} -> {second!r}")
+    env.expect("Rondo shows the working mood of a verified running task", "Boolean(q('.act-now .rondo-face.mood-bob')) && q('.act-now img').getAttribute('src') === '/assets/rondo-head.webp'")
+    env.expect("the connection of the view is shown as live", "q('.log-toolbar .badge').textContent.includes('Live')")
+    env.shot("live-running")
+
+    # Rows are added one by one: an existing row, an opened detail and the focus are left alone.
+    env.expect("a long message offers its full text", "Boolean(q('.act-more'))", 8)
+    page.js("(qa('.act-row')[0].dataset.mark = 'kept', q('.act-more').open = true, q('.act-more').dataset.mark = 'opened', q('.act-filter').focus(), true)")
+    count = page.js("qa('.act-row').length")
+    env.expect("more rows arrive", f"qa('.act-row').length >= {count + 4}", 8)
+    env.check("rows already on the page were not rebuilt", page.js("qa('.act-row')[0].dataset.mark === 'kept' && q('.act-more[data-mark=opened]').open === true"))
+    env.check("the keyboard focus stayed where it was", page.js("document.activeElement === q('.act-filter')"))
+    env.check("agent text is inserted as text, never as markup", page.js("!q('.act-view img') && !q('.act-view b') && q('.act-view').textContent.includes('<img src=x onerror=')"))
+
+    # Following the newest row, and not following.
+    env.expect("the list grows beyond its window", "q('.act-view').scrollHeight > q('.act-view').clientHeight + 120", 10)
+    env.expect("with Follow on the newest row stays in sight", "q('.act-view').scrollHeight - q('.act-view').scrollTop - q('.act-view').clientHeight < 40", 4)
+    page.js("(q('.act-view').scrollTop = 0, true)")
+    env.expect("scrolling up turns Follow off", "q('.log-toolbar .switch').checked === false", 4)
+    count = page.js("qa('.act-row').length")
+    env.expect("rows keep arriving", f"qa('.act-row').length >= {count + 3}", 8)
+    env.check("a reader who scrolled up is not pulled down", page.js("q('.act-view').scrollTop") == 0)
+    page.js("(q('.log-toolbar .switch').click(), true)")
+    env.expect("turning Follow on returns to the newest row", "q('.act-view').scrollHeight - q('.act-view').scrollTop - q('.act-view').clientHeight < 40", 4)
+
+    # The interface goes away in the middle of the run and comes back.
+    stopped_at = time.time()
+    runs = env.stop()
+    env.check("the run continues without the interface", len(runs.active) == 1 and runs.active[0].poll() is None)
+    env.expect("the view says that it lost its connection", "['Reconnecting', 'Offline'].some((word) => q('.log-toolbar .badge').textContent.includes(word))", 15)
+    on_page = len(page.js(shown))
+    recorded = len(journal("message", "developer"))
+    deadline = time.monotonic() + 10
+    while len(journal("message", "developer")) < recorded + 4 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    env.check("the agent keeps working and its activity keeps being recorded", len(journal("message", "developer")) >= recorded + 4)
+    env.check("while disconnected the page adds nothing of its own", len(page.js(shown)) == on_page, f"{len(page.js(shown))} rows, {on_page} before")
+    env.start(port=port, token=token)
+    env.expect("after the interface is back the view is live again", "q('.log-toolbar .badge').textContent.includes('Live')", 20)
+    env.expect("and catches up with what was recorded meanwhile", f"qa('.act-row[data-kind=message]').length >= {recorded + 4}", 10)
+
+    # The reviewer says APPROVED while it works: that is not a verdict.
+    env.wait_state(path, lambda s: s["phase"] == "review" and any(e["event"] == "review_started" for e in s["history"]), 40)
+    env.expect("the reviewer's activity appears while it works", "q('.act-now-who').innerText.includes('Codex · reviewer')", 10)
+    env.expect("its early answer is shown as withheld", "q('.act-view').innerText.includes('counts only after PatchRondo has validated')", 10)
+    state = read_json(path / "state.json")
+    during = page.js("[q('.act-view').innerText.includes('APPROVED'), q('.task-head').innerText.includes('Done'), q('.workflow').innerText]")
+    env.check("nothing on the page or on disk says approved while the reviewer is still running", state["status"] == "running" and state["review"] is None
+              and during[0] is False and during[1] is False, f"{state['status']} {state['review']} {during}")
+    done = env.wait_state(path, lambda s: s["status"] == "done", 40)
+    env.expect("the page then shows the verified result", "q('.task-head').innerText.includes('Done')", 8)
+    env.check("the task ended as it does without live activity", done["review"]["verdict"] == "APPROVED" and [t["status"] for t in done["tests"]] == ["passed"]
+              and "Created `feature.txt`" in (path / "handoff.md").read_text(encoding="utf-8"))
+    env.check("one developer and one reviewer call were made", [c["role"] for c in env.calls()[before:]] == ["developer", "reviewer"], str(env.calls()[before:]))
+    expected = [event["text"].split("\n")[0] for event in journal("message")]
+    try:
+        page.wait(f"{shown}.length === {len(expected)}", 10, "every recorded message")
+    except browser.BrowserError:
+        pass  # the check below reports what the page shows
+    env.check("every recorded message is on the page once, in order, across the disconnection", page.js(shown) == expected,
+              f"page {len(page.js(shown))}, journal {len(expected)}")
+    text = page.js("q('.act-view').textContent")  # rows scrolled out of view are skipped by layout, not removed
+    words = ("Write · feature.txt", "Wrote feature.txt", "passed · exit 0", "Development step returned", "Test run finished",
+             "Review step returned")
+    env.check("tool use, file changes, tests and the end of each step are shown", all(word in text for word in words),
+              "missing: " + ", ".join(word for word in words if word not in text))
+    env.expect("a finished task shows no step as running", "!q('.act-row .badge.tone-accent') && q('.act-now-who').innerText.includes('No step is running')")
+    env.expect("Rondo celebrates only now", "Boolean(q('.act-now .rondo-face.mood-hop'))")
+    env.shot("live-done")
+
+    # Timeliness, for the messages printed while the page was connected.
+    emitted = {entry["text"].split("\n")[0]: entry["at"] for entry in env.emitted() if entry["at"] < stopped_at - 0.5}
+    seen = page.js("window.liveSeen")
+    delays = [seen[name] / 1000 - at for name, at in emitted.items() if name in seen]
+    env.timings["live_event_to_page_seconds_max"] = round(max(delays), 3) if delays else None
+    env.check("activity reached the page within a second of being printed", len(delays) >= 8 and max(delays) < 1.0,
+              f"{len(delays)} measured, max {max(delays) if delays else None}")
+
+    # Nothing private anywhere: not on the page, not in the journal, not in the saved transcripts.
+    files = [path / "activity.jsonl", *path.glob("runs/iteration-*/*.stdout.log")]
+    env.check("internal reasoning is neither shown nor saved", "PRIVATE-REASONING" not in page.js("document.body.textContent")
+              and all("PRIVATE-REASONING" not in file.read_text(encoding="utf-8") for file in files) and len(files) == 3)
+
+    # Filters hide rows without rebuilding them; the full logs stay one click away.
+    page.js("(q('.act-filter').value = 'message', q('.act-filter').dispatchEvent(new Event('change')), true)")
+    env.check("a filter shows one kind of row", page.js("qa('.act-row').filter(visible).length > 0 && qa('.act-row').filter(visible).every((row) => row.dataset.kind === 'message') && qa('.act-row')[0].dataset.mark === 'kept'"))
+    page.js("(q('.act-filter').value = 'all', q('.act-filter').dispatchEvent(new Event('change')), true)")
+    page.reduced_motion(True)
+    time.sleep(0.2)
+    env.check("motion in the view stops under reduced motion", page.js("qa('.act-now .rondo-face, .log-toolbar .dot').every((el) => parseFloat(getComputedStyle(el).animationDuration) < 0.01)"))
+    page.reduced_motion(False)
+
+    # A new page, as after restarting the interface: the earlier activity is there, once.
+    env.open(route)
+    env.expect("after reopening, the recorded activity is shown again", f"{shown}.length === {len(expected)}", 12)
+    env.check("in the same order and without duplicates", page.js(shown) == expected)
+    env.expect("and the view is ready for new events", "q('.log-toolbar .badge').textContent.includes('Live')", 8)
+    page.click(text="Full logs")
+    env.expect("the full logs are one click away", "location.hash.endsWith('/logs') && Boolean(q('.log-view'))", 8)
+    env.check("the transcript of each step is listed there", page.js("qa('.log-select option').some((o) => o.value.includes('developer.stdout.log'))"))
+
+    # A long journal: only its end is loaded; earlier pages on request.
+    long_id, _ = create_task(home, title="Long journal", description="Seeded", acceptance=[], developer="claude", reviewer="codex")
+    writer = activity.Journal(home / "tasks" / long_id, iteration=1, role="developer", provider="claude")
+    writer.emit("status", status="started")
+    for index in range(700):
+        writer.emit("message", text=f"seeded message {index}")
+    writer.close()
+    env.go(f"tasks/{project_id}/{long_id}/live")
+    env.expect("a long journal opens at its end", "qa('.act-row').length > 0 && q('.act-view').innerText.includes('seeded message 699')", 10)
+    loaded = page.js("qa('.act-row').length")
+    env.check("only the end of a long journal is loaded", loaded <= 210 and page.js("!q('.act-view').innerText.includes('seeded message 0\\n')"), str(loaded))
+    env.check("no step is claimed to be running for a task that is not", page.js("q('.act-now-doing').innerText.includes('has no recorded end') && !q('.act-now .mood-bob')"))
+    page.click(text="Load earlier activity")
+    env.expect("earlier activity is loaded on request", f"qa('.act-row').length > {loaded}", 8)
+    for _ in range(6):
+        if page.js("!byText('Load earlier activity')"):
+            break
+        page.click(text="Load earlier activity")
+        time.sleep(0.4)
+    rows = page.js(shown)
+    env.check("the whole journal can be paged through, in order and once", rows == [f"seeded message {index}" for index in range(700)], f"{len(rows)} rows")
+
+    # A CLI that does not accept the streaming options: the run works, and the view says why it is silent.
+    env.control(mode="ok", develop_seconds=0.4, review_seconds=0.4, messages=3, stream=False)
+    silent = env.new_task("No stream")
+    before = len(env.calls())
+    env.run_task()
+    quiet = env.wait_state(home / "tasks" / silent, lambda s: s["status"] == "done", 40)
+    env.check("without streaming the task still completes", quiet["review"]["verdict"] == "APPROVED")
+    page.click(text="Live Activity", selector="[role=tab]")
+    env.expect("the view says that this CLI gave no live activity", "q('.act-view').innerText.includes('did not accept the options for live activity')", 10)
+    env.check("and shows no agent activity that was not recorded", page.js("qa('.act-row[data-kind=message], .act-row[data-kind=tool]').length") == 0)
+    env.check("the refused start made no model call of its own", [(c["role"], c["live"]) for c in env.calls()[before:]] == [
+        ("developer", True), ("developer", False), ("reviewer", True), ("reviewer", False)], str(env.calls()[before:]))
+    env.control(mode="ok", stream=True, messages=3)
+    env.clean_console("live", allow=("Failed to load resource", "net::ERR", "Failed to fetch"))
+    runs.active[0].wait(20)
+    env.stop()
+
+
+SCENARIO_FUNCTIONS = {"wizard": scenario_wizard, "run": scenario_run, "live": scenario_live, "restart": scenario_restart, "reconnect": scenario_reconnect,
                       "recovery": scenario_recovery, "projects": scenario_projects, "legacy": scenario_legacy, "quality": scenario_quality}
 
 

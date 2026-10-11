@@ -24,7 +24,7 @@ import threading
 import time
 from typing import NamedTuple
 
-from . import __version__, doctor, rag, recovery, runinfo
+from . import __version__, activity, doctor, rag, recovery, runinfo
 from .commands import join_command, split_command
 from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, config, create_task, effective_config,
                    validate_config, validate_overrides)
@@ -732,6 +732,10 @@ class App:
                 skip += 1
         return {"id": file_id, "offset": start + skip, "next": start + end, "size": size,
                 "eof": start + end >= size, "text": data[skip:end].decode("utf-8", errors="replace")}
+
+    def activity_page(self, project: Project, task_id, cursor=None, before=None, limit=activity.PAGE_EVENTS) -> dict:
+        """One page of the task's activity journal: its end, or what follows or precedes a cursor."""
+        return activity.read(self.task_path(project, task_id), cursor, before=before, limit=int(limit))
 
     def task_files(self, project: Project, task_id) -> dict:
         """Changed files of a task worktree with a bounded diff. Read-only Git, no external diff tools."""

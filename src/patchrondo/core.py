@@ -15,7 +15,7 @@ from .storage import private_dir, save_json, read_json, atomic_text, now, TaskLo
 from .gitops import repo_root, create_worktree, changes, stat, fingerprint
 from .process import execute, short_log
 from .providers import OfficialCLI, AgentFailure
-from . import rag, recovery
+from . import activity, rag, recovery
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -315,6 +315,40 @@ def parse_review(text: str) -> dict:
     return obj
 
 
+def _invoke(adapter, path: Path, state: dict, role: str, prompt: str, workspace: Path, run_dir: Path):
+    """Call the agent of `role`, recording the attempt in the task's activity journal.
+
+    The journal only observes: the reply, and every failure, pass through unchanged.
+    """
+    provider = state[role]
+    with activity.attempt(path, iteration=state["iteration"], role=role, provider=provider) as journal:
+        if getattr(adapter, "journals", False):
+            return adapter.invoke(provider, role, prompt, workspace, run_dir, journal=journal)
+        return adapter.invoke(provider, role, prompt, workspace, run_dir)
+
+
+def _run_tests(cfg: dict, workspace: Path, run_dir: Path, journal) -> list[dict]:
+    settings = cfg["tests"]
+    results = []
+    for index, cmd in enumerate(settings["commands"], 1):
+        shown = " ".join(cmd)
+        journal.emit("test", status="started", index=index, command=shown)
+        try:
+            result = execute(cmd, workspace, timeout=cfg["workflow"]["test_timeout_seconds"],
+                             pid_file=run_dir / f"test-{index:02d}.active-process.json")
+        except FileNotFoundError as exc:
+            raise AgentFailure(f"Test command not found: {cmd[0]}", "configuration") from exc
+        atomic_text(run_dir / f"test-{index:02d}.log", short_log(result.stdout + "\n" + result.stderr))
+        status = "timeout" if result.timed_out else "passed" if result.returncode == 0 else "failed"
+        journal.emit("test", status=status, index=index, command=shown, exit_code=result.returncode)
+        results.append({"command": cmd, "status": status, "returncode": result.returncode,
+                        "log_file": str(run_dir / f"test-{index:02d}.log"),
+                        "output_tail": short_log((result.stdout + "\n" + result.stderr)[-6000:])})
+        if status != "passed":
+            break  # avoid running dependent tests after first failure
+    return results
+
+
 def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path) -> None:
     settings = cfg["tests"]
     run_dir = private_dir(path / "runs" / f"iteration-{state['iteration']:03d}")
@@ -324,19 +358,8 @@ def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path) -> None:
     else:
         _event(state, "tests_started", commands=len(settings["commands"]))
         _save(path, state)
-        for index, cmd in enumerate(settings["commands"], 1):
-            try:
-                result = execute(cmd, workspace, timeout=cfg["workflow"]["test_timeout_seconds"],
-                                 pid_file=run_dir / f"test-{index:02d}.active-process.json")
-            except FileNotFoundError as exc:
-                raise AgentFailure(f"Test command not found: {cmd[0]}", "configuration") from exc
-            atomic_text(run_dir / f"test-{index:02d}.log", short_log(result.stdout + "\n" + result.stderr))
-            status = "timeout" if result.timed_out else "passed" if result.returncode == 0 else "failed"
-            results.append({"command": cmd, "status": status, "returncode": result.returncode,
-                            "log_file": str(run_dir / f"test-{index:02d}.log"),
-                            "output_tail": short_log((result.stdout + "\n" + result.stderr)[-6000:])})
-            if status != "passed":
-                break  # avoid running dependent tests after first failure
+        with activity.attempt(path, iteration=state["iteration"], role="tests", provider="local") as journal:
+            results = _run_tests(cfg, workspace, run_dir, journal)
     state["tests"] = results
     state["test_context"] = {"fingerprint": fingerprint(workspace),
                              "commands": settings["commands"] if settings["enabled"] else []}
@@ -446,8 +469,8 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     _event(state, "development_started")
                     _save(path, state)
                     context = _context(home, cfg, path, state, workspace, "developer")
-                    reply = adapter.invoke(state["developer"], "developer",
-                                           _developer_prompt(path, state, workspace, context), workspace, run_dir)
+                    reply = _invoke(adapter, path, state, "developer",
+                                    _developer_prompt(path, state, workspace, context), workspace, run_dir)
                     atomic_text(path / "handoff.md", f"# Handoff — iteration {iteration}\n\n{reply.text[:30000]}\n")
                     state["handoff"] = str(path / "handoff.md")
                     _event(state, "development_completed", agent=state["developer"])
@@ -460,8 +483,8 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     _event(state, "review_started")
                     _save(path, state)
                     context = _context(home, cfg, path, state, workspace, "reviewer")
-                    reply = adapter.invoke(state["reviewer"], "reviewer",
-                                           _review_prompt(path, state, workspace, context), workspace, run_dir)
+                    reply = _invoke(adapter, path, state, "reviewer",
+                                    _review_prompt(path, state, workspace, context), workspace, run_dir)
                     review = parse_review(reply.text)
                     _check_test_context(state, cfg, workspace)
                     state["review"] = review
