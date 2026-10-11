@@ -215,6 +215,62 @@ class LegacyTests(Case):
         self.assertEqual(code, 1)
         self.assertIn("Configuration already exists", err)
 
+    def titles(self, home: Path) -> set:
+        return {read_json(file)["title"] for file in home.glob("tasks/*/state.json")}
+
+    def test_cli_on_a_legacy_home_with_a_registry_uses_the_selected_project(self):
+        repo, task_id = self.legacy(self.ws.root)
+        old = self.ws.projects()[0]  # what opening the interface does: the root is registered in place
+        code, out, _ = self.cli("new", "--title", "Alone", "--description", "d")  # the only project: as before
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.titles(self.ws.root), {"Legacy", "Alone"})
+        beta = self.ws.add(make_repo(self.root / "beta"))
+        self.ws.update_settings({"selected_project": beta.id})  # what adding a project in the interface does
+        code, out, _ = self.cli("new", "--title", "Selected", "--description", "d")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.titles(beta.home), {"Selected"})
+        self.assertEqual(self.titles(self.ws.root), {"Legacy", "Alone"})
+        code, out, _ = self.cli("status", task_id)  # a task ID still finds the root project
+        self.assertEqual((code, json.loads(out)["title"]), (0, "Legacy"))
+        self.ws.update_settings({"selected_project": old.id})
+        code, out, _ = self.cli("new", "--title", "Back", "--description", "d")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.titles(self.ws.root), {"Legacy", "Alone", "Back"})
+        self.ws.update_settings({"selected_project": None})
+        code, _, err = self.cli("new", "--title", "Nowhere", "--description", "d")  # no guess between two projects
+        self.assertEqual(code, 1)
+        self.assertIn("--project", err)
+        self.assertEqual((self.titles(self.ws.root), self.titles(beta.home)), ({"Legacy", "Alone", "Back"}, {"Selected"}))
+        code, out, _ = self.cli("list")
+        self.assertIn(f"# old ({old.id})", out)
+        self.assertIn(f"# beta ({beta.id})", out)
+        code, out, _ = self.cli("--project", old.id, "new", "--title", "Named", "--description", "d")
+        self.assertEqual(code, 0, out)
+        self.assertIn("Named", self.titles(self.ws.root))
+
+    def test_cli_after_the_root_project_was_removed_from_the_registry(self):
+        repo, task_id = self.legacy(self.ws.root)
+        self.ws.remove(self.ws.projects()[0].id)
+        code, out, _ = self.cli("list")  # nothing is registered: the root configuration is the only candidate
+        self.assertEqual(code, 0)
+        self.assertIn(f"{task_id} · ready    · codex → claude · Legacy", out)
+        beta = self.ws.add(make_repo(self.root / "beta"))
+        code, out, _ = self.cli("new", "--title", "Registered", "--description", "d")
+        self.assertEqual(code, 0, out)
+        self.assertEqual((self.titles(beta.home), self.titles(self.ws.root)), ({"Registered"}, {"Legacy"}))
+        code, out, _ = self.cli("status", task_id)  # its tasks stay reachable by ID
+        self.assertEqual((code, json.loads(out)["title"]), (0, "Legacy"))
+        self.assertEqual(len(self.ws.projects()), 1)  # and the root is not registered again by that
+
+    def test_cli_on_a_legacy_home_reports_an_unreadable_registry(self):
+        self.legacy(self.ws.root)
+        (self.ws.root / "projects.json").write_text('{"version": 9}', encoding="utf-8")
+        code, _, err = self.cli("new", "--title", "Unknown", "--description", "d")
+        self.assertEqual(code, 1)
+        self.assertIn("Invalid project registry", err)
+        self.assertEqual(self.titles(self.ws.root), {"Legacy"})
+        self.assertEqual((self.ws.root / "projects.json").read_text(encoding="utf-8"), '{"version": 9}')
+
     def test_init_on_a_new_home_keeps_the_0_1_layout(self):
         repo = make_repo(self.root / "alpha")
         code, out, _ = self.cli("init", "--repo", str(repo))

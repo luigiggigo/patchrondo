@@ -392,10 +392,15 @@ optional `agents` section, then the global defaults. Precedence for limits: a
 task's `overrides`, then the project's `config.json`. No password, token or
 API key is stored anywhere by PatchRondo.
 
-**Command line.** Without `--project`, a configuration at the root of the home
-is used directly and the registry is not read or written, so 0.1 scripts
-behave as before. Otherwise the selected project is used, or the only one.
-Commands that take a task ID look the task up in the registered projects.
+**Command line.** Without `--project`, a home with a configuration at its root
+and no `projects.json` is used directly and no registry is written, so 0.1
+scripts behave as before. Once a registry exists it decides, in a 0.1 home as
+in any other: the selected project, or the only registered one; several
+projects with none selected is an error that names `--project`, and an
+unreadable registry is reported instead of being bypassed. The root
+configuration is used without a registry entry only while no project is
+registered. Commands that take a task ID look the task up in the registered
+projects, then in a root configuration that was removed from the registry.
 `init --repo` creates the 0.1 layout on a home with no registry and adds a
 project on a home that has one.
 
@@ -444,6 +449,16 @@ native Windows that rule cannot confirm that a process is gone, so the
 interface does not offer the action there. *Stop* sends SIGINT to the verified
 processes, which is what Ctrl+C does; a run started by the interface restores
 the default interrupt handler if it inherited an ignored one.
+
+**Reading beside a run.** The interface reads `state.json` and `.run.lock`
+while a run replaces the first and deletes the second. A reader that finds a
+file unreadable for a moment skips it until the next scan. The writer must not
+fail instead: Windows refuses to replace or delete a file that another
+process has open, so on Windows `storage.atomic_text` and the release of
+`TaskLock` repeat a refused operation for up to two seconds
+(`SHARING_RETRY_SECONDS`) before reporting the error. A refused save leaves
+the previous file in place. Other systems allow both operations and never
+wait.
 
 **Live updates.** `live.Hub` rebuilds the view (`app.collect`) every half
 second while a page is listening, at once after a write made through the API,

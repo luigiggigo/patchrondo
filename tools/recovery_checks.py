@@ -190,6 +190,14 @@ MUTATIONS = [
     Mutation("task recovery override ignored", "core.py",
              "    cfg = effective_config(cfg, saved)  # overrides are written once, when the task is created\n", "",
              ("test_overrides",)),
+    # A run must not end, or leave its lock behind, because the interface is reading the file (Windows).
+    Mutation("state save fails while a reader has the file open", "storage.py",
+             "        _unshared(lambda: os.replace(name, path))", "        os.replace(name, path)", ("test_storage",)),
+    Mutation("lock left behind while a reader has it open", "storage.py",
+             "            _unshared(lambda: self.path.unlink(missing_ok=True))",
+             "            self.path.unlink(missing_ok=True)", ("test_storage",)),
+    Mutation("refused save repeated without a bound", "storage.py",
+             "            if time.monotonic() >= deadline:\n                raise\n", "", ("test_storage",)),
 ]
 
 

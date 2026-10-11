@@ -228,7 +228,11 @@ patchrondo --project shop-api list        # choose a project by ID or name
 
 When a home holds several projects, commands use the one selected in the
 interface unless `--project` is given. Commands that take a task ID find the
-project that holds it by themselves.
+project that holds it by themselves. This also applies to a home created by
+0.1 once you have added a second project to it in the interface: the project
+at the root of the home is then one project among the others, not the default.
+With several projects and none selected, a command that needs one stops and
+asks for `--project`.
 
 ### 2. Explicitly authorize tests
 

@@ -22,6 +22,27 @@ def private_dir(path: Path) -> Path:
     return path
 
 
+# Windows refuses to replace or delete a file while another process has it open, and the
+# interface reads state.json and .run.lock of a task while its run saves and releases them.
+# A reader holds a file for moments, so the writer waits for it; other systems never wait.
+SHARING_RETRY_SECONDS = 2.0 if os.name == "nt" else 0.0
+
+
+def _unshared(action) -> None:
+    """Call `action`, repeating it for a bounded time while access is denied."""
+    deadline = time.monotonic() + SHARING_RETRY_SECONDS
+    delay = 0.001
+    while True:
+        try:
+            action()
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.02)
+
+
 def atomic_text(path: Path, data: str) -> None:
     private_dir(path.parent)
     fd, name = tempfile.mkstemp(prefix=".tmp-", dir=path.parent)
@@ -30,7 +51,7 @@ def atomic_text(path: Path, data: str) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        _unshared(lambda: os.replace(name, path))
         if os.name == "posix":
             path.chmod(0o600)
     finally:
@@ -122,7 +143,7 @@ class TaskLock:
 
     def __exit__(self, *_):
         if self.owner:
-            self.path.unlink(missing_ok=True)
+            _unshared(lambda: self.path.unlink(missing_ok=True))
             self.owner = False
 
 

@@ -245,9 +245,11 @@ class Workspace:
     def resolve(self, selector: str | None = None) -> Project:
         """The project a command applies to.
 
-        Without a selector, a configuration at the root of the home wins, exactly
-        as in 0.1 and without touching the registry; then the selected project,
-        then the only registered one.
+        Without a selector, a home with a configuration at its root and no
+        registry is used exactly as in 0.1, and no registry is written. Once a
+        registry exists the choice made in the interface counts: the selected
+        project, then the only registered one. The root configuration is the
+        fallback only while no project is registered.
         """
         if selector:
             projects = self.projects()
@@ -256,8 +258,9 @@ class Workspace:
             if len(matches) != 1:
                 raise ValueError(f"No single project matches {selector!r}; see: patchrondo projects")
             return matches[0]
-        if self.has_legacy_root():
-            return Project("", "", self.root, "legacy")
+        root = Project("", "", self.root, "legacy") if self.has_legacy_root() else None
+        if root is not None and not (self.root / REGISTRY).exists():
+            return root
         projects = self.projects()
         selected = self.settings().get("selected_project")
         for project in projects:
@@ -266,15 +269,23 @@ class Workspace:
         if len(projects) == 1:
             return projects[0]
         if not projects:
+            if root is not None:
+                return root
             raise RuntimeError(f"Run patchrondo init --repo PATH first (missing {self.root / 'config.json'}), "
                                "or run patchrondo to set up a project in the browser")
         raise ValueError("Several projects are registered: pass --project ID (see: patchrondo projects)")
 
     def find_task(self, task_id: str) -> Project | None:
-        """The registered project that holds a task, for commands given only a task ID."""
+        """The project that holds a task, for commands given only a task ID.
+
+        Registered projects first, then a root configuration that was removed
+        from the registry: its tasks stay reachable by ID.
+        """
         for project in self.projects():
             if (project.home / "tasks" / task_id / "state.json").is_file():
                 return project
+        if self.has_legacy_root() and (self.root / "tasks" / task_id / "state.json").is_file():
+            return Project("", "", self.root, "legacy")
         return None
 
     # --- global preferences ---------------------------------------------------------

@@ -796,6 +796,134 @@ limit of the imitation, which does not reach the real child that test starts,
 so parent and child disagree on the process token. That test passed in both
 macOS jobs of the run above.
 
+### Follow-up: the command line ignored the selected project in a 0.1 home (October 11, 2026)
+
+Found by review of `Workspace.resolve`: without `--project`, a configuration
+at the root of the home was returned before the registry or the selection was
+read. In a home created by 0.1 and then opened in the interface, adding a
+second project selects it, yet `patchrondo new` kept creating the task, its
+branch and its worktree in the 0.1 repository. The existing tests covered a
+0.1 home with no registry and a 0.2 home with a selection, not the two
+together.
+
+| Case, without `--project` | Before | Now |
+|---|---|---|
+| Root configuration, no `projects.json` | Root, no registry written | Unchanged |
+| Registry with the root project only | Root | Unchanged (the only project) |
+| Registry with several projects, one selected | Root | The selected project |
+| Registry with several projects, none selected | Root | Error that names `--project`; `list` shows every project, labelled |
+| Root project removed from the registry, one other project | Root | The registered project |
+| Root project removed, no project registered | Root | Unchanged |
+| Root configuration, unreadable `projects.json` | Root, registry not read | The registry error is reported |
+
+A task ID still finds its project in every case, including a root project
+that was removed from the registry (`Workspace.find_task`). The change is in
+`workspace.py` and one condition of `cli.py`; the interface does not call
+`resolve`. Three tests were added to `tests/test_workspace.py`, and all three
+failed against the previous code before the change (the task named
+"Selected" was created in the 0.1 home).
+
+The fourth row is a deliberate change of behavior for 0.1 scripts: a home
+with two projects and no selection no longer falls back to the root. A clear
+error was preferred to a task created in a repository the user did not name.
+
+The checks of this change are listed with those of the next one, which was
+made on the same day: they were all rerun on the final code.
+
+### Follow-up: a run could end on native Windows while the interface read its files (October 11, 2026)
+
+Found by the browser check while the change above was verified. Its first run
+that day ended with exit status **1**, 161 passed and 2 failed, both in the
+*run* scenario: "a start while running is refused" was answered 202, and the
+timeline had a second start in it. The run log of that task shows why: the
+first run ended with `[WinError 5]` (access denied) when
+`storage.atomic_text` replaced `state.json` after development, so no run was
+active and the later start was accepted and resumed the task. The previous
+`state.json` stayed in place, with status `running` and no process behind it.
+
+Windows refuses to replace or delete a file while another process has it open
+without delete sharing, which is how Python opens a file to read it. The
+interface reads `state.json` of a task again whenever it changes, and
+`.run.lock` when it works out what is attached to a task. Measured on native
+Windows before the fix:
+
+- One process reading the file in a loop, another saving it: 1595 of 2000
+  saves failed with `PermissionError` (Python 3.13.3). Under WSL2: 0 of 2000.
+- With a file open for reading in the same process, `os.replace` onto it
+  failed with WinError 5 and `unlink` with WinError 32 (Python 3.13.3 and
+  3.11.3). The second is what `TaskLock` does on exit, so a run could also
+  leave its lock behind, on the platform where a stale lock cannot be
+  released from the interface. That case was not observed in a run.
+
+`storage.py`, `app.py` and `live.py` were not part of the change above, so
+the defect came with 0.2.0, when the interface started to read these files
+during a run. It may also be the unexplained error recorded above for one
+Windows run on October 10; that cannot be confirmed, because its output was
+not kept.
+
+**Fix.** On Windows, `atomic_text` and the release of `TaskLock` repeat a
+refused operation for up to two seconds (`SHARING_RETRY_SECONDS`), then report
+the error; a refused save still leaves the previous file in place. Other
+systems do not wait. Readers were already written to skip a file that is
+being replaced, and were not changed. `tests/test_storage.py` has seven tests:
+two hold a real file handle open and failed against the previous code on
+native Windows with the two errors above; five use a stand-in for the refused
+call and cover the repetition, its bound and the unchanged file on every
+platform. Three entries were added to `MUTATIONS`. After the fix the
+reproduction gave 0 of 2000 failed saves on native Windows with Python 3.13.3
+and with 3.11.3.
+
+**A defect of the browser check, also fixed.** A later run of
+`tools/ui_e2e.py` failed one check, "the timeline lists the persisted events
+in order", although that run had completed normally: the check read the
+timeline as soon as the header showed *Done*, and the panels follow a detail
+that is fetched after the header changes. The tool now waits up to five
+seconds for the timeline to have every persisted event before reading it.
+This failure appeared once in five complete runs that day and was not
+reproduced on purpose; with the wait, the *run* scenario passed eight times of
+eight, and the three complete runs below passed.
+
+Checks rerun on the final code of both changes on October 11, 2026, with
+scripted or synthetic providers and no provider call:
+
+- **Suite: 258 tests.** Native Windows 11 (10.0.26200) with Python 3.13.3 and
+  with Python 3.11.3: 253 passed, 5 skipped, exit status 0 on both. WSL2 with
+  Python 3.12.3: 257 passed, 1 skipped, exit status 0.
+- **Reliability driver** (`--repeat 3`): WSL2 42 passed, 0 failed, 0 skipped;
+  native Windows 30 passed, 0 failed, 12 skipped; exit status 0 on both.
+- **Protections**, native Windows, Python 3.13.3: 55 of 55 removed
+  safeguards detected, exit status 0. The three new entries were also run
+  under WSL2, where only the stand-in tests can notice them: 3 of 3 detected.
+- **Real clock**, WSL2: 10 of 10 checks passed, the retry 0.03 s after the
+  planned time, exit status 0.
+- **Browser check** (`python tools/ui_e2e.py`), native Windows, Chrome
+  154.0.8037.99 headless, Python 3.13.3, three complete runs: 163 passed, 0
+  failed, exit status 0 each time. Final state on disk to page: 0.36, 0.41 and
+  0.41 s.
+- **Packages.** `python -m build` into a directory outside the repository
+  produced `patchrondo-0.2.0.tar.gz` and `patchrondo-0.2.0-py3-none-any.whl`;
+  `twine check` passed both.
+- **Publication scanner:** exit status **1**, 92 files checked (one more: the
+  new test module), the same four findings as above (`debug.log` and the
+  three binary assets). Not a clean scan.
+
+Complete runs of the browser check on October 11, in order: 161 of 163 (the
+defect above, before its fix); 163 of 163; after the fix, 163, 163 and 162 of
+163 (the defect of the check); after the wait was added, the three runs
+listed.
+
+Not verified:
+
+- Either change on macOS, and in CI. Both are local and unpushed;
+  [run 38086345062](https://github.com/luigiggigo/patchrondo/actions/runs/38086345062)
+  (read with `gh` on October 11, 2026, concluded successfully) covers
+  `4e9cc6c`, the commit before them.
+- A reader that keeps a file open for longer than two seconds, such as a
+  scanner or a backup tool: the save then fails as before, after the wait.
+- The same refusal for other files a run deletes while the interface may read
+  them. The attached marker is removed on a best-effort basis by design; the
+  agent process files were not examined.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:

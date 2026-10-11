@@ -368,6 +368,10 @@ def scenario_run(env: Env) -> None:
     env.check("the final state reached the page within one second", latency < 1.0, f"{latency:.2f}s")
     env.check("exactly one developer and one reviewer call were made", [c["role"] for c in env.calls()[before:]] == ["developer", "reviewer"], str(env.calls()[before:]))
     events = [entry["event"] for entry in done["history"]]
+    try:  # the header follows the live summary, the panels the detail fetched after it: let that fetch arrive
+        page.wait(f"qa('.timeline .event-text').length === {len(events)}", 5, "the complete timeline")
+    except browser.BrowserError:
+        pass  # the check below reports what the page shows
     order = page.js("qa('.timeline .event-text').map((e) => e.textContent)")
     env.check("the timeline lists the persisted events in order", len(order) == len(events) and "Run started" in order[0] and order[-1] == "Task completed", str(order))
     env.expect("Rondo celebrates a completed task", "q('.rondo-note').innerText.includes('All patched up') && Boolean(q('.rondo-note .mood-hop'))")

@@ -117,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         elif command == "doctor":
             for name in doctor.PROVIDERS:
                 print("\n".join(doctor.report_lines(doctor.check(name))))
-        elif command == "list" and not opts.project and not workspace.has_legacy_root() \
+        elif command == "list" and not opts.project and (root / REGISTRY).exists() \
                 and len(projects := workspace.projects()) > 1:
             for project in projects:
                 print(f"# {project.name} ({project.id})")

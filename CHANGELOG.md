@@ -94,11 +94,22 @@ listed under *Engine*.
   file; editors use it before saving.
 - The task lock also stores the start token of its process. Unlocking does not
   use it.
+- On Windows, saving a state file and releasing the task lock wait up to two
+  seconds for another process that has the file open, instead of failing with
+  "access denied". The interface reads both files while a run writes them, so
+  a run could end in the middle of a task, or leave its lock behind.
+  (Corrected on October 11, 2026.)
 
 ### Command line
 
 - Every 0.1 command still works, and a home with `config.json` at its root
-  behaves as before without a registry being written.
+  and no registry behaves as before without a registry being written. Once
+  the interface has written a registry in such a home, commands without
+  `--project` use the selected project, or the only registered one, as in any
+  other home; with several projects and none selected they stop and ask for
+  `--project`. (Corrected on October 11, 2026: the root configuration used to
+  win over the selection, so `patchrondo new` could create a task in the 0.1
+  repository while another project was selected.)
 - New `--project ID|NAME` and `patchrondo projects`. Commands that take a task
   ID find the project that holds it. `init --repo` on a home that already has a
   registry adds a project; on a new home it creates the 0.1 layout as before.
