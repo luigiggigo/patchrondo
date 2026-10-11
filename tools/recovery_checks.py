@@ -198,6 +198,13 @@ MUTATIONS = [
              "            self.path.unlink(missing_ok=True)", ("test_storage",)),
     Mutation("refused save repeated without a bound", "storage.py",
              "            if time.monotonic() >= deadline:\n                raise\n", "", ("test_storage",)),
+    # Two requests for one repository: the check made before the registry mutex is not enough.
+    Mutation("repository check not repeated under the registry mutex", "workspace.py",
+             "            self._refuse_registered(self._listed(data), repo)\n", "",
+             ("test_workspace.OvertakenRegistrationTests",)),
+    Mutation("import check not repeated under the registry mutex", "workspace.py",
+             "            self._refuse_registered(self._listed(data), repo, home)\n", "",
+             ("test_workspace.OvertakenRegistrationTests",)),
 ]
 
 

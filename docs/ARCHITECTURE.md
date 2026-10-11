@@ -368,7 +368,11 @@ random hexadecimal digits and never changes. `home` is relative to the home
 when the state directory is inside it and absolute otherwise. The repository
 path is not copied into the registry: the project's own `config.json` remains
 its only source. Writes go through a read-modify-write under a short
-cross-process file mutex and an atomic replace.
+cross-process file mutex and an atomic replace. `Workspace.add` and
+`Workspace.import_home` refuse a repository or a state directory that is
+already registered, and make that check twice: before the mutex, to answer
+without waiting, and again on the registry read under it, because another
+registration can complete between the first check and the mutex.
 
 **Origins.** `managed`: created by `Workspace.add` under `projects/<id>/` with
 the regular `initialize`, so tests start disabled and untrusted. `legacy`: a

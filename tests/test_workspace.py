@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -144,6 +145,84 @@ class RegistryTests(Case):
         with self.assertRaises(ValueError):
             self.ws.add(make_repo(self.root / "alpha"))
         self.assertEqual((self.ws.root / "projects.json").read_text(encoding="utf-8"), '{"version": 9}')
+
+
+class OvertakenRegistrationTests(Case):
+    """Two requests for one repository: the check is repeated on the registry read under the mutex."""
+
+    def legacy_home(self, name: str) -> tuple[Path, Path]:
+        repo, home = make_repo(self.root / name), self.root / f"{name}-home"
+        initialize(home, repo)
+        return repo, home
+
+    def overtaken_by(self, competitor):
+        """Let `competitor` register after the next registration made its check and before it takes the mutex."""
+        real, done = Workspace._update, []
+
+        def update(workspace, change):
+            if not done:
+                done.append(True)
+                done.append(competitor())
+            return real(workspace, change)
+
+        return patch.object(Workspace, "_update", update), done
+
+    def assert_one_project(self, first: str, state_directories: int):
+        self.assertEqual([project.id for project in self.ws.projects()], [first])
+        self.assertEqual(len(read_json(self.ws.root / "projects.json")["projects"]), 1)
+        managed = self.ws.root / "projects"
+        self.assertEqual(len(list(managed.iterdir())) if managed.exists() else 0, state_directories)
+
+    def test_a_repository_added_twice_at_once_is_registered_once(self):
+        repo = make_repo(self.root / "alpha")
+        race, done = self.overtaken_by(lambda: Workspace(self.ws.root).add(repo, "First"))
+        with race, self.assertRaisesRegex(ValueError, 'That repository is already registered as "First"'):
+            self.ws.add(repo, "Second")
+        self.assert_one_project(done[1].id, 1)  # and the refused request left no state directory behind
+
+    def test_a_state_directory_imported_twice_at_once_is_registered_once(self):
+        _, home = self.legacy_home("old")
+        before = tree(home)
+        race, done = self.overtaken_by(lambda: Workspace(self.ws.root).import_home(home, "First"))
+        with race, self.assertRaisesRegex(ValueError, "That state directory is already registered"):
+            self.ws.import_home(home, "Second")
+        self.assert_one_project(done[1].id, 0)
+        self.assertEqual(tree(home), before)
+
+    def test_an_import_overtaken_by_an_add_of_its_repository_is_refused(self):
+        repo, home = self.legacy_home("old")
+        race, done = self.overtaken_by(lambda: Workspace(self.ws.root).add(repo, "First"))
+        with race, self.assertRaisesRegex(ValueError, 'Its repository is already registered as "First"'):
+            self.ws.import_home(home)
+        self.assert_one_project(done[1].id, 1)
+
+    def test_an_add_overtaken_by_an_import_of_its_repository_is_refused(self):
+        repo, home = self.legacy_home("old")
+        race, done = self.overtaken_by(lambda: Workspace(self.ws.root).import_home(home, "First"))
+        with race, self.assertRaisesRegex(ValueError, 'That repository is already registered as "First"'):
+            self.ws.add(repo)
+        self.assert_one_project(done[1].id, 0)
+
+    def test_registrations_from_several_threads_keep_one_project(self):
+        repo = make_repo(self.root / "alpha")
+        barrier, outcomes = threading.Barrier(6), []
+
+        def register():
+            barrier.wait()
+            try:
+                outcomes.append(Workspace(self.ws.root).add(repo).id)
+            except ValueError as error:
+                outcomes.append(str(error))
+
+        threads = [threading.Thread(target=register) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        registered = [outcome for outcome in outcomes if outcome.startswith("P-")]
+        self.assertEqual(len(registered), 1, outcomes)
+        self.assertEqual(sum("already registered" in outcome for outcome in outcomes), 5, outcomes)
+        self.assert_one_project(registered[0], 1)
 
 
 class LegacyTests(Case):

@@ -116,10 +116,13 @@ class Workspace:
     def has_legacy_root(self) -> bool:
         return (self.root / "config.json").is_file()
 
+    def _listed(self, data: dict) -> list[Project]:
+        return [project for entry in data["projects"] if (project := self._project(entry)) is not None]
+
     def projects(self) -> list[Project]:
         """Registered projects. A 0.1 configuration at the root is registered in place on first use."""
         data = self._read()
-        found = [project for entry in data["projects"] if (project := self._project(entry)) is not None]
+        found = self._listed(data)
         if self.has_legacy_root() and data.get("legacy_root") is None \
                 and not any(project.home == self.root for project in found):
             def adopt(current: dict) -> None:
@@ -141,13 +144,21 @@ class Workspace:
                     return project
         raise NotFound("Project not found")
 
-    def _repositories(self, skip: str | None = None) -> dict[Path, Project]:
-        known = {}
-        for project in self.projects():
-            repo = project.repository
-            if repo and project.id != skip:
-                known[Path(repo).resolve()] = project
-        return known
+    @staticmethod
+    def _refuse_registered(projects: list[Project], repo: Path, home: Path | None = None) -> None:
+        """Refuse a state directory or a repository that one of `projects` already has.
+
+        A check made before the registry mutex is taken can be overtaken by another
+        registration, so `add` and `import_home` repeat it on the registry read under
+        the mutex.
+        """
+        if home is not None and any(project.home == home for project in projects):
+            raise ValueError("That state directory is already registered")
+        for project in projects:
+            known = project.repository
+            if known and Path(known).resolve() == repo:
+                raise ValueError(f'{"That" if home is None else "Its"} repository is already registered '
+                                 f'as "{project.name}"')
 
     def add(self, repo: Path, name: str | None = None) -> Project:
         """Register a Git repository as a new project with its own state directory.
@@ -160,13 +171,12 @@ class Workspace:
         if self.root == repo or self.root.is_relative_to(repo):
             raise ValueError("The PatchRondo state directory is inside that repository; choose another repository "
                              "or another state directory")
-        duplicate = self._repositories().get(repo)
-        if duplicate is not None:
-            raise ValueError(f'That repository is already registered as "{duplicate.name}"')
+        self._refuse_registered(self.projects(), repo)
         name = clean_name(name, repo.name or "Project")
         created: list[Path] = []
 
         def change(data: dict) -> Project:
+            self._refuse_registered(self._listed(data), repo)
             project_id = self._new_id(data)
             home = self.root / "projects" / project_id
             if home.exists():
@@ -193,14 +203,12 @@ class Workspace:
         if not (home / "config.json").is_file():
             raise ValueError(f"No PatchRondo configuration found in {home} (config.json is missing)")
         cfg = config(home)  # the same validation every command applies
-        if any(project.home == home for project in self.projects()):
-            raise ValueError("That state directory is already registered")
-        duplicate = self._repositories().get(Path(cfg["repository"]).resolve())
-        if duplicate is not None:
-            raise ValueError(f'Its repository is already registered as "{duplicate.name}"')
+        repo = Path(cfg["repository"]).resolve()
+        self._refuse_registered(self.projects(), repo, home)
         name = clean_name(name, Path(cfg["repository"]).name or "Imported project")
 
         def change(data: dict) -> Project:
+            self._refuse_registered(self._listed(data), repo, home)
             entry = {"id": self._new_id(data), "name": name, "home": self._stored(home),
                      "origin": "legacy" if home == self.root else "imported", "added_at": now()}
             data["projects"].append(entry)

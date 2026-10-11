@@ -924,6 +924,81 @@ Not verified:
   them. The attached marker is removed on a best-effort basis by design; the
   agent process files were not examined.
 
+### Follow-up: two simultaneous requests could register one repository twice (October 11, 2026)
+
+Found by review of `Workspace.add` and `Workspace.import_home`: both looked
+for a repository or a state directory that was already registered before
+taking the registry mutex, and the function that then ran under the mutex
+appended its entry without looking again. A second request that made its
+check before the first one saved passed it too. Each `add` also created its
+own state directory, so one repository ended up as several projects with
+separate tasks and worktrees.
+
+**Fix.** The check is one function, `Workspace._refuse_registered`, called
+twice: before the mutex, as before, and again as the first step under it, on
+the registry that was just read. The second call does not go through
+`Workspace.projects`, which can take the same mutex to register a 0.1 root
+configuration; the first call has already done that. A request refused under
+the mutex has created nothing, so there is nothing to roll back. Messages and
+their order are unchanged. `_repositories`, which nothing else used, was
+removed.
+
+`tests/test_workspace.py` has five new tests. Four slip a competing
+registration in between the check and the mutex (add and add, import and
+import, and the two mixed orders through the shared repository); the fifth
+registers one repository from six threads. All five failed against the
+previous code on native Windows with Python 3.13.3: "ValueError not raised"
+four times, and six projects for six threads. With the fix they passed 25
+runs of 25 on native Windows and 25 of 25 under WSL2. Two entries were added
+to `MUTATIONS`, one for each repeated check.
+
+Separate operating-system processes, which the 0.2 section lists as not
+verified, were tried with a script that is not part of the repository: six
+processes started on a shared instant, each calling `Workspace.add` for the
+same repository.
+
+| Code | Platform | Rounds | Rounds with more than one entry | Per round |
+|---|---|---|---|---|
+| Previous (`8d79f7d`) | Native Windows, Python 3.13.3 | 5 | 5 | 6 entries, 6 state directories |
+| Previous (`8d79f7d`) | WSL2, Python 3.12.3 | 5 | 5 | 6 entries, 6 state directories |
+| Fixed | Native Windows, Python 3.13.3 | 10 | 0 | 1 accepted, 5 refused, 1 state directory |
+| Fixed | WSL2, Python 3.12.3 | 10 | 0 | 1 accepted, 5 refused, 1 state directory |
+
+Checks rerun on the final code on October 11, 2026, with scripted or
+synthetic providers and no provider call:
+
+- **Suite: 263 tests.** Native Windows 11 (10.0.26200) with Python 3.13.3 and
+  with Python 3.11.3: 258 passed, 5 skipped, exit status 0 on both. WSL2 with
+  Python 3.12.3: 262 passed, 1 skipped, exit status 0.
+- **Reliability driver** (`--repeat 3`): WSL2 42 passed, 0 failed, 0 skipped;
+  native Windows 30 passed, 0 failed, 12 skipped; exit status 0 on both.
+- **Protections**, native Windows, Python 3.13.3: 57 of 57 removed
+  safeguards detected, exit status 0.
+- **Real clock**, WSL2: 10 of 10 checks passed, the retry 0.03 s after the
+  planned time, exit status 0.
+- **Browser check** (`python tools/ui_e2e.py`), native Windows, Chrome
+  154.0.8037.99 headless, Python 3.13.3, one run: 163 passed, 0 failed, exit
+  status 0. `workspace.py` is not one of the interface modules; the check was
+  run because it registers one repository twice through the interface.
+- **Packages.** `python -m build` into a directory outside the repository
+  produced `patchrondo-0.2.0.tar.gz` and `patchrondo-0.2.0-py3-none-any.whl`;
+  `twine check` passed both.
+- **Publication scanner:** exit status **1**, 92 files checked, the same four
+  findings as above (`debug.log` and the three binary assets). Not a clean
+  scan.
+
+Not verified:
+
+- The change on macOS, and in CI. It is local and unpushed;
+  [run 38132089056](https://github.com/luigiggigo/patchrondo/actions/runs/38132089056)
+  (read with `gh` on October 11, 2026, all six jobs successful) covers
+  `8d79f7d`, the commit before it.
+- Simultaneous requests through the HTTP interface. The interface calls the
+  same two functions, and the tests call them directly.
+- Two registrations of one repository under different paths that
+  `Path.resolve` does not make equal, such as a second mount of the same
+  folder. The comparison is by resolved path, as before.
+
 ## Remaining limitations
 
 The remaining limitations are explicit:

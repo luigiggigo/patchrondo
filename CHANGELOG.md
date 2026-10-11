@@ -52,6 +52,9 @@ listed under *Engine*.
 - A 0.1 home is used where it is: a configuration at the root of the home is
   registered as a project in place, and another 0.1 home can be imported by
   reference. Nothing is moved or rewritten; worktrees keep their paths.
+- A repository or a state directory is registered once. The check is repeated
+  on the registry read under its mutex, so of two requests made at the same
+  time one is refused.
 - Removing a project deletes its registry entry only. The repository, tasks,
   worktrees and logs stay on disk and can be imported again.
 - A folder picker that lists folder names on this computer, and a read-only
