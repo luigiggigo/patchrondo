@@ -252,6 +252,9 @@ MUTATIONS = [
     Mutation("cursor inside a line accepted", "activity.py",
              "    return offset if stream.read(1) == b\"\\n\" else None  # a cursor always sits at the start of a line",
              "    return offset", ("test_activity",)),
+    Mutation("a journal met while its first line is written breaks its reader", "activity.py",
+             "        size = max(os.fstat(stream.fileno()).st_size, first)\n",
+             "        size = os.fstat(stream.fileno()).st_size\n", ("test_activity",)),
     # --- environment check, reviewer preflight and repair ---------------------------------------
     Mutation("turn limit reported as a plain CLI failure", "providers.py",
              "            if turn_limit is not None:\n                raise turn_limit\n", "", ("test_live_activity",)),

@@ -306,10 +306,12 @@ def read(task_path: Path, cursor=None, *, before=None, limit: int = PAGE_EVENTS)
     except OSError:
         return page  # nothing was recorded yet
     with stream:
-        size = os.fstat(stream.fileno()).st_size
         journal, first = _identity(stream)
         if journal is None:
             return page
+        # Measured after the first line was read, and never below it: a writer may have created the
+        # file and written that line between two looks, and what is read must not end before it starts.
+        size = max(os.fstat(stream.fileno()).st_size, first)
         end = size
         if before is not None:
             end = _offset(stream, journal, first, size, before)

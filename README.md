@@ -32,10 +32,11 @@
 **Version 0.2.1.** The source has been public on
 [GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026
 (0.1.0). The 0.2.0 interface and live activity are published as source on
-`main` (checked October 11, 2026, commit `6937d9f`). 0.2.1, the environment
-check with its repairs and the one-press start, is a local change of
-October 11, 2026 that is not published. The repository has no version tags or
-GitHub Releases; the
+`main`, and so is 0.2.1, the environment check with its repairs and the
+one-press start, in commit `624f60e` (checked October 12, 2026). One of the six
+CI jobs failed for that commit, on a timing fault in the reader of the
+activity journal; its correction is a local change of October 12, 2026 that is
+not published yet. The repository has no version tags or GitHub Releases; the
 [changelog](CHANGELOG.md) says what each version contains and the
 [technical review](docs/REVIEW.md) what was checked, where and when.
 
@@ -789,14 +790,15 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest recorded local validation, of the unpublished 0.2.1 working tree,
-ran **443 tests**: on native Windows (Python 3.13 and Python 3.11)
-**432 passed and 11 were skipped**; on WSL2 (Python 3.12) **425 passed and 18
-were skipped**, all with exit status 0. The skipped ones are tests that need
+The latest recorded local validation, on October 12, 2026, of 0.2.1 with the
+unpublished correction of the activity journal reader, ran **444 tests**: on
+native Windows (Python 3.13 and Python 3.11) **433 passed and 11 were
+skipped**; on WSL2 (Python 3.12) **426 passed and 18 were skipped**, all with
+exit status 0. The skipped ones are tests that need
 POSIX, tests of real Windows access lists, and five opt-in tests that run the
 reviewer preflight in the real Codex sandbox; those five passed on native
 Windows with both Pythons when asked for. These local results are separate from
-GitHub CI; the [technical review](docs/REVIEW.md#current-source-and-ci-status-october-11-2026)
+GitHub CI; the [technical review](docs/REVIEW.md#current-source-and-ci-status-october-12-2026)
 records the current published commit and its CI status, and
 [what was checked for 0.2.1](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026).
 Tests use temporary Git

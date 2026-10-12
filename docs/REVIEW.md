@@ -4,7 +4,8 @@ Initial review: October 8, 2026. Local follow-up: October 9, 2026. Real-provider
 checks and the automatic quota recovery change: October 10, 2026. PatchRondo
 0.2 (interface, several projects, process truth): October 10, 2026. Live
 activity and publication-status update: October 11, 2026. Environment check,
-repairs and one-press start (0.2.1, local): October 11, 2026.
+repairs and one-press start (0.2.1): October 11, 2026. Activity journal reader
+correction (local): October 12, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -12,23 +13,30 @@ repository was present in those original directories. A local, ignored
 Each section below says which code it covers: a published commit or a local
 working tree at its date.
 
-## Current source and CI status (October 11, 2026)
+## Current source and CI status (October 12, 2026)
 
-The 0.2.0 source, including the interface, its follow-up fixes, live activity
-and the streaming failure correction, is published on `main` at
-[`6937d9f`](https://github.com/luigiggigo/patchrondo/commit/6937d9fa16d47571b7e828a39e03b408f70a1440).
-The remote commit (`git ls-remote`), the empty tag list and the empty GitHub
-Releases list were checked on October 11, 2026 (exit status 0). There is no
-tagged release.
+The source on `main` is 0.2.1, at
+[`624f60e`](https://github.com/luigiggigo/patchrondo/commit/624f60e77ce4122473af472931371d2faf15167b),
+pushed on October 12, 2026 (00:30 +02:00): 0.2.0 with the interface, live
+activity and the streaming failure correction, and the environment check,
+repairs and one-press start of 0.2.1. The remote commit (`git ls-remote`), the
+empty tag list and the empty GitHub Releases list were checked on October 12,
+2026 (exit status 0). There is no tagged release.
 
-Checked with `gh run list` the same day:
-[CI run 38170281475](https://github.com/luigiggigo/patchrondo/actions/runs/38170281475)
-for `6937d9f` completed successfully, and so did
+Checked with `gh run view` the same day:
+[CI run 38180731756](https://github.com/luigiggigo/patchrondo/actions/runs/38180731756)
+for `624f60e` **failed**. Five of its six jobs passed (Python 3.11 and 3.13
+on Windows and macOS, Python 3.11 on Ubuntu). The job for Python 3.13 on
+`ubuntu-latest` ran 443 tests with one error and 18 skipped, and its package
+check did not run. The error and its correction are described under
+[Activity journal reader](#activity-journal-reader-october-12-2026); the
+correction is local and no CI run covers it.
+[Run 38170281475](https://github.com/luigiggigo/patchrondo/actions/runs/38170281475)
+for the preceding commit `6937d9f` completed successfully, and so did
 [run 38164218154](https://github.com/luigiggigo/patchrondo/actions/runs/38164218154)
 for `c9f6e1e`, which an earlier version of this section recorded as still in
 progress. CI does not run the browser checks, the real-sandbox tests or
-authenticated providers. No run covers the local 0.2.1 changes described in
-the next section.
+authenticated providers.
 
 The dated sections below retain the scope and results of the checks made at
 each stage. Earlier references to local validation describe those checks,
@@ -43,17 +51,75 @@ and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
 
+## Activity journal reader (October 12, 2026)
+
+This section covers a local correction to `activity.py`, its regression test
+and its mutation protection, made after 0.2.1 was published. It is not pushed
+and no CI run covers it.
+
+**What CI found.** In run 38180731756 for `624f60e`, the job for Python
+3.13.16 on `ubuntu-latest` failed with one error out of 443 tests:
+`test_ui.ActivityTests.test_events_reach_an_open_stream_within_a_second_and_in_order`.
+The server thread of the activity stream had ended with `ValueError: read
+length must be non-negative or -1` in `activity._forward`, so the test received
+no message. The other five jobs ran the same test and passed, as did every
+local run recorded above.
+
+**Cause.** That test opens the stream before the journal exists. `activity.read`
+measured the file, then read its first line. When the writer created the file
+and wrote that line between the two, the reader held a size of zero and a
+first line that ends later, and asked for a negative number of bytes. The
+reader is part of live activity as published in 0.2.0; the 0.2.1 changes do not
+touch it. The window is a few instructions wide, which is why it had not been
+met before.
+
+**Correction.** The size is measured after the first line was read and is
+never taken as smaller than that line. A journal met in that instant is read
+as empty, with a cursor from which the next read continues.
+
+**Regression test.** `test_a_journal_met_while_its_first_line_is_being_written_is_read_as_empty`
+gives the reader a stale size of zero for a journal whose first line is
+there, with no dependence on timing. Against `activity.py` as published in
+`624f60e` it fails with the same `ValueError` as the CI job (34 tests, 1 error,
+exit status 1); with the correction the module passes (34 tests, exit status
+0). The protection check removes the correction and expects that test to fail.
+
+Validation after the correction, on October 12, 2026:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 444 tests, 433 passed, 11 skipped, 297.848 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 444 tests, 433 passed, 11 skipped, 296.262 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 444 tests, 426 passed, 18 skipped, 120.990 s | 0 |
+| Protections | WSL2, Python 3.12.3: 90 of 90 removed safeguards detected, 0 missed | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.04 s after the planned time | 0 |
+| Browser, all ten scenarios | Native Windows, Python 3.13.3, Chrome 154.0.8037.99 headless: 268 passed, 0 failed | 0 |
+| Preflight in the real Codex sandbox (opt-in) | Native Windows, codex-cli 0.161.0, Python 3.13.3 and 3.11.3: 5 tests passed on each | 0 / 0 |
+| Build and `twine check` | Native Windows: sdist and wheel of 0.2.1 built outside the repository; both passed | 0 / 0 |
+| Publication scanner | 106 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass. Ubuntu with Python 3.13 was not reproduced
+locally: the nearest local platform is WSL2 with Python 3.12.3. The failure is
+a race, so a passing run does not show its absence; what shows that this cause
+is removed is the regression test, which forces the condition. Whether the
+GitHub job passes will be known only from a CI run for a commit that contains
+the correction.
+
 ## Zero configuration and self-healing (October 11, 2026)
 
-This section covers the local working tree of PatchRondo 0.2.1: the
+This section covers PatchRondo 0.2.1 as validated in the local working tree
+before it was published in commit `624f60e`: the
 environment check (`environment.py`), the reviewer preflight (`preflight.py`),
 the Windows access policy (`winacl.py`), the repairs (`repair.py`), their place
 in `core.run_task`, the `/start` and `/repair` routes, the home-page composer,
 the *Prepare* step, the guided fix and the test consent on the task page, the
 two failure kinds `max_turns` and `git_dubious_ownership`, 97 new tests, 19
-new protections and one new browser scenario. Nothing of it is committed or
-pushed, and no CI run covers it. The work was done on October 11, 2026; the
-last validation runs below ended after midnight, on October 12, local time.
+new protections and one new browser scenario. When these checks were made
+nothing of it was committed or pushed. The work was done on October 11, 2026;
+the last validation runs below ended after midnight, on October 12, local
+time.
 
 ### What was observed before anything was changed
 

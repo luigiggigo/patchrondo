@@ -326,6 +326,29 @@ class ReadTests(JournalCase):
             self.assertEqual(count, 1200)
             self.assertGreater(calls, 5)
 
+    def test_a_journal_met_while_its_first_line_is_being_written_is_read_as_empty(self):
+        # A reader can measure the file just after it was created and read its first line just after
+        # that line was written: the size it holds is then smaller than what it has already read.
+        journal = self.journal()
+        header = len(self.file.read_bytes())
+        real = os.fstat
+
+        class Stale:
+            st_size = 0  # as measured before the header was there
+
+        with patch("patchrondo.activity.os.fstat", lambda descriptor: Stale()):
+            first = activity.read(self.path, limit=1)
+            name = first["journal"]
+            self.assertTrue(activity.JOURNAL_ID.fullmatch(name))
+            self.assertEqual((first["events"], first["next"], first["reset"], first["more"]), ([], f"{name}:{header}", False, False))
+            # The cursor an open stream starts from, and the page before the start, in the same moment.
+            for page in (activity.read(self.path, f"{name}:0"), activity.read(self.path, before=f"{name}:0")):
+                self.assertEqual((page["events"], page["next"], page["reset"]), ([], f"{name}:{header}", False))
+        self.assertIs(os.fstat, real)
+        # Nothing was lost: what is written next is read from that cursor.
+        journal.emit("message", text="first")
+        self.assertEqual([event["text"] for event in activity.read(self.path, first["next"])["events"]], ["first"])
+
     def test_a_damaged_first_line_still_gives_one_stable_journal(self):
         self.fill(3)
         data = self.file.read_bytes()

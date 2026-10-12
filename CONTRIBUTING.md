@@ -118,7 +118,7 @@ you are entitled to contribute. Report security issues through `SECURITY.md`.
 ## Documentation and version history
 
 The 0.2.0 source, including the interface and live activity, is public on
-`main`; 0.2.1 is a local change of October 11, 2026. Record changes in dated
+`main`, and so is 0.2.1 since October 12, 2026. Record changes in dated
 entries under their existing version in
 `CHANGELOG.md`; update that entry when source is pushed. Verify the remote
 commit, tags and GitHub Releases before describing publication status, and

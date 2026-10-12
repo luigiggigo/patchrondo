@@ -2,11 +2,32 @@
 
 ## 0.2.1 — zero configuration and self-healing
 
-Local working tree, October 11, 2026: not committed, not pushed, no tag and no
-release. The [technical review](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026)
+Source published on `main` in commit `624f60e` on October 12, 2026 (00:30
++02:00). No version tags or GitHub Releases exist as checked that day. The
+[technical review](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026)
 records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
+
+### Activity journal reader — October 12, 2026
+
+Local correction; not pushed.
+
+- Reading a task's activity journal no longer fails when the reader meets the
+  file in the instant between its creation and the writing of its first line.
+  The reader measured the file before reading that line; when the line arrived
+  in between, the measured size was smaller than what had already been read and
+  the read raised an error, which ended an open activity stream. The size is
+  now measured afterwards and never taken as smaller than the first line. Such
+  a journal is read as empty, and what is written next is read from the cursor
+  that answer gave.
+- The fault is in the reader added with live activity in 0.2.0, not in the
+  0.2.1 changes. It was found by the CI run for `624f60e`: one of six jobs
+  (Python 3.13 on `ubuntu-latest`) failed in
+  `test_events_reach_an_open_stream_within_a_second_and_in_order`; the other
+  five passed. A regression test reproduces the same error against the
+  published reader without depending on timing, and a mutation check protects
+  the correction.
 
 ### Why
 
