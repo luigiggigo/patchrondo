@@ -248,8 +248,9 @@ class SeamTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 providers.probe(["codex", "sandbox", "--help"], Path.cwd(), timeout=1)
 
-    def test_only_the_sandbox_self_check_may_be_probed(self):
-        # Refused before anything is started: a prompt can never travel this way.
+    def test_nothing_that_takes_a_prompt_may_be_probed(self):
+        # Refused before anything is started: a prompt can never travel this way. What is allowed besides
+        # the sandbox self-check is a fixed list of exact questions (tests/test_agents.py).
         for argv in (["codex", "exec", "-"], ["claude", "-p"], ["codex"], ["powershell.exe", "-Command", "x"]):
             with self.subTest(argv=argv), self.assertRaises(ValueError):
                 providers.probe(argv, Path.cwd(), timeout=1)

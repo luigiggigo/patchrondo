@@ -51,6 +51,7 @@ function composer() {
     h("div", { class: "composer-head" }, h("h2", {}, "What should be done?"), projectHost),
     text,
     h("div", { class: "composer-foot" }, roleHost, status, h("span", { class: "grow" }),
+      h("a", { class: "link", href: href("agents"), "data-tip": "Choose the model and the options of each agent" }, "Models"),
       h("a", { class: "link", href: href("new"), "data-tip": "Title, acceptance criteria and limits for this task" }, "More options"), start),
     notes, error,
     h("p", { class: "faint" }, "PatchRondo prepares a private copy of the project, checks the agents and starts them with your Claude and Codex plans. ",

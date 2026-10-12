@@ -12,6 +12,7 @@ export function parseRoute(hash = location.hash) {
   if (head === "new") return { name: "new", params };
   if (head === "projects") return { name: "projects", params };
   if (head === "settings") return { name: "settings", scope: a || "global", section: b || "general", params };
+  if (head === "agents") return { name: "agents", project: a || null, task: b || null, params };
   if (head === "welcome") return { name: "welcome", params };
   if (head === "about") return { name: "about", params };
   return { name: "missing", params };

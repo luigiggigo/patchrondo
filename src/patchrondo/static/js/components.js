@@ -4,7 +4,7 @@ import { h, icon } from "./dom.js";
 import { ago, clock, fullDate } from "./format.js";
 import { href } from "./router.js";
 import { state } from "./store.js";
-import { activityOf, agentName, describeEvent, workflow } from "./tasks.js";
+import { activityOf, agentName, configured, describeEvent, workflow } from "./tasks.js";
 import { agentChip } from "./ui.js";
 
 const STEP_TONE = { done: "ok", current: "accent", waiting: "wait", paused: "warn", error: "danger", next: "neutral", pending: "neutral" };
@@ -71,9 +71,14 @@ export function eventRow(event, task, { showTask = false } = {}) {
       showTask ? h("a", { class: "event-task truncate", href: href("tasks", task.project, task.id) }, task.title || task.id) : null));
 }
 
+// Who plays each role, with the model and effort of its most recent step as the engine recorded them.
 export function agentRoles(task) {
+  const used = (role) => {
+    const text = configured(task.agents?.[role]);
+    return text ? h("span", { class: "faint", "data-tip": "Model and effort of this role's most recent step" }, text) : null;
+  };
   return h("div", { class: "row wrap" },
-    h("span", { class: "chip" }, h("span", { class: "faint" }, "Developer"), agentChip(task.developer)),
+    h("span", { class: "chip" }, h("span", { class: "faint" }, "Developer"), agentChip(task.developer), used("developer")),
     icon("arrowRight", "sm faint"),
-    h("span", { class: "chip" }, h("span", { class: "faint" }, "Reviewer"), agentChip(task.reviewer)));
+    h("span", { class: "chip" }, h("span", { class: "faint" }, "Reviewer"), agentChip(task.reviewer), used("reviewer")));
 }

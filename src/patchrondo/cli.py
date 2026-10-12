@@ -9,7 +9,7 @@ import signal
 import sqlite3
 import sys
 
-from . import __version__, doctor, rag, recovery, runinfo
+from . import __version__, agents, doctor, rag, recovery, runinfo
 from .core import config, create_task, initialize, task_config, task_dir
 from .storage import read_json
 from .workspace import REGISTRY, Project, Workspace
@@ -38,6 +38,10 @@ def parser() -> argparse.ArgumentParser:
     new.add_argument("--accept", action="append", default=[], help="Acceptance criterion (repeatable)")
     new.add_argument("--developer", choices=["claude", "codex"], default="claude")
     new.add_argument("--reviewer", choices=["claude", "codex"], default="codex")
+    for role in agents.ROLES:
+        new.add_argument(f"--{role}-model", metavar="MODEL", help=f"Model of the {role} for this task (an alias or a model ID); "
+                         "default: the project's and the global agent settings")
+        new.add_argument(f"--{role}-effort", metavar="LEVEL", help=f"Effort of the {role} for this task")
     for action in ("run", "resume", "status", "report"):
         cmd = sub.add_parser(action)
         cmd.add_argument("task_id", help="Task ID such as T-0123456789ab")
@@ -126,18 +130,24 @@ def main(argv: list[str] | None = None) -> int:
             home = _project(workspace, opts.project, getattr(opts, "task_id", None) or getattr(opts, "task", None)).home
             if command == "new":
                 description = opts.task_file.read_text(encoding="utf-8") if opts.task_file else opts.description
+                chosen = {role: {getattr(opts, role): {key: value for key in ("model", "effort")
+                                                       if (value := getattr(opts, f"{role}_{key}")) is not None}}
+                          for role in agents.ROLES}
                 task_id, workspace_path = create_task(home, title=opts.title, description=description,
-                     acceptance=opts.accept, developer=opts.developer, reviewer=opts.reviewer)
+                     acceptance=opts.accept, developer=opts.developer, reviewer=opts.reviewer, agent_settings=chosen)
                 print(f'Created {task_id}\nWorktree: {workspace_path}\nRun: patchrondo --home "{root}" run {task_id}')
             elif command in {"run", "resume"}:
                 auto = recovery.active(task_config(home, opts.task_id), opts.auto_resume)
                 if os.environ.get("PATCHRONDO_UI_CHILD") == "1" and signal.getsignal(signal.SIGINT) == signal.SIG_IGN:
                     # Started detached by the interface: its Stop button must still be able to interrupt.
                     signal.signal(signal.SIGINT, signal.default_int_handler)
+                # The global agent settings live beside the project registry. A run started by the interface
+                # is given a project's own state directory as its home and is told where they are.
+                shared = root if (root / REGISTRY).exists() or (root / agents.STORE).exists() else None
                 with runinfo.attached(task_dir(home, opts.task_id), auto):
                     state = recovery.supervise(home, opts.task_id, force_unlock=opts.unlock,
                                                auto_resume=opts.auto_resume,
-                                               notify=lambda message: print(message, flush=True))
+                                               notify=lambda message: print(message, flush=True), agents_root=shared)
                 print(f"{state['id']} · {state['status']} · iteration {state['iteration']} · phase {state['phase']}")
                 print(f"Report: {home / 'tasks' / opts.task_id / 'report.md'}")
                 if state.get("last_error"):

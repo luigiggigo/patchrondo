@@ -5,7 +5,7 @@ checks and the automatic quota recovery change: October 10, 2026. PatchRondo
 0.2 (interface, several projects, process truth): October 10, 2026. Live
 activity and publication-status update: October 11, 2026. Environment check,
 repairs and one-press start (0.2.1): October 11, 2026. Activity journal reader
-correction (local): October 12, 2026.
+correction and agent settings: October 12, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -16,21 +16,25 @@ working tree at its date.
 ## Current source and CI status (October 12, 2026)
 
 The source on `main` is 0.2.1, at
-[`624f60e`](https://github.com/luigiggigo/patchrondo/commit/624f60e77ce4122473af472931371d2faf15167b),
-pushed on October 12, 2026 (00:30 +02:00): 0.2.0 with the interface, live
-activity and the streaming failure correction, and the environment check,
-repairs and one-press start of 0.2.1. The remote commit (`git ls-remote`), the
-empty tag list and the empty GitHub Releases list were checked on October 12,
-2026 (exit status 0). There is no tagged release.
+[`a529273`](https://github.com/luigiggigo/patchrondo/commit/a529273f68d773066463406d9404e7cba4e11f1a),
+pushed on October 12, 2026 (20:43 +02:00): 0.2.0 with the interface, live
+activity and the streaming failure correction, the environment check, repairs
+and one-press start of 0.2.1 (commit
+[`624f60e`](https://github.com/luigiggigo/patchrondo/commit/624f60e77ce4122473af472931371d2faf15167b)),
+and the correction of the activity journal reader. The remote commit (`git
+ls-remote`), the empty tag list and the empty GitHub Releases list were
+checked on October 12, 2026 (exit status 0). There is no tagged release.
 
 Checked with `gh run view` the same day:
+[CI run 38292863463](https://github.com/luigiggigo/patchrondo/actions/runs/38292863463)
+for `a529273` completed **successfully** in all six jobs (Python 3.11 and
+3.13 on Ubuntu, Windows and macOS).
 [CI run 38180731756](https://github.com/luigiggigo/patchrondo/actions/runs/38180731756)
-for `624f60e` **failed**. Five of its six jobs passed (Python 3.11 and 3.13
-on Windows and macOS, Python 3.11 on Ubuntu). The job for Python 3.13 on
+for `624f60e` had **failed**. Five of its six jobs passed (Python 3.11 and
+3.13 on Windows and macOS, Python 3.11 on Ubuntu). The job for Python 3.13 on
 `ubuntu-latest` ran 443 tests with one error and 18 skipped, and its package
 check did not run. The error and its correction are described under
-[Activity journal reader](#activity-journal-reader-october-12-2026); the
-correction is local and no CI run covers it.
+[Activity journal reader](#activity-journal-reader-october-12-2026).
 [Run 38170281475](https://github.com/luigiggigo/patchrondo/actions/runs/38170281475)
 for the preceding commit `6937d9f` completed successfully, and so did
 [run 38164218154](https://github.com/luigiggigo/patchrondo/actions/runs/38164218154)
@@ -41,7 +45,7 @@ authenticated providers.
 The dated sections below retain the scope and results of the checks made at
 each stage. Earlier references to local validation describe those checks,
 not the current publication status. The live-activity addition recorded 344
-tests; later local corrections have their own validation records below.
+tests; later corrections have their own validation records below.
 
 The documentation-status refresh on October 11, 2026 changed five tracked
 Markdown files and local, ignored `AGENTS.md`. On native Windows, six files
@@ -51,11 +55,184 @@ and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
 
+## Agent settings (October 12, 2026)
+
+This section covers the agent settings (models and CLI options per role,
+three levels, the Agents page), developed on top of `a529273` and validated
+on the computers named in the table below. The package version is unchanged,
+0.2.1.
+
+### What changed
+
+- `agents.py` (new): the typed table of settings of each CLI, validation, the
+  three levels and their resolution, the frozen record of a step, the command
+  of a step, presets, model lists and the checks of *Test configuration*.
+- `providers.py`: a step is started with the command `agents.command` builds
+  from its settings; two failure kinds (`model_unavailable`,
+  `unsupported_option`); the probe accepts five more exact model-free
+  commands; `OfficialCLI.verify` (the test call).
+- `doctor.py`: `discover` (options of the help, Codex model catalog and
+  profile files).
+- `core.py`: the settings of a step are frozen when it first starts and kept
+  across resume, retry and recovery; `refresh_agent_settings`; tasks can be
+  created with their own settings.
+- `app.py`, `ui.py`: the `/api/agents…` routes; what each role used in the
+  task summaries and details.
+- `static/`: the Agents page and its styles; model and effort on the task
+  page, in Live Activity, in the new-task form; two new error explanations.
+- `report.py`, `cli.py`, `recovery.py`, `activity.py`: the settings used in
+  the report; `--developer-model` and the three sibling options of `new`;
+  where the global settings are for a run; details on an attempt's start.
+- Tests: `tests/test_agents.py` (66 tests); the `agents` scenario of
+  `tools/ui_e2e.py` (48 checks); 22 protections in `tools/recovery_checks.py`.
+
+### Where the options come from
+
+Read on October 12, 2026, on native Windows 11:
+
+- `claude --help` of Claude Code 2.1.295, and the CLI reference
+  (https://code.claude.com/docs/en/cli-reference), which states that `--help`
+  does not list every flag. `--max-turns` is in the reference and not in that
+  help. Model aliases and effort levels:
+  https://code.claude.com/docs/en/model-config.
+- `codex --help`, `codex exec --help`, `codex debug --help` and `codex debug
+  models --help` of codex-cli 0.161.0, and the configuration reference
+  (https://learn.chatgpt.com/docs/config-file/config-reference) for
+  `model_reasoning_effort`, `web_search` and the reviewed override keys.
+
+Commands started on the real CLIs during this work, none of which takes a
+prompt: `claude --version`, `claude auth status`, `claude --help`, `codex
+--version`, `codex login status`, `codex --help`, `codex exec --help`, `codex
+debug --help`, `codex features --help`, `codex debug models --help`, `codex
+debug models --bundled` and, once through `doctor.discover`, `codex debug
+models`. With them `discover` found 71 long options for Claude Code, where
+every setting's option is listed except `--max-turns` (reported as
+documented), and 35 for Codex, with all settings listed and seven models in
+the catalog (the bundled catalog has eleven entries, four of them hidden).
+
+**No model was called.** No provider CLI was started with a prompt, by the
+checks or by hand, and no plan quota was used. In particular the test call
+(*Test with a real call*) was exercised with scripted answers only.
+
+### Validation on the final code
+
+All of these ran on October 12, 2026 after the last change to runtime code,
+tests and tools.
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 510 tests, 499 passed, 11 skipped, 289.752 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 510 tests, 499 passed, 11 skipped, 281.826 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 510 tests, 492 passed, 18 skipped, 140.114 s | 0 |
+| Protections | WSL2, Python 3.12.3: 112 of 112 removed safeguards detected, 0 missed (22 of them new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (interruption and stale-lock scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Browser, all eleven scenarios | Native Windows, Python 3.13.3, Chrome 154.0.8037.99 headless: 316 passed, 0 failed (48 in the new `agents` scenario) | 0 |
+| Preflight in the real Codex sandbox (opt-in) | Native Windows, codex-cli 0.161.0, Python 3.13.3 and 3.11.3: 5 tests passed on each | 0 / 0 |
+| Build and `twine check` | Native Windows: sdist and wheel of 0.2.1 built outside the repository; both passed; both contain `agents.py` and `views/agents.js` | 0 / 0 |
+| Publication scanner | 109 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass: its four findings are the ones recorded for
+the previous change, and none is in a new file. The real-sandbox tests were
+run because `providers.probe`, which the preflight uses, changed; the
+environment check itself did not.
+
+### What the checks establish
+
+- **Compatibility with existing setups.** With no settings, every command is
+  compared, argument for argument, with the commands of the previous version
+  written out in the test, for both providers, both roles, with and without
+  streaming. A task without settings records empty settings and writes no new
+  file in its run folder; the 444 tests that existed before pass unchanged
+  apart from one renamed test of the probe.
+- **The settings are really applied.** Whole tasks run against a scripted CLI
+  that records its arguments: each role receives its own model and effort,
+  one provider plays both roles with two models, and the task level wins over
+  the project and the project over the global one. The browser scenario does
+  the same from the page: it chooses a preset and a model on the Agents page,
+  overrides the effort for the project, starts a task from the home page and
+  finds `--model opus --effort low` in the developer's arguments and the
+  reviewer's own model, effort and `read-only` sandbox in the reviewer's.
+- **Freezing.** A step that crashed is resumed with the settings it started
+  with after the global settings were changed; an automatic retry after a
+  scripted usage limit does the same when the settings are edited while the
+  run waits; the next iteration takes the settings of its own start; the
+  stopped step takes the settings of now only after
+  `refresh_agent_settings`, which leaves a history event.
+- **Limits.** The reviewer's read-only command is checked against values that
+  validation would refuse; the acknowledgement, the blocked options, the
+  managed options, short options, blocked configuration keys, model names
+  that look like options, credentials and private folders each have a test
+  and a protection that removes the check and expects that test to fail.
+- **Regression tests fail against the previous behavior.** For every new
+  safeguard the protection run does exactly that, on a copy of the sources.
+
+### Defects found by these checks and fixed
+
+- A reviewer could be given an unreviewed Codex configuration key by sending
+  the acknowledgement with it. Found by `test_the_reviewer_cannot_be_given_what_writes`
+  on its first run; the reviewer now has nothing an acknowledgement opens.
+- On the Agents page, a request made for the previous level could arrive
+  after the level was changed and be shown under the new one. Found by the
+  browser scenario; only the answer to the latest request is used.
+- `tools/ui_e2e.py` used a backslash inside an f-string expression, which
+  Python 3.11 does not parse. Found by the unit suite on Python 3.11.3, where
+  two tests that load the tool failed; corrected, and all sources parse on
+  3.11.
+- In its first complete run the new scenario failed one of its own checks,
+  which counted the provider calls of the scenarios before it. Corrected in
+  the scenario.
+- The publication scanner reported five lines of the new test file, where a
+  key-shaped text was written out to test masking. The text is now assembled
+  in the test, as the existing tests do.
+
+One complete browser run, made while the protection run was using eight
+processes on the same computer, failed one check of the `legacy` scenario
+(the retrieval settings of a 0.1 home did not appear within ten seconds).
+That scenario and the code it exercises were not changed; the two later
+complete runs made with nothing else running passed all 316 checks. It is
+recorded here as an unexplained failure under load, not as fixed.
+
+### Not verified
+
+- Any option against an authenticated CLI. That a CLI's help names an option
+  does not show that the option works in a non-interactive call, with which
+  values, or with which models. This includes `--effort`, `--fallback-model`,
+  `--max-budget-usd`, `--mcp-config`, `-c web_search=…` and `--profile`.
+- The wording of both providers when a model is not available to an account,
+  and when an option is refused. `model_unavailable` matches general wording;
+  `unsupported_option` matches the shapes of the two argument parsers. A
+  message that matches neither pauses the task as a plain CLI failure.
+- The test call with a real CLI, including whether a Codex test call is
+  affected by the access-list problem the environment check handles for task
+  worktrees (its folder is a private folder of the home).
+- Claude Code and Codex versions other than 2.1.295 and 0.161.0; `discover`
+  on Linux, macOS and WSL2 was exercised with scripted answers only.
+- The Agents page in a browser other than Chrome on Windows, and with a
+  screen reader. The scenario checks accessible names and a 420-pixel
+  viewport.
+
+### Limits
+
+- Presets are starting points. *Fast*, *Balanced* and *Max quality* name the
+  Claude aliases `haiku`, `sonnet` and `opus` with an effort; for Codex they
+  set the effort only, because no Codex model name is written into the
+  sources.
+- A list of models never says what an account can use; only a test call
+  does, for one moment.
+- CLI sessions are not continued between steps.
+- A profile and the CLIs' own configuration files still apply, as before.
+- The acknowledgement records a choice. With `danger-full-access`, a tool
+  that runs commands, additional folders or MCP servers, the worktree no
+  longer bounds what a developer agent can change.
+
 ## Activity journal reader (October 12, 2026)
 
-This section covers a local correction to `activity.py`, its regression test
-and its mutation protection, made after 0.2.1 was published. It is not pushed
-and no CI run covers it.
+This section covers a correction to `activity.py`, its regression test and
+its mutation protection, made after 0.2.1 was published. It is published in
+commit `a529273`, and CI run 38292863463 for that commit passed in all six
+jobs.
 
 **What CI found.** In run 38180731756 for `624f60e`, the job for Python
 3.13.16 on `ubuntu-latest` failed with one error out of 443 tests:
@@ -103,9 +280,9 @@ Validation after the correction, on October 12, 2026:
 The scanner is not a clean pass. Ubuntu with Python 3.13 was not reproduced
 locally: the nearest local platform is WSL2 with Python 3.12.3. The failure is
 a race, so a passing run does not show its absence; what shows that this cause
-is removed is the regression test, which forces the condition. Whether the
-GitHub job passes will be known only from a CI run for a commit that contains
-the correction.
+is removed is the regression test, which forces the condition. On GitHub, CI
+run 38292863463 for `a529273` passed in all six jobs, the job for Python 3.13
+on `ubuntu-latest` included (checked on October 12, 2026).
 
 ## Zero configuration and self-healing (October 11, 2026)
 

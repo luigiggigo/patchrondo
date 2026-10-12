@@ -196,6 +196,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return 200, app.ws.settings()
         if path == "/api/providers":
             return 200, app.providers.view()
+        if path == "/api/agents":
+            return 200, app.agents_view((query.get("project") or [None])[0] or None, (query.get("task") or [None])[0] or None)
         if match := re.fullmatch(PROJECT, path):
             return 200, app.project_detail(app.ws.get(match.group(1)))
         if match := re.fullmatch(TASK, path):
@@ -344,6 +346,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return 200, browse(payload.get("path"))
         if path == "/api/providers/refresh":
             return 202, app.providers.view(refresh=True)
+        if path == "/api/agents/test":
+            return 200, app.agents_test(payload)
+        if path == "/api/agents/verify":
+            return 200, app.agents_verify(payload)
+        if path == "/api/agents/presets":
+            return 200, app.agents_preset(payload)
+        if path == "/api/agents/models":
+            return 200, app.agents_model(payload)
+        if match := re.fullmatch(TASK + "/agents/refresh", path):
+            return 200, app.agents_refresh_step(app.ws.get(match.group(1)), unquote(match.group(2)))
         if match := re.fullmatch(PROJECT + "/index", path):
             return 202, app.start_index(app.ws.get(match.group(1)))
         if match := re.fullmatch(PROJECT + "/tasks", path):
@@ -362,6 +374,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         app = self.server.app
         if path == "/api/settings":
             return 200, app.update_settings(payload)
+        if path == "/api/agents":
+            return 200, app.agents_save(payload)
         if match := re.fullmatch(PROJECT, path):
             return 200, app.rename_project(app.ws.get(match.group(1)), payload)
         if match := re.fullmatch(PROJECT + "/config", path):
@@ -370,6 +384,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _delete(self, path: str) -> tuple[int, dict]:
         app = self.server.app
+        if match := re.fullmatch(r"/api/agents/presets/(U-[a-f0-9]{8})", path):
+            return 200, app.agents_preset_remove(match.group(1))
         if match := re.fullmatch(PROJECT, path):
             return 200, app.remove_project(app.ws.get(match.group(1)))
         raise FileNotFoundError("Not found")

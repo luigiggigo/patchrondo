@@ -8,7 +8,7 @@ import { fullDate, humanize, plural } from "../format.js";
 import { activityFeed } from "../live.js";
 import { href } from "../router.js";
 import { emptyState, rondoFace, taskMessage } from "../rondo.js";
-import { agentName, phaseSentence } from "../tasks.js";
+import { agentName, configured, phaseSentence } from "../tasks.js";
 import { badge, button, toastError, toggle } from "../ui.js";
 
 const MAX_ROWS = 4000;
@@ -83,8 +83,10 @@ export function describe(event) {
     }
     case "status":
       switch (event.status) {
+        // The model and effort are the configuration the step was started with; the session line below it is what the CLI reports.
         case "started": return { kind: "status", icon: "play", tone: "accent", title: event.role === "tests" ? "Project tests started"
-          : event.role === "environment" ? "PatchRondo started preparing" : `${agentName(event.provider)} started as ${ROLES[event.role] || event.role}` };
+          : event.role === "environment" ? "PatchRondo started preparing" : `${agentName(event.provider)} started as ${ROLES[event.role] || event.role}`,
+          note: ["developer", "reviewer"].includes(event.role) ? configured(event) || "CLI default model" : "" };
         // Recorded by the environment check: its stages, what it repaired and what it found.
         case "stage": return { kind: "status", icon: "shield", tone: "neutral", title: event.text || humanize(event.stage || "stage") };
         case "repair": return { kind: "status", icon: "shield", tone: "accent", title: event.text || "Applying a fix" };

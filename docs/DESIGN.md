@@ -82,6 +82,8 @@ Defined in `css/app.css` and built by `js/ui.js`:
 | Button | default, `primary`, `ghost`, `danger`; sizes `sm`, default, `lg`; `busy` shows a spinner and ignores further activations |
 | Icon button | always has an accessible name and a tooltip |
 | Badge, dot, chip | take a tone class; a pulsing dot only for verified live states |
+| Agent card | one per role on the Agents page: agent, preset, model and effort first; everything else behind *Advanced*, grouped by category in native `details`; the command preview and the result of *Test configuration* at the bottom; one *Apply* per card |
+| Origin chip | beside every agent setting: the level its value comes from (dashed for PatchRondo's default), with the way back to the inherited value |
 | Card, list row, key–value list | flat surfaces with a 1 px border |
 | Callout | tone, icon, title, body and actions; `role="alert"` for danger |
 | Empty state | dashed "stitched" border in the accent color, like the patch on Rondo's chest, with Rondo, one sentence and one action |
@@ -132,6 +134,18 @@ Every view implements the same states: loading (skeleton), empty (Rondo and an
 action), ready, error (callout with a retry where one makes sense), disabled
 (with the reason in a tooltip) and, for the whole page, connection lost (a
 banner that names the time of the last confirmed state).
+
+The Agents page draws its controls from the description the backend sends
+(`agents.schema`), so a setting, its limits and its availability are defined
+in one place. A setting that cannot be used is shown disabled with its reason
+in words under it (the role cannot have it; the installed CLI does not list
+its option), never hidden, and an unavailable choice stays in its list,
+disabled, with the reason below the control. Changes are applied with a
+visible *Apply* on the card, not as you type: an option that widens what an
+agent can touch asks for a tick first, in a warning callout that states what
+it allows, and the tick is cleared whenever such a value changes. Rondo says
+one thing at the top of the page (what is being checked, what is missing,
+that changes are not applied yet) and never covers a control.
 
 ## Layout
 

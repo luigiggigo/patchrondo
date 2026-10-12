@@ -6,7 +6,8 @@
 |---|---|
 | `cli.py` | CLI parsing, user input validation, project resolution, `init/new/run/resume/status/report/list/projects/index/search/ui/doctor` commands; no command opens the interface |
 | `core.py` | Deterministic state machine and completion criteria; configuration and task-override validation |
-| `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse |
+| `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse; starts each step with its agent settings |
+| `agents.py` | Agent settings: the typed table of what each CLI can be started with, validation, the three levels and their resolution, the frozen record of a step, the command of a step, presets, model lists and the checks of *Test configuration* |
 | `streams.py` | Parsers of the two CLIs' activity streams into provider-independent events; drop internal reasoning; keep a bounded transcript |
 | `activity.py` | The activity journal of a task: bounded, redacted, append-only events, and paging through them by cursor |
 | `recovery.py` | Opt-in quota recovery: retry policy, the persisted plan and the foreground supervisor that waits without the task lock |
@@ -18,7 +19,7 @@
 | `workspace.py` | Project registry and global preferences of one home; in-place use of 0.1 homes |
 | `procinfo.py` | Read-only check of a process by ID and start time: alive, dead or unknown |
 | `runinfo.py` | Markers of attached `run`/`resume` processes and the process truth of one task |
-| `doctor.py` | Availability and login of the provider CLIs without model calls |
+| `doctor.py` | Availability and login of the provider CLIs without model calls; what an installed CLI offers (options of its help, Codex model catalog and profiles) |
 | `environment.py` | The environment check before any provider call: agents, Git, review sandbox; one saved record per check |
 | `preflight.py` | The reviewer preflight: the probe run in the Codex sandbox self-check and the judgment of its answers against the disk |
 | `winacl.py` | Windows access control lists of the folders agents read: inspect, grant narrowly, restore (`ctypes`, Windows only) |
@@ -795,3 +796,178 @@ Codex configuration at that moment. A CLI with another `codex sandbox` syntax
 is not probed until its form is read from that CLI and added. Access lists
 inside the user's repository, including its `.git` directory, are never
 changed: a repository the sandbox cannot read is reported, not repaired.
+
+## 13. Agent settings
+
+`agents.py` holds everything that decides what a provider CLI is started
+with. Nothing else builds a command: `providers.OfficialCLI._step` asks
+`agents.command`, and with no settings the result is, argument for argument,
+the command of the versions before this section existed.
+
+### Data
+
+One *block* is the settings of one role played by one provider:
+`{setting: value}`, sparse. One *layer* is what a level keeps:
+`{role: {provider: block}}`. There are three levels:
+
+| Level | Where | Written by |
+|---|---|---|
+| global | `settings` in `<workspace>/agents.json` | the Agents page |
+| project | `agent_settings` in the project's `config.json` | the Agents page |
+| task | `agent_settings` in the task's `state.json` | task creation, the Agents page (under the task lock) |
+
+`agents.json` also holds the custom presets and what is known about models
+(IDs the user added, and the answer of each test call with its date). Older
+versions ignore the file and both new keys, and a home without them behaves as
+before.
+
+Who plays a role is not part of a block: it stays where it was (`defaults` in
+`settings.json`, `agents` in `config.json`, `developer`/`reviewer` in the
+task), so a role has one block per provider and keeps both.
+
+In a block a missing key inherits, `null` asks for PatchRondo's default
+against an outer value, and anything else is the value. `resolve(provider,
+role, layers)` applies the levels from the farthest to the nearest and returns
+every value with its source (`default`, `global`, `project`, `task`). Lists
+are replaced whole, never merged.
+
+### The table of settings
+
+`OPTIONS[provider]` lists the settings. Each entry has a kind (`model`,
+`choice`, `text`, `int`, `number`, `bool`, `list`, `path`, `paths`, `pairs`,
+`args`), the CLI option it becomes, its limits, the roles that may set it and
+the reason the other may not, and whether a value is *risky*. `clean_block`
+validates a block against the table; the interface draws its controls from
+`schema`, so a setting cannot exist on the page without existing here.
+
+Rules enforced by `clean_block`, whatever the caller:
+
+- A model name is letters, digits and `. _ : / @ [ ] -`, and starts with a
+  letter or a digit. It can never be read as an option.
+- A setting of the other role is refused. The reviewer has no tools setting,
+  no MCP servers, no additional writable folders, no custom arguments; its
+  Codex sandbox accepts `read-only` only; its Claude permission mode
+  `dontAsk` or `plan` only.
+- A risky value needs `risk_acknowledged: true` **in the same block**; a level
+  cannot ride on the acknowledgement of another. The reviewer has no risky
+  value that an acknowledgement opens. An acknowledgement beside nothing
+  risky is dropped.
+- A short value that looks like a credential (`activity.redact` would change
+  it) is refused: settings are not a place for secrets.
+
+`command` repeats the reviewer's limits on its own (`read-only`, the three
+reading tools, no custom arguments, no additional folders), so a value that
+somehow passed validation still cannot reach a reviewer's command.
+`check_folders` refuses an additional folder that is, contains or lies inside
+PatchRondo's state (the workspace and the project's state directory), and for
+the developer the user's own checkout of the project.
+
+### Custom arguments and configuration overrides
+
+Custom arguments (`extra_args`, developer only, always risky) follow three
+lists per provider: `ARGS_MANAGED` (options PatchRondo passes or offers as a
+setting: refused, "set it there"), `ARGS_BLOCKED` (options that remove a
+protection, change how the step is started or where its output goes: refused
+always) and everything else, which PatchRondo does not know and passes as it
+is. Short options are refused, because `-cKEY=VALUE` would otherwise carry a
+managed option past the lists; a value must follow a long option.
+
+Codex configuration overrides (`-c key=value`) have the same shape:
+`CONFIG_MANAGED` keys have their own setting, `CONFIG_BLOCKED` keys are never
+passed (sandbox permissions, the shell environment policy, model providers,
+`notify`, MCP servers, hooks, project trust, features, raw reasoning), keys in
+`CONFIG_REVIEWED` are typed and need no acknowledgement, and any other key is
+developer only and risky. Values are written as TOML literals by `toml`.
+
+Arguments are never joined into a command line. The CLIs are started by name
+with an argument array (`process.execute`, no shell); on Windows that finds an
+executable and never a `.cmd` launcher, so no command interpreter reads them.
+
+### What the CLIs offer
+
+`doctor.discover(status)` asks an installed CLI, without a model call: the
+long options its help names (`claude --help`; `codex --help` and `codex exec
+--help`), and for Codex its model catalog (`codex debug models`, then
+`--bundled`) and the names of its profile files. These commands go through
+`providers.probe`, which accepts a fixed list of exact commands besides the
+sandbox self-check and refuses while provider commands are simulated;
+`discover` also refuses when the path the status check found is not a file.
+The application caches the answer per executable path and version for an
+hour, or until the user refreshes, and keeps it on the server.
+
+`compatibility` gives every setting one of: `listed` (the help names its
+option), `documented` (`DOCUMENTED`: the documentation names it and says the
+help is incomplete), `unlisted` (the help was read and does not name it; the
+page disables the setting and says so), `unknown` (the help was not read) or
+`builtin` (not a CLI option). `catalog` returns the models to choose from,
+each with its source (`cli`, `bundled`, `documented`, `custom`) and its test
+mark. A source never means that the account can use the model.
+
+### Freezing
+
+A step is one role in one iteration, named `NNN:role` in the task's
+`agent_runs`. `core._agent_settings` runs immediately before the event that
+starts the step:
+
+1. If `agent_runs` has a record for the step with the same provider, its
+   values are validated again (`thaw`) and used.
+2. Otherwise the three levels are read and validated, resolved, checked
+   against the private folders, and the result (what differs from the
+   defaults, the source of each value, a digest, the time) is stored. The
+   record is saved in the same write as `development_started` or
+   `review_started`.
+3. Settings that cannot be used raise a `configuration` failure: the task
+   pauses before any agent is called.
+
+So a resume, a retry by `recovery.supervise` and a run after a crash repeat a
+step with the settings it started with. The record changes in one way only:
+`core.refresh_agent_settings`, called by the interface on the user's request
+under the task lock, removes the record of the step the task is stopped at and
+writes `agent_settings_refreshed` to the history. Records of the last sixty
+steps are kept.
+
+The frozen values travel to the adapter only if it declares `configurable`,
+as the journal does with `journals`. `model` and `effort` are added to the
+start event of the step, to the `started` event of each attempt in the
+activity journal, and the report lists the records. The role's `instructions`
+are appended to the prompt by the engine, for either provider.
+
+A run started by the interface receives a project's state directory as its
+home; `PATCHRONDO_WORKSPACE` tells it where `agents.json` is. A run started
+from a terminal with a registry at its home passes that home; otherwise a
+state directory under `<workspace>/projects/` finds its workspace, and any
+other one is its own, as a 0.1 home.
+
+### Failures
+
+`unsupported_option`: the CLI exited before any event with a line naming a
+refused option, and its error text names no login or usage problem.
+`model_unavailable`: general wording of a refused model, checked after
+authentication and quota. Neither is a `quota` failure, so recovery never
+retries them. The wording of both has not been observed in an authorized run.
+
+### Test configuration and the test call
+
+`agents.diagnose` starts nothing: it reads the last status and the last
+`discover` answer and reports installation, login, options the installed CLI
+does not list, the model (a warning unless a test call confirmed it), an
+effort the model does not advertise, missing folders and acknowledged risks.
+`OfficialCLI.verify` is the only path of this feature that calls a model: one
+call with one reading tool or the read-only sandbox, in an empty private
+folder, started by `app.agents_verify` only with `confirm: true`.
+
+### Limits
+
+- No option was confirmed with an authenticated CLI. The table was read from
+  the help of Claude Code 2.1.295 and codex-cli 0.161.0 on native Windows and
+  from the documentation of both, on October 12, 2026.
+- Help text shows that an option exists, not which values it accepts or that
+  it works in a non-interactive call. `--max-budget-usd` is Claude Code's own
+  estimate of API prices and does not measure a subscription's usage.
+- Claude models are a documented list of aliases. A full model ID is typed.
+- CLI sessions are never continued: each step is a new call.
+- A profile, the user's configuration files and managed settings of the CLIs
+  still apply, as before; `--ignore-user-config` (Codex) is offered, and
+  Claude's `--restricted` already ignores user, project and local settings.
+- The test call tells whether one call worked at that moment; it is not a
+  guarantee for a later run.

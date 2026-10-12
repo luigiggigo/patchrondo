@@ -177,6 +177,9 @@ export default function mount(root, route, ctx) {
           onChange: (value) => patchSettings({ defaults: { developer: value } }) })),
         row("Reviewer", "Reviews read-only and returns a verdict.", segmented({ label: "Default reviewer", value: defaults.reviewer, options,
           onChange: (value) => patchSettings({ defaults: { reviewer: value } }) }))),
+      callout({ tone: "accent", iconName: "user", title: "Models and options are on the Agents page",
+        body: "Choose the model, the effort and every other option of the developer and of the reviewer there, globally, per project or per task.",
+        actions: [button("Open Agents", { size: "sm", variant: "primary", href: href("agents") })] }),
       callout({ tone: "neutral", iconName: "shield", title: "PatchRondo uses the official CLIs and your own login",
         body: "It never reads or stores passwords, OAuth tokens or API keys, and it finds the CLIs through PATH: a custom executable path cannot be set from the browser. Every run uses the usage limits of your own plan." }),
     ];
@@ -223,7 +226,8 @@ export default function mount(root, route, ctx) {
       rows: [row("Developer", "Writes the changes.", make("developer")), row("Reviewer", "Reviews read-only.", make("reviewer"))],
       read: () => ({ agents: { developer: values.developer || null, reviewer: values.reviewer || null } }),
       save: async (payload) => patchConfig({ agents: payload.agents.developer || payload.agents.reviewer ? payload.agents : null }) }),
-      h("p", { class: "muted" }, "CLI status and login are the same for every project: ", h("a", { class: "link", href: href("settings", "global", "agents") }, "open global agent settings"), ".")];
+      h("p", { class: "muted" }, "CLI status and login are the same for every project: ", h("a", { class: "link", href: href("settings", "global", "agents") }, "open global agent settings"), ". ",
+        "Models and options of this project: ", h("a", { class: "link", href: href("agents", current.id) }, "open Agents for this project"), ".")];
   }
 
   function projectWorkflow(current, settings) {

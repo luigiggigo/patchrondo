@@ -21,14 +21,18 @@ steps.
 
 **0.2.1** (the environment check, its repairs and the one-press start) is
 published as source on `main` in commit `624f60e`, pushed on October 12, 2026
-(00:30 +02:00) and the head of `main` as checked that day. The package
-metadata and changelog use 0.2.1. It is not tagged or released. Its local
-validation is recorded in
+(00:30 +02:00). The package metadata and changelog use 0.2.1. It is not
+tagged or released. Its local validation is recorded in
 [REVIEW.md](REVIEW.md#zero-configuration-and-self-healing-october-11-2026).
 The CI run for that commit failed in one of six jobs; the correction of the
-fault it found, in the reader of the activity journal, is a local change of
-October 12, 2026 that is not pushed. See
+fault it found, in the reader of the activity journal, is published in commit
+`a529273`, pushed on October 12, 2026 (20:43 +02:00) and the head of `main`
+as checked that day. Its CI run passed in all six jobs. See
 [REVIEW.md](REVIEW.md#activity-journal-reader-october-12-2026).
+
+The agent settings (models and CLI options per role, the Agents page) of
+October 12, 2026 keep the same package version. Their validation is recorded
+in [REVIEW.md](REVIEW.md#agent-settings-october-12-2026).
 
 The repository is already initialized and has an `origin` remote. Future updates
 do not require `git init` or creating another GitHub repository.

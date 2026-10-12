@@ -113,6 +113,78 @@ login method.
 
 `PATCHRONDO_PREFLIGHT=0` switches the check and its repairs off.
 
+## Agent settings
+
+The *Agents* page chooses the model and the options of each call. Settings
+become arguments of one invocation; PatchRondo never writes the configuration
+files of Claude Code or Codex, and never reads or stores their credentials.
+
+**Fixed, whatever is set.**
+
+- The reviewer is read-only. A Codex reviewer runs in the `read-only` sandbox
+  and a Claude reviewer with `Read`, `Glob` and `Grep`; neither has custom
+  arguments, additional writable folders or MCP servers. These limits are
+  enforced when a setting is validated and again when the command is built.
+  The environment check still verifies the Codex reviewer's sandbox before
+  every review.
+- Claude Code always runs `--restricted`: no command-running tool unless you
+  name it, file tools confined to the working directories, `bypassPermissions`
+  refused.
+- Options that remove a protection, change how a step is started or redirect
+  it are refused for every role, with or without an acknowledgement:
+  `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`,
+  `--dangerously-bypass-approvals-and-sandbox`, `--dangerously-bypass-hook-trust`,
+  `--bare`, `--settings`, `--setting-sources`, `--include-partial-messages`,
+  `--forward-subagent-text`, session options such as `--resume`, and the
+  Codex configuration keys for sandbox permissions, the shell environment,
+  model providers, `notify`, MCP servers, hooks, project trust and features.
+  The full lists are `ARGS_BLOCKED` and `CONFIG_BLOCKED` in `agents.py`.
+- No sandbox is ever weakened because a step failed. A Windows access problem
+  is still handled by the environment check, which never changes a setting.
+
+**Applied only with your acknowledgement, developer only.** These widen what
+the developer can touch, and the page says so before you tick the box, which
+is asked again whenever the value changes:
+
+- Codex `danger-full-access`: the agent's commands run without a sandbox, with
+  your permissions.
+- A Claude tool outside the file tools (for example `Bash`): it runs commands
+  or reaches the network, unsandboxed.
+- Additional folders: the agent can change files outside the task's own copy.
+  Folders that hold PatchRondo's state, and your own checkout of the project,
+  are refused in any case.
+- An MCP configuration file: its servers are programs that run with your
+  permissions. Only the servers of that file are started and only the MCP
+  tools you list are allowed.
+- A Codex configuration key PatchRondo has not reviewed, and any custom
+  argument: they are passed as written and PatchRondo cannot check what they
+  do.
+
+The acknowledgement is stored beside the value it was given for, in the same
+level. It is a record of an informed choice, not a protection: with these
+options the worktree no longer bounds what a developer agent can change.
+
+**Injection.** Every value is validated against a typed table before it is
+saved and again before it is used. A model name cannot start with `-`. The
+CLIs are started with an argument array and no shell, by name, which on
+Windows never resolves to a `.cmd` launcher. Custom arguments accept long
+options only, because a short option can carry another one.
+
+**Secrets.** A short value that looks like a credential is refused. The
+command preview, the saved command of a step and the report pass through the
+same best-effort masking as the activity journal. Longer text you write
+(instructions, an appended system prompt) is stored as written in the private
+state directory and sent to the provider: do not put secrets in it.
+
+**The one model call.** *Test with a real call* starts the CLI once and asks
+the model for one word, with one reading tool in an empty folder (Claude) or
+the read-only sandbox (Codex). It needs your confirmation every time and uses
+a little of your plan. Refresh and *Test configuration* call no model.
+
+**Web search.** Codex's `indexed` and `live` modes let the model read pages
+written by others, which can carry instructions. PatchRondo offers the
+setting and does not filter what the model reads.
+
 ## Local interface
 
 `patchrondo` starts an HTTP server for the browser interface. It is meant for

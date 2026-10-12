@@ -2,6 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 import subprocess
+from .activity import clip, redact
 from .gitops import changes, stat
 
 SOURCES = {"provider_reset": "reset time stated by the provider, plus the safety margin",
@@ -13,6 +14,24 @@ STOP_REASONS = {
     "invalid_schedule": "the saved plan was unreadable or no longer matched a quota pause",
 }
 RECOVERY_DETAILS = ("attempt", "resume_at", "scheduled_for", "source", "provider", "reason", "failures", "retries")
+
+
+def _agent_rows(runs) -> list[str]:
+    """The agent settings each step was started with, when any step had some; nothing for the CLIs' own defaults."""
+    if not isinstance(runs, dict) or not any(isinstance(record, dict) and record.get("values") for record in runs.values()):
+        return []
+    rows = ["", "## Agent settings used", "", "Each step keeps the settings it first started with, also when it is resumed or retried.", ""]
+    for key in sorted(runs):
+        record = runs[key]
+        if not isinstance(record, dict) or not isinstance(record.get("values"), dict):
+            continue
+        number, _, role = key.partition(":")
+        sources = record.get("sources") if isinstance(record.get("sources"), dict) else {}
+        shown = [f"{name} `{clip(redact(str(value)), 80)}`" + (f" ({sources[name]})" if sources.get(name) else "")
+                 for name, value in sorted(record["values"].items())]
+        rows.append(f"- iteration {int(number) if number.isdigit() else number} · {role} · {record.get('provider')} · "
+                    f"{', '.join(shown) or 'CLI defaults'}")
+    return rows
 
 
 def render_report(state: dict) -> str:
@@ -47,6 +66,7 @@ def render_report(state: dict) -> str:
         rows.append("No review completed")
     if state.get("last_error"):
         rows += ["", "## Block/interruption", "", f"`{state['last_error']}`"]
+    rows += _agent_rows(state.get("agent_runs"))
     rows += _environment_rows(state.get("environment"))
     rows += _recovery_rows(state.get("recovery"))
     rows += ["", "## How to apply the changes", "",

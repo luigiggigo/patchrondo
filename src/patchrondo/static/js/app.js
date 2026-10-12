@@ -9,6 +9,7 @@ import { connect, notify, projectList, selectedProjectId, state, subscribe, task
 import { activityOf, countGroups } from "./tasks.js";
 import { button, iconButton, initTooltips, menuItem, popover, toastError } from "./ui.js";
 import about from "./views/about.js";
+import agents from "./views/agents.js";
 import home from "./views/home.js";
 import newTask from "./views/newtask.js";
 import projects, { addProjectDialog } from "./views/projects.js";
@@ -17,11 +18,12 @@ import task from "./views/task.js";
 import tasks from "./views/tasks.js";
 import welcome from "./views/welcome.js";
 
-const VIEWS = { home, tasks, task, new: newTask, projects, settings, welcome, about };
+const VIEWS = { home, tasks, task, new: newTask, projects, agents, settings, welcome, about };
 const NAV = [
   { name: "home", label: "Home", icon: "home", href: href() },
   { name: "tasks", label: "Tasks", icon: "tasks", href: href("tasks") },
   { name: "projects", label: "Projects", icon: "folder", href: href("projects") },
+  { name: "agents", label: "Agents", icon: "user", href: href("agents") },
   { name: "settings", label: "Settings", icon: "settings", href: href("settings") },
 ];
 const CONNECTION = {
@@ -139,7 +141,7 @@ function providerRow(provider) {
     else if (provider.authenticated) [tone, text] = [provider.warning ? "warn" : "ok", provider.warning ? "check billing" : "ready"];
     else [tone, text] = ["neutral", "not confirmed"];
   }
-  return h("a", { class: `side-status tone-${tone}`, href: href("settings", "global", "agents"),
+  return h("a", { class: `side-status tone-${tone}`, href: href("agents"),
     "data-tip": provider?.hint || provider?.warning || provider?.version || "CLI status" },
     h("span", { class: "dot" }), h("span", { class: "grow truncate" }, provider?.label || "Agent"), h("span", { class: "faint" }, text));
 }
@@ -244,7 +246,7 @@ function openPalette() {
 const ctx = { setTitle, navigate, openPalette, selectProject, setTheme };
 
 function mountView(route) {
-  const key = route.name === "task" ? `task:${route.project}/${route.task}` : route.name === "settings" ? "settings" : route.name;
+  const key = route.name === "task" ? `task:${route.project}/${route.task}` : route.name;
   const bare = route.name === "welcome";
   shell.shell.classList.toggle("bare", bare);
   if (view && key === viewKey && view.route) {
@@ -313,7 +315,7 @@ document.addEventListener("keydown", (event) => {
   else if (event.key === "n" || event.key === "N") { event.preventDefault(); navigate("new"); }
   else if (event.key === "g") { keySequence = Date.now(); }
   else if (Date.now() - keySequence < 1200) {
-    const target = { h: href(), t: href("tasks"), p: href("projects"), s: href("settings") }[event.key];
+    const target = { h: href(), t: href("tasks"), p: href("projects"), a: href("agents"), s: href("settings") }[event.key];
     keySequence = 0;
     if (target) { event.preventDefault(); navigate(target); }
   }

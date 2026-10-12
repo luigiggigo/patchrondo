@@ -57,6 +57,8 @@ export const ERRORS = {
   empty_output: { title: "The agent returned nothing", help: "The CLI finished without a final answer. Check the logs, then resume." },
   invalid_output: { title: "The agent output was not usable", help: "Check the logs, then resume." },
   agent_error: { title: "The agent CLI failed", help: "The CLI exited with an error. The message and the logs show what it printed; resume when the cause is resolved." },
+  model_unavailable: { title: "The model is not available", help: "The provider refused the model this step was configured with: it may not exist, or your plan may not include it. Choose another model in Agents and press Test configuration; then use “Use the current settings” on this page and resume." },
+  unsupported_option: { title: "The CLI did not accept an option", help: "The installed CLI stopped at one of the options of this step, before anything was sent to a model. Open Agents, press Test configuration to see which setting it is, change it or update the CLI; then use “Use the current settings” on this page and resume." },
   max_turns: { title: "Claude ran out of turns", help: "Claude used all the turns allowed for one step without finishing. This is not a usage limit, so nothing retries by itself. Raise “Claude turns per step” in Settings → Workflow or make the task smaller, then resume." },
   sandbox_access_denied: { title: "Codex cannot read the project yet", help: "A small fix is needed so that Codex can read the copy of the project made for this task." },
   sandbox_cwd_unavailable: { title: "Codex would start in the wrong folder", help: "A small fix is needed so that Codex starts inside the copy of the project made for this task." },
@@ -156,6 +158,7 @@ const PAUSE_REASONS = {
   quota: "usage limit", authentication: "login required", configuration: "configuration problem",
   tests_disabled: "tests are disabled", stale_tests: "files changed after the tests", interrupted: "interrupted",
   timeout: "timeout", invalid_review: "unreadable review", max_turns: "Claude ran out of turns",
+  model_unavailable: "the model is not available", unsupported_option: "the CLI did not accept an option",
   sandbox_access_denied: "Codex cannot read the project", sandbox_cwd_unavailable: "Codex would start in the wrong folder",
   sandbox_not_read_only: "the review environment is not read-only", sandbox_unverified: "the review environment could not be confirmed",
   sandbox_unavailable: "Codex could not start its protected environment", sandbox_git_failed: "Git does not work in the review environment",
@@ -165,6 +168,11 @@ const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git
 const REPAIR_OUTCOMES = { applied: ["Fixed", "ok"], unchanged: ["Already in place", "neutral"], rolled_back: ["Could not fix; put back as it was", "warn"],
   failed: ["Could not fix", "warn"] };
 
+// The model and effort a step was configured with, as the engine recorded them; empty for the CLI's own defaults.
+export function configured(record) {
+  return [record?.model, record?.effort ? `effort ${record.effort}` : null].filter(Boolean).join(" · ");
+}
+
 // A persisted history entry as a sentence. Nothing here is inferred beyond the entry itself.
 export function describeEvent(event, task) {
   const dev = agentName(task?.developer), rev = agentName(task?.reviewer);
@@ -172,7 +180,9 @@ export function describeEvent(event, task) {
   switch (event.event) {
     case "run_started":
       return { text: event.previous_status === "ready" ? "Run started" : "Run resumed", tone: "accent", icon: "play" };
-    case "development_started": return { text: `${dev} started development`, tone: "accent", icon: "code" };
+    case "development_started": return { text: `${dev} started development`, tone: "accent", icon: "code", detail: configured(event) || null };
+    case "agent_settings_refreshed":
+      return { text: `The ${event.role || "next"} step will start with the current agent settings`, tone: "neutral", icon: "user", detail: "Asked for by you; the step no longer keeps the settings it first started with" };
     case "development_completed": return { text: `${agentName(event.agent) || dev} finished development · handoff saved`, tone: "ok", icon: "code" };
     case "tests_started": return { text: `Tests started (${plural(event.commands ?? 0, "command")})`, tone: "accent", icon: "flask" };
     case "tests_completed":
@@ -180,7 +190,7 @@ export function describeEvent(event, task) {
       if (statuses.includes("failed")) return { text: "Tests failed", tone: "danger", icon: "flask" };
       if (statuses.length && statuses.every((s) => s === "skipped")) return { text: "Tests skipped (disabled for this project)", tone: "neutral", icon: "flask" };
       return { text: "Tests passed", tone: "ok", icon: "flask" };
-    case "review_started": return { text: `${rev} started the review`, tone: "accent", icon: "eye" };
+    case "review_started": return { text: `${rev} started the review`, tone: "accent", icon: "eye", detail: configured(event) || null };
     case "review_completed": {
       const verdict = VERDICTS[event.verdict];
       return { text: `${rev}: ${verdict ? verdict.label.toLowerCase() : event.verdict}`, tone: verdict?.tone || "neutral", icon: "eye" };

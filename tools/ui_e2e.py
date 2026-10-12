@@ -12,7 +12,8 @@ two independent projects; a PatchRondo 0.1 home opened in place; responsive
 layout, keyboard and accessibility basics; large logs and many tasks; live
 activity of the agents while they run, across a disconnection and a reload;
 starting a task with one description and one press, the test consent and a
-guided repair of a preparation problem.
+guided repair of a preparation problem; choosing the model and the options of
+each role on the Agents page and starting a task that really runs with them.
 
     python tools/ui_e2e.py
     python tools/ui_e2e.py --only wizard --screenshots .test-tmp/shots
@@ -45,10 +46,11 @@ import browser  # noqa: E402
 from patchrondo import activity, doctor, environment  # noqa: E402
 from patchrondo.commands import join_command  # noqa: E402
 from patchrondo.core import config, create_task, initialize  # noqa: E402
+from patchrondo.process import Result as browser_result  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
 from patchrondo.ui import DashboardServer  # noqa: E402
 
-SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality", "start")
+SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality", "start", "agents")
 TEST_CODE = "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"
 
 # Receives the provider name explicitly; it never searches PATH. Asked to stream, it prints its
@@ -62,7 +64,7 @@ reviewer = ("--json-schema" in args) if provider == "claude" else ("--output-sch
 role = "reviewer" if reviewer else "developer"
 live = ("stream-json" in args) if provider == "claude" else ("--json" in args)
 with (root / "calls.jsonl").open("a", encoding="utf-8") as stream:
-    stream.write(json.dumps({"provider": provider, "role": role, "live": live, "cwd": str(pathlib.Path.cwd())}) + "\n")
+    stream.write(json.dumps({"provider": provider, "role": role, "live": live, "cwd": str(pathlib.Path.cwd()), "args": args}) + "\n")
 if live and control.get("stream") is False:
     # A CLI version without streaming output: it stops at its arguments, before any work.
     sys.stderr.write("error: unknown option '--verbose'\n" if provider == "claude" else "error: unexpected argument '--json' found\n")
@@ -1318,9 +1320,202 @@ def scenario_start(env: Env) -> None:
     env.stop()
 
 
+def scenario_agents(env: Env) -> None:
+    """Choose model and options for each role on the Agents page; a task started afterwards really runs with them."""
+    page = env.page
+    repo = make_repo(env.root / "tuned")
+    # What the scripted CLIs "offer": options from their help and, for Codex, a model catalog. `--profile` is left out,
+    # as in a CLI version that does not have it.
+    offered = {"claude": {"flags": ["--model", "--effort", "--fallback-model", "--permission-mode", "--tools", "--allowedTools", "--disallowedTools",
+                                    "--add-dir", "--mcp-config", "--max-budget-usd", "--append-system-prompt", "--no-session-persistence", "--output-format"]},
+               "codex": {"flags": ["--model", "--config", "--sandbox", "--ask-for-approval", "--add-dir", "--ephemeral", "--json", "--ignore-user-config"],
+                         "models_source": "cli", "profiles": [], "models": [
+                             {"id": "gpt-test-large", "label": "Test Large", "description": "Scripted catalog entry", "efforts": ["low", "medium", "high"], "default_effort": "medium"},
+                             {"id": "gpt-test-small", "label": "Test Small", "description": "Scripted catalog entry", "efforts": ["low", "medium"], "default_effort": "low"}]}}
+    statuses = {name: {**status, "capabilities": offered[name]} for name, status in PROVIDERS.items()}
+    card = lambda index, selector: f"qa('.agent-card')[{index}].querySelector({json.dumps(selector)})"  # noqa: E731
+
+    def choose(index: int, key: str, value: str) -> None:
+        page.js(f"(() => {{ const el = {card(index, f'[data-key={key}]')}; el.value = {json.dumps(value)}; "
+                "el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()")
+
+    def typed(index: int, key: str, value: str) -> None:
+        page.js(f"(() => {{ const el = {card(index, f'[data-key={key}]')}; el.value = {json.dumps(value)}; "
+                "el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()")
+
+    def press(index: int, text: str) -> None:
+        page.js(f"(() => {{ const el = qa('button, summary', qa('.agent-card')[{index}]).find((b) => b.textContent.trim().startsWith({json.dumps(text)})); "
+                "el.scrollIntoView({ block: 'center' }); el.click(); return true; })()")
+
+    with patch("patchrondo.app.doctor.check_all", return_value=statuses):
+        env.start()
+        env.open()
+        page.take_problems()
+        status, project = env.api("POST", "/api/projects", {"path": str(repo), "name": "tuned"})
+        env.api("PATCH", "/api/settings", {"selected_project": project["id"], "onboarding_completed": True})
+        env.api("PATCH", f"/api/projects/{project['id']}/config", {"tests": {
+            "enabled": True, "trust_acknowledged": True, "commands": [join_command([sys.executable, "-c", TEST_CODE])]}})
+        home = Path(project["home"])
+        store = env.home / "agents.json"
+        earlier = len(env.calls())  # calls of the scenarios that ran before this one
+        env.go("agents")
+        env.expect("the Agents page shows one card for the developer and one for the reviewer",
+                   "qa('.agent-card').length === 2 && qa('.agent-card h2').map((h) => h.textContent).join() === 'Developer,Reviewer'", 15)
+        env.expect("it is a destination of the main navigation", "q('.nav-item[aria-current=page]').textContent.includes('Agents')")
+        env.expect("each card shows the state of its CLI and what was read from it",
+                   "qa('.agent-card .card-head .badge').every((b) => b.textContent.includes('Ready')) && q('.agent-cli').innerText.includes('options read from its help')", 15)
+        env.expect("Rondo explains the page without being in the way", "q('.rondo-note').innerText.includes('Each role keeps its own model')")
+        env.check("the basic choices are on the card and everything else is folded away",
+                  page.js("qa('.agent-card')[0].querySelectorAll('.agent-row').length === 4 && !qa('.agent-advanced').some((d) => d.open)"))
+        env.check("out of the box nothing is passed: the commands are the ones PatchRondo always ran",
+                  page.js("q('.agent-command').textContent.includes('--permission-mode dontAsk') && !q('.agent-command').textContent.includes('--model')")
+                  and not store.exists())
+        env.shot("agents-default")
+
+        # Developer: a preset, then a test of the form before anything is saved.
+        preset = card(0, "[aria-label='Developer preset']")
+        page.js(f"({preset}.querySelectorAll('[role=radio]')[3].click(), true)")  # Max quality
+        env.expect("a preset fills in the model and the effort of that card only",
+                   f"{card(0, '[data-key=model]')}.value === 'opus' && {card(0, '[data-key=effort]')}.value === 'high' && {card(1, '[data-key=model]')}.value === '@default'")
+        env.expect("a model that is only documented is marked as not verified", f"qa('.agent-card')[0].innerText.includes('Not verified for your account')")
+        env.expect("unsaved changes are said, and Apply is there", f"!{card(0, '[data-key=apply]')}.disabled && q('.rondo-note').innerText.includes('not applied yet')")
+        press(0, "Test configuration")
+        env.expect("Test configuration checks the form without saving it",
+                   "Boolean(q('.agent-tests')) && q('.agent-tests').innerText.includes('Nothing would stop this configuration') "
+                   "&& q('.agent-tests').innerText.includes('No model was called') && q('.agent-command').textContent.includes('--model opus --effort high')", 10)
+        env.check("nothing was saved or started by the test", not store.exists() and len(env.calls()) == earlier)
+        env.expect("the unverified model comes with the offer of a test call", "Boolean(q('.agent-tests [data-key=verify]'))")
+        asked = []
+
+        def answer(argv, cwd, **kwargs):
+            asked.append(argv)
+            return browser_result(0, json.dumps({"type": "result", "result": "OK"}), "")
+        with patch("patchrondo.providers.execute", side_effect=answer):
+            page.click(".agent-tests [data-key=verify]")
+            env.expect("a real call is made only after an explicit confirmation", "Boolean(q('.dialog')) && q('.dialog').innerText.includes('uses a little of your plan')")
+            env.check("nothing was called before the confirmation", not asked)
+            page.js("q('.dialog .btn.primary').click()")
+            env.expect("the answer of the test call is shown and remembered", f"qa('.agent-card')[0].innerText.includes('Answered a test call')", 15)
+        env.check("the test call asked the chosen model for one word, with no writing tool",
+                  len(asked) == 1 and asked[0][-4:] == ["--model", "opus", "--effort", "high"] and "Edit" not in " ".join(asked[0]), str(asked))
+        press(0, "Apply")
+        env.expect("Apply saves the developer's choices as global preferences", f"qa('.agent-card')[0].querySelector('.chip.src-global') !== null && {card(0, '[data-key=apply]')}.disabled", 10)
+        env.check("they are in the workspace's agents.json and nowhere in a CLI's own files",
+                  read_json(store)["settings"] == {"developer": {"claude": {"model": "opus", "effort": "high"}}}, str(read_json(store)))
+
+        # Reviewer: a model of the CLI's catalog, the levels it offers, and what cannot be changed.
+        choose(1, "model", "gpt-test-small")
+        env.expect("a level the model does not offer is disabled and says why",
+                   f"[...{card(1, '[data-key=effort]')}.options].some((o) => o.value === 'high' && o.disabled && o.textContent.includes('not offered by gpt-test-small'))")
+        choose(1, "effort", "low")
+        press(1, "Advanced")
+        page.js(f"(qa('.agent-card')[1].querySelectorAll('.agent-section > summary').forEach((s) => s.click()), true)")
+        env.expect("advanced settings are grouped by category with a description each",
+                   "qa('.agent-card')[1].querySelectorAll('.agent-section').length >= 5 && qa('.agent-card')[1].querySelectorAll('.agent-field .field-hint').length >= 8")
+        env.expect("the reviewer's sandbox stays read-only, and the page says why",
+                   f"{card(1, '[data-field=sandbox] select')}.value === 'read-only' && [...{card(1, '[data-field=sandbox] select')}.options].filter((o) => o.disabled).length === 2 "
+                   f"&& {card(1, '[data-field=sandbox]')}.innerText.includes('read-only by design')")
+        env.expect("what the reviewer cannot have is disabled with its reason, not hidden",
+                   f"{card(1, '[data-field=extra_args] textarea')}.disabled && {card(1, '[data-field=extra_args] .agent-why')}.innerText.includes('fixed')")
+        env.expect("an option the installed CLI does not list is disabled with its reason",
+                   f"{card(1, '[data-field=profile] input')}.disabled && {card(1, '[data-field=profile] .agent-why')}.innerText.includes('does not list --profile')")
+        env.shot("agents-advanced")
+        press(1, "Apply")
+        env.expect("the reviewer's choices are applied", f"{card(1, '[data-key=apply]')}.disabled && {card(1, '[data-key=model]')}.value === 'gpt-test-small'", 10)
+
+        # A wider permission needs the explicit tick; without it nothing is written.
+        press(0, "Advanced")
+        page.js(f"(qa('.agent-card')[0].querySelectorAll('.agent-section > summary').forEach((s) => s.click()), true)")
+        typed(0, "tools", "Read\nEdit\nWrite\nBash")
+        env.expect("a tool that runs commands asks for an informed consent", f"Boolean({card(0, '.agent-consent')}) && {card(0, '.agent-consent')}.innerText.includes('unsandboxed')")
+        before = store.read_bytes()
+        press(0, "Apply")
+        env.expect("without the tick it is refused on the page", f"{card(0, '.settings-foot .form-error')}.innerText.includes('Tick')")
+        env.check("and nothing was written", store.read_bytes() == before)
+        refused, answer_ = env.api("PATCH", "/api/agents", {"role": "developer", "blocks": {"claude": {"tools": ["Read", "Bash"]}}})
+        env.check("the backend refuses it too, whatever the page sends", refused == 400 and "risk_acknowledged" in answer_["error"], str(answer_))
+        press(0, "Discard")
+        env.expect("Discard goes back to what is saved", f"!{card(0, '.agent-consent')} && {card(0, '[data-key=apply]')}.disabled")
+
+        # The project overrides one value; the page shows where each value comes from.
+        page.js(f"(() => {{ const s = q('.scope select'); s.value = {json.dumps(project['id'])}; s.dispatchEvent(new Event('change', {{ bubbles: true }})); return true; }})()")
+        env.expect("the project level has its own address", f"location.hash === '#/agents/{project['id']}' && qa('.agent-card').length === 2", 10)
+        env.expect("it opens with the global values inherited", f"{card(0, '[data-key=model]')}.value === '@inherit'", 10)
+        env.expect("and names what is inherited", f"{card(0, '[data-key=model]')}.selectedOptions[0].textContent.includes('opus')", 5)
+        choose(0, "effort", "low")
+        press(0, "Apply")
+        env.expect("the origin of each value is visible: effort from the project, model from the global preferences",
+                   f"{card(0, '[data-key=apply]')}.disabled && {card(0, '.agent-row:nth-child(4) .chip')}.textContent === 'Project' "
+                   f"&& {card(0, '.agent-row:nth-child(3) .chip')}.textContent === 'Global'", 10)
+        env.check("the override is in the project's own configuration", config(home).get("agent_settings") == {"developer": {"claude": {"effort": "low"}}},
+                  str(config(home).get("agent_settings")))
+        env.shot("agents-project")
+
+        # Start a task: the CLIs are started with what was chosen.
+        env.go("")
+        page.wait("Boolean(q('.composer textarea'))", 10, "the composer")
+        env.control(mode="ok", develop_seconds=0.6, review_seconds=0.4)
+        before_calls = len(env.calls())
+        page.fill(".composer textarea", "Create feature.txt containing the word good.")
+        page.click(text="Start task", selector=".composer button")
+        page.wait("location.hash.startsWith('#/tasks/P-')", 15, "the task page")
+        task_id = page.js("location.hash.split('/')[3].split('?')[0]")
+        path = home / "tasks" / task_id
+        done = env.wait_state(path, lambda s: s["status"] == "done", 90)
+        calls = {call["role"]: call["args"] for call in env.calls()[before_calls:]}
+        developer, reviewer = calls.get("developer", []), calls.get("reviewer", [])
+        env.check("the developer was started with the model of the global level and the effort of the project",
+                  developer[-4:] == ["--model", "opus", "--effort", "low"] and "--restricted" in developer, str(developer))
+        env.check("the reviewer was started with its own model and effort, read-only",
+                  reviewer[reviewer.index("--model") + 1] == "gpt-test-small" and 'model_reasoning_effort="low"' in reviewer
+                  and reviewer[reviewer.index("--sandbox") + 1] == "read-only", str(reviewer))
+        env.check("what each step was started with is saved with the task, with the level of each value",
+                  done["agent_runs"]["001:developer"]["values"] == {"model": "opus", "effort": "low"}
+                  and done["agent_runs"]["001:developer"]["sources"] == {"model": "global", "effort": "project"}
+                  and done["agent_runs"]["001:reviewer"]["values"] == {"model": "gpt-test-small", "effort": "low"}, str(done.get("agent_runs")))
+        env.expect("the task page names the model and effort each role used", "q('.task-head').innerText.includes('opus · effort low') && q('.task-head').innerText.includes('gpt-test-small · effort low')", 15)
+        env.expect("so do the details of the task", "q('.facts').innerText.includes('Claude · opus · effort low')", 10)
+        env.go(f"tasks/{project['id']}/{task_id}/live")
+        env.expect("the live activity shows provider, model and effort at the start of each attempt",
+                   "qa('.act-row').some((r) => r.innerText.includes('Claude started as developer') && r.innerText.includes('opus · effort low')) "
+                   "&& qa('.act-row').some((r) => r.innerText.includes('Codex started as reviewer') && r.innerText.includes('gpt-test-small'))", 15)
+        env.go(f"tasks/{project['id']}/{task_id}/logs")
+        env.expect("the command of each step is in its logs", "qa('.log-select option').some((o) => o.value.includes('developer.command.txt'))", 10)
+
+        # Presets of your own, and the page on a phone.
+        env.go("agents")
+        page.wait("qa('.agent-card').length === 2", 10, "the Agents page")
+        press(0, "Advanced") if not page.js("qa('.agent-advanced')[0].open") else None
+        press(0, "Save as preset")
+        page.wait("Boolean(q('.dialog input'))", 5, "the preset name")
+        page.fill(".dialog input", "Deep work")
+        page.js("q('.dialog .btn.primary').click()")
+        env.expect("a preset of your own is saved and listed", "qa('.preset-row').some((r) => r.innerText.includes('Deep work') && r.innerText.includes('opus'))", 10)
+        env.check("it holds the model and effort, never a permission", read_json(store)["presets"][0]["values"] == {"claude": {"model": "opus", "effort": "high"}},
+                  str(read_json(store)["presets"]))
+        page.js("(qa('.preset-row').find((r) => r.innerText.includes('Deep work')).querySelector('.icon-btn').click(), true)")
+        page.click(text="Duplicate…")
+        page.wait("Boolean(q('.dialog input'))", 5, "the copy's name")
+        page.js("q('.dialog .btn.primary').click()")
+        env.expect("it can be duplicated", "qa('.preset-row').some((r) => r.innerText.includes('Deep work copy'))", 10)
+        page.js("(qa('.preset-row').find((r) => r.innerText.includes('Deep work copy')).querySelector('.icon-btn').click(), true)")
+        page.click(text="Delete…")
+        page.js("q('.dialog .btn.danger').click()")
+        env.expect("and deleted", "!qa('.preset-row').some((r) => r.innerText.includes('Deep work copy')) && qa('.preset-row').length === 5", 10)
+        page.viewport(420, 860)
+        env.expect("on a narrow screen the cards stack and nothing overflows sideways",
+                   "document.documentElement.scrollWidth <= window.innerWidth + 1 && qa('.agent-card')[0].getBoundingClientRect().bottom <= qa('.agent-card')[1].getBoundingClientRect().top + 1", 8)
+        env.check("every control of the cards has a name for assistive technology",
+                  page.js("qa('.agent-card select, .agent-card input, .agent-card textarea').every((c) => c.getAttribute('aria-label') || c.labels?.length)"))
+        env.shot("agents-narrow")
+        page.viewport(1440, 900)
+        env.clean_console("agents", allow=("status of 400",))  # the refusal this scenario provokes
+        env.stop()
+
+
 SCENARIO_FUNCTIONS = {"wizard": scenario_wizard, "run": scenario_run, "live": scenario_live, "restart": scenario_restart, "reconnect": scenario_reconnect,
                       "recovery": scenario_recovery, "projects": scenario_projects, "legacy": scenario_legacy, "quality": scenario_quality,
-                      "start": scenario_start}
+                      "start": scenario_start, "agents": scenario_agents}
 
 
 def main(argv: list[str] | None = None) -> int:

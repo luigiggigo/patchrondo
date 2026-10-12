@@ -9,9 +9,58 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Agent settings — October 12, 2026
+
+- **Agents page.** A card for the developer and one for the reviewer: who
+  plays the role, a preset (*CLI default*, *Fast*, *Balanced*, *Max quality*,
+  *Custom*), the model and the effort; *Advanced* unfolds every other setting
+  of that CLI by category, each with a description, the option it becomes and,
+  when it cannot be used, the reason. Custom presets can be saved, renamed,
+  duplicated, replaced and deleted.
+- **Independent settings per role and provider.** Model, effort, permission
+  mode or sandbox, approval policy, profile, tools and deny rules, additional
+  folders, limits (turns, budget, timeout), fallback model, MCP configuration,
+  prompt additions, session and streaming choices, Codex configuration
+  overrides and custom arguments. One provider can play both roles with two
+  models.
+- **Three levels with visible origin.** Global preferences
+  (`<home>/agents.json`), a project (`agent_settings` in its `config.json`)
+  and a task (`agent_settings` in its `state.json`); the nearest level that
+  sets a value wins and the page shows where each value comes from. Homes and
+  tasks without these keys behave as before, and with no settings every
+  command is the one PatchRondo already ran.
+- **What the CLIs offer.** Refresh asks the installed CLIs for the options of
+  their help and Codex for its model catalog and profiles, without a model
+  call. A setting whose option the installed CLI does not list is disabled
+  with that reason. A model that nothing confirmed is marked as not verified,
+  and a test call, made only after an explicit confirmation, settles it.
+- **Really applied, and frozen per step.** Every call receives the model,
+  effort, permissions and overrides of its role. The settings in effect are
+  frozen when a step first starts and saved with the task (`agent_runs`); a
+  resume, a retry and an automatic recovery repeat the step with them, and an
+  edit applies from the next step or, on request, to the stopped one. The
+  task page, the report and Live Activity name the model and effort used.
+- **Test configuration.** Installation, login, options the installed CLI
+  does not list, the model, missing folders and acknowledged risks, with a
+  preview of the command (credentials masked). Nothing is started.
+- **Two new failure kinds.** `model_unavailable` and `unsupported_option`
+  pause the task with an explanation and the way to fix it; neither is
+  retried by automatic recovery.
+- **Safety.** The reviewer stays read-only and Claude Code stays
+  `--restricted`, whatever is set. What widens the developer needs an
+  explicit acknowledgement per role and level; options that remove a
+  protection are refused. Values are typed and validated, model names cannot
+  be read as options, and values that look like credentials are not stored.
+- **Command line.** `patchrondo new` accepts `--developer-model`,
+  `--developer-effort`, `--reviewer-model` and `--reviewer-effort`.
+- Not confirmed with an authenticated CLI: the options come from the help of
+  Claude Code 2.1.295 and codex-cli 0.161.0 and from the documentation of
+  both, read on October 12, 2026. See the
+  [technical review](docs/REVIEW.md#agent-settings-october-12-2026).
+
 ### Activity journal reader — October 12, 2026
 
-Local correction; not pushed.
+Published on `main` in commit `a529273` on October 12, 2026 (20:43 +02:00).
 
 - Reading a task's activity journal no longer fails when the reader meets the
   file in the instant between its creation and the writing of its first line.

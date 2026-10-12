@@ -306,7 +306,8 @@ def _wait(path: Path, resume_at: datetime, expected: tuple, clock, sleep) -> Non
 
 
 def supervise(home: Path, task_id: str, *, adapter=None, force_unlock: bool = False,
-              auto_resume: bool | None = None, clock=utcnow, sleep=time.sleep, notify=None) -> dict:
+              auto_resume: bool | None = None, clock=utcnow, sleep=time.sleep, notify=None,
+              agents_root: Path | None = None) -> dict:
     """Run a task and, while recovery is active, wait for and perform its planned retries.
 
     This is a foreground loop, not a service: when it ends or is interrupted,
@@ -318,7 +319,7 @@ def supervise(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fa
     cfg = task_config(home, task_id)
     if not active(cfg, auto_resume):
         return run_task(home, task_id, adapter=adapter, force_unlock=force_unlock,
-                        auto_resume=False, clock=clock)
+                        auto_resume=False, clock=clock, agents_root=agents_root)
     path = task_dir(home, task_id)
     # Each streak ends in progress or a stop, and progress is bounded by the iteration limit.
     cycles = 2 * (cfg["workflow"]["max_iterations"] * 3 + 1) * (cfg["recovery"]["max_consecutive_retries"] + 1)
@@ -327,7 +328,7 @@ def supervise(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fa
         try:
             # --unlock is a human decision for the first run only; retries never unlock.
             state = run_task(home, task_id, adapter=adapter, force_unlock=force_unlock and retry_of is None,
-                             auto_resume=auto_resume, clock=clock, retry_of=retry_of)
+                             auto_resume=auto_resume, clock=clock, retry_of=retry_of, agents_root=agents_root)
         except LockBusy as exc:
             if retry_of is None:
                 raise

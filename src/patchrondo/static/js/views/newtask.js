@@ -31,6 +31,9 @@ export default function mount(root, route, ctx) {
     : state.projects.has(draft.project) ? draft.project : selectedProjectId() || projectList()[0].id;
   let roles = { ...defaultsFor(projectId), ...(draft.roles || {}) };
   let recovery = "default";
+  // Model and effort of this task only; everything else of the agent settings is on the Agents page.
+  const picks = { developer: { model: "", effort: "" }, reviewer: { model: "", effort: "" } };
+  let agentView = null, agentFor = null;
 
   const title = h("input", { class: "input", type: "text", maxlength: 200, placeholder: "Handle JWT expiration", value: draft.title || "", autofocus: true });
   const description = h("textarea", { class: "input", rows: 7, placeholder: "What should be built or changed, where, and any constraints the agents must respect." });
@@ -42,6 +45,7 @@ export default function mount(root, route, ctx) {
   const roleHost = h("div", { class: "grid c2" });
   const roleNote = h("div", {});
   const advancedHost = h("div", { class: "stack" });
+  const agentHost = h("div", { class: "grid c2" });
   const formError = h("div", { class: "form-error", role: "alert" });
   const fields = {
     project: field({ label: "Project", control: projectSelect }),
@@ -84,7 +88,32 @@ export default function mount(root, route, ctx) {
         h("div", { class: "field-hint" }, "Reads the result and answers with a verdict; it cannot edit files.")));
     roleHints();
   }
+  async function loadAgents() {
+    if (agentFor === projectId) return;
+    agentFor = projectId;
+    try { agentView = await api.get(`/api/agents?project=${encodeURIComponent(projectId)}`); } catch { agentView = null; }
+    agentPicks();
+  }
+  function agentPicks() {
+    clear(agentHost, Object.keys(picks).map((role) => {
+      const provider = roles[role];
+      const inherited = agentView?.roles[role].blocks[provider]?.values || {};
+      const models = agentView?.providers[provider].catalog.models || [];
+      const efforts = (agentView?.providers[provider].schema[role].find((item) => item.key === "effort")?.choices || []).map((choice) => choice.value);
+      const listId = `task-models-${role}`;
+      const model = h("input", { class: "input mono", type: "text", list: listId, value: picks[role].model, spellcheck: "false", autocomplete: "off",
+        placeholder: inherited.model || "CLI default", "aria-label": `${role} model for this task`, oninput: () => { picks[role].model = model.value; } });
+      const effort = selectInput([{ value: "", label: `Not set for this task (${inherited.effort || "CLI default"})` }, ...efforts.map((level) => ({ value: level, label: level }))],
+        picks[role].effort, { "aria-label": `${role} effort for this task`, onchange: () => { picks[role].effort = effort.value; } });
+      return h("div", { class: "field" }, h("div", { class: "field-label" }, `${role === "developer" ? "Developer" : "Reviewer"} · ${agentName(provider)}`, h("span", { class: "optional" }, "optional")),
+        model, h("datalist", { id: listId }, models.map((entry) => h("option", { value: entry.id }, entry.label))), effort,
+        h("div", { class: "field-hint" }, "Leave empty to use the project's and the global agent settings."));
+    }));
+  }
   function roleHints() {
+    for (const role of Object.keys(picks)) if (picks[role].provider !== roles[role]) picks[role] = { model: "", effort: "", provider: roles[role] };
+    agentPicks();
+    loadAgents(); // another project has its own agent settings: what is inherited is asked again
     const providers = state.providers?.providers || {};
     const notes = [];
     for (const name of new Set([roles.developer, roles.reviewer])) {
@@ -119,7 +148,11 @@ export default function mount(root, route, ctx) {
       h("div", { class: "field" }, h("div", { class: "field-label" }, "Automatic quota recovery"),
         segmented({ label: "Automatic quota recovery", value: recovery, onChange: (value) => { recovery = value; save(); }, options: [
           { value: "default", label: `Project default (${config?.recovery_enabled ? "on" : "off"})` }, { value: "on", label: "On" }, { value: "off", label: "Off" }] }),
-        h("div", { class: "field-hint" }, "When on, a run of this task waits and retries after a provider usage limit, within the project's limits. It never works around a limit.")));
+        h("div", { class: "field-hint" }, "When on, a run of this task waits and retries after a provider usage limit, within the project's limits. It never works around a limit.")),
+      h("div", { class: "field" }, h("div", { class: "field-label" }, "Model and effort for this task"), agentHost,
+        h("div", { class: "field-hint" }, "Every other option of the agents is on the ", h("a", { class: "link", href: href("agents", projectId) }, "Agents page"),
+          "; after the task is created, its own settings can be edited there too.")));
+    loadAgents();
   }
 
   function save() {
@@ -148,9 +181,15 @@ export default function mount(root, route, ctx) {
     const overrides = {};
     if (Object.keys(workflow).length) overrides.workflow = workflow;
     if (recovery !== "default") overrides.recovery = { enabled: recovery === "on" };
+    const chosen = {};
+    for (const [role, pick] of Object.entries(picks)) {
+      const block = { ...(pick.model.trim() ? { model: pick.model.trim() } : {}), ...(pick.effort ? { effort: pick.effort } : {}) };
+      if (Object.keys(block).length) chosen[role] = { [roles[role]]: block };
+    }
     return { title: title.value.trim(), description: description.value.trim(), ...roles, request_id: id,
       acceptance: [...criteria.querySelectorAll("input")].map((input) => input.value.trim()).filter(Boolean),
-      overrides: Object.keys(overrides).length ? overrides : undefined };
+      overrides: Object.keys(overrides).length ? overrides : undefined,
+      agent_settings: Object.keys(chosen).length ? chosen : undefined };
   }
 
   async function submit(el, run) {

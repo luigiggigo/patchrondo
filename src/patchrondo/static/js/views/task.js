@@ -8,7 +8,7 @@ import { ago, bytes, clock, duration, fullDate, humanize, markdown, plural } fro
 import { href, navigate, replace } from "../router.js";
 import { emptyState, rondoNote, taskMessage } from "../rondo.js";
 import { getTask, state } from "../store.js";
-import { RECOVERY_SOURCES, SEVERITY, TEST_TONE, VERDICTS, activityOf, agentName, errorOf, preparation, stopReason } from "../tasks.js";
+import { RECOVERY_SOURCES, SEVERITY, TEST_TONE, VERDICTS, activityOf, agentName, configured, errorOf, preparation, stopReason } from "../tasks.js";
 import { activityBadge, badge, busy, button, callout, confirm, copyButton, dialog, iconButton, loadingBlock, menuItem, popover, tabs,
   toast, toastError, toggle } from "../ui.js";
 import { livePanel } from "./live.js";
@@ -193,6 +193,43 @@ function environmentCard(task, record, error) {
     actions: go ? [go] : null });
 }
 
+const SETTING_LEVELS = { global: "global preferences", project: "project", task: "this task" };
+
+// A step keeps the settings it started with. When the settings of now differ, the choice to switch is the user's.
+function agentNotes(task, detail) {
+  const info = detail.agents;
+  if (!info) return null;
+  if (info.error) {
+    return callout({ tone: "danger", iconName: "alert", title: "The agent settings cannot be used", body: info.error,
+      actions: [button("Open Agents", { size: "sm", href: href("agents", task.project, task.id) })] });
+  }
+  const [role, item] = Object.entries(info.roles).find(([, entry]) => entry.differs) || [];
+  if (!role) return null;
+  const use = button("Use the current settings", { size: "sm", iconName: "refresh", disabled: !task.runtime.can_start,
+    tip: task.runtime.can_start ? "The step will start again with the settings of now" : "Available when the task is not running",
+    onClick: () => busy(use, async () => {
+      try { await api.post(`/api/projects/${task.project}/tasks/${task.id}/agents/refresh`, {}); toast("The step will start with the current settings"); }
+      catch (error) { toastError(error); }
+    }) });
+  return callout({ tone: "accent", iconName: "user", title: `The ${role} step keeps the settings it started with`,
+    body: [h("div", {}, `It started with ${configured(item.frozen.values) || "the CLI's default model"}; the settings of now give ${configured(item.current.values) || "the CLI's default model"}. `,
+      "Resuming repeats the step as it was started, so that a retry is the same call. Switch only if that is what you want."),
+      h("div", { class: "muted" }, `Frozen ${ago(item.frozen.frozen_at)}. Later steps take the settings of their own start.`)],
+    actions: [use, h("a", { class: "link", href: href("agents", task.project, task.id) }, "Agent settings of this task")] });
+}
+
+function agentFacts(task, detail) {
+  const info = detail.agents;
+  if (!info || info.error) return null;
+  return Object.entries(info.roles).flatMap(([role, item]) => {
+    const record = item.frozen || item.current;
+    const from = [...new Set(Object.values(record?.sources || {}))].map((level) => SETTING_LEVELS[level] || level).join(", ");
+    return [h("dt", {}, role === "developer" ? "Developer" : "Reviewer"),
+      h("dd", {}, `${agentName(item.provider)} · ${configured(record?.values) || "CLI default model"}`,
+        h("div", { class: "faint" }, item.frozen ? `Kept by the step in progress${from ? ` · from ${from}` : ""}` : `For its next step${from ? ` · from ${from}` : ""}`))];
+  });
+}
+
 // Tests run code of the project on this computer: they start only after an explicit decision.
 function consentCard(task, detail) {
   const project = state.projects.get(task.project);
@@ -281,7 +318,8 @@ function overviewPanel() {
       }
     }
     // `stamp` changes with every fetched detail: timestamps in the state only have one-second resolution.
-    memo(el, [detail.stamp, task.runtime, detail.effective, detail.worktree_exists, ago(data.recovery?.resume_at), state.providers?.providers], () => [
+    const frozen = Object.values(detail.agents?.roles || {}).map((item) => (item.frozen ? ago(item.frozen.frozen_at) : ""));
+    memo(el, [detail.stamp, task.runtime, detail.effective, detail.worktree_exists, ago(data.recovery?.resume_at), state.providers?.providers, frozen], () => [
       h("div", { class: "stack" },
         task.runtime.activity === "stale_lock" && !task.runtime.can_unlock ? callout({ tone: "danger", iconName: "lock", title: "The lock has to be removed by hand on native Windows",
           body: ["PatchRondo found no live process for this lock, but on native Windows the engine cannot confirm that for the agent's child processes. After checking that no claude, codex or test process is still running, delete ",
@@ -297,6 +335,7 @@ function overviewPanel() {
             body: [h("div", {}, error.help), error.message ? h("pre", { class: "error-message" }, error.message) : null] }) : null,
         !detail.worktree_exists ? callout({ tone: "danger", iconName: "folder", title: "The task worktree is missing", body: `Expected at ${data.worktree}. The task cannot run without it.` }) : null,
         detail.config_error ? callout({ tone: "danger", iconName: "alert", title: "The project configuration cannot be used", body: detail.config_error }) : null,
+        task.status !== "done" && task.status !== "blocked" ? agentNotes(task, detail) : null,
         recoveryCard({ ...task, last_error: data.last_error }, data.recovery),
         h("div", { class: "grid c2" },
           h("a", { class: `card pad summary-card tone-${verdict?.tone || "neutral"}`, href: href("tasks", task.project, task.id, "review") },
@@ -322,8 +361,11 @@ function overviewPanel() {
           detail.effective ? [h("dt", {}, "Agent timeout"), h("dd", {}, duration(detail.effective.agent_timeout_seconds))] : null,
           detail.effective ? [h("dt", {}, "Auto recovery"), h("dd", {}, detail.effective.recovery_enabled ? "On by default" : "Off by default")] : null,
           overrides ? [h("dt", {}, "Task overrides"), h("dd", {}, Object.entries(overrides).flatMap(([section, values]) =>
-            Object.entries(values).map(([key, value]) => `${humanize(key)}: ${value}`)).join(" · "))] : null),
-        h("div", { class: "row wrap" }, copyButton(data.worktree, "Copy worktree path"))),
+            Object.entries(values).map(([key, value]) => `${humanize(key)}: ${value}`)).join(" · "))] : null,
+          agentFacts(task, detail)),
+        h("div", { class: "row wrap" }, copyButton(data.worktree, "Copy worktree path"),
+          task.status !== "done" && task.status !== "blocked" ? button("Agent settings", { size: "sm", variant: "ghost", iconName: "user", href: href("agents", task.project, task.id),
+            tip: "Model and options of this task only" }) : null)),
     ]);
   } };
 }
@@ -707,7 +749,7 @@ export default function mount(root, route, ctx) {
     }
     ctx.setTitle([{ label: "Tasks", href: href("tasks") }, { label: project?.name || "Project", href: href("projects") }, { label: task.title || task.id }]);
     const meta = activityOf(task);
-    memo(el.head, [task.title, task.runtime, task.status, task.developer, task.reviewer, project?.name, state.about?.platform, Boolean(detail)], () => [
+    memo(el.head, [task.title, task.runtime, task.status, task.developer, task.reviewer, task.agents, project?.name, state.about?.platform, Boolean(detail)], () => [
       h("div", { class: "grow" },
         h("div", { class: "row wrap task-eyebrow" }, activityBadge(task),
           h("a", { class: "chip", href: href("projects"), "data-tip": "Project" }, icon("folder", "sm"), project?.name || "Unknown project"),

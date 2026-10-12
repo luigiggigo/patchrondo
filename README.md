@@ -33,10 +33,11 @@
 [GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026
 (0.1.0). The 0.2.0 interface and live activity are published as source on
 `main`, and so is 0.2.1, the environment check with its repairs and the
-one-press start, in commit `624f60e` (checked October 12, 2026). One of the six
-CI jobs failed for that commit, on a timing fault in the reader of the
-activity journal; its correction is a local change of October 12, 2026 that is
-not published yet. The repository has no version tags or GitHub Releases; the
+one-press start, in commit `624f60e`. One of the six CI jobs failed for that
+commit, on a timing fault in the reader of the activity journal; its
+correction is published in commit `a529273`, the head of `main`, whose CI run
+passed in all six jobs (checked October 12, 2026). The repository has no
+version tags or GitHub Releases; the
 [changelog](CHANGELOG.md) says what each version contains and the
 [technical review](docs/REVIEW.md) what was checked, where and when.
 
@@ -129,6 +130,7 @@ the interface, not the runs it started.
 |---|---|
 | **Home** | Start a task: the project (or *Choose folder…* for another one), what should be done, the developer and the reviewer with their defaults, a readiness indicator and one **Start task** button. Below it, the state of Claude Code and Codex, tasks that are active, need attention, are ready or done, and recent activity. |
 | **Projects** | Add a local Git repository (with a folder picker and a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
+| **Agents** | One card for the developer and one for the reviewer: who plays the role, a preset, the model and the effort; under *Advanced*, every other option of that CLI. Global preferences, a project's own values or a single task's, with the origin of each value in effect. *Test configuration* checks a card without starting anything. See [Agents: models and options](#agents-models-and-options). |
 | **Tasks** | All tasks of the selected project, or of every project, with filters and search. |
 | **Task** | Header with status, roles and iteration; the workflow *Prepare → Develop → Test → Review → Repeat / Complete*; then Overview, Live Activity (what the agents are doing, while they do it), Timeline (the steps the engine recorded), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
 | **New task** | The longer form behind *More options*: project, title, description, acceptance criteria, developer and reviewer; under *Advanced*, limits for that task only. *Create and run* asks for confirmation before any agent is called. |
@@ -224,6 +226,99 @@ Everything else is a stop with an explanation, never a workaround:
 The sandbox is never weakened, approvals are never bypassed and tests are
 never enabled to get a task through. `PATCHRONDO_PREFLIGHT=0` switches the
 whole check off and a run then starts as it did in 0.2.0.
+
+### Agents: models and options
+
+*Agents* is where you choose what each role runs with, without editing a JSON
+or TOML file and without touching the CLIs' own configuration: PatchRondo
+passes your choices as arguments of each call.
+
+**Each role has its own settings.** The developer and the reviewer are
+configured separately, and separately for Claude Code and for Codex, so the
+same agent can play both roles with two models, and switching the agent of a
+role keeps what you chose for each.
+
+**Basic**, on the card:
+
+- *Agent*: Claude or Codex (a project can also follow the global default; a
+  task keeps the agents it was created with);
+- *Preset*: *CLI default* (nothing is passed, as before), *Fast*, *Balanced*,
+  *Max quality*, or *Custom* when your values match none. A preset fills in
+  the model and the effort; it is a starting point, not a link, so changing a
+  preset later never changes a task;
+- *Model* and *Effort*, with the state of the CLI under them.
+
+**Advanced** unfolds the rest by category, each setting with a line that says
+what it does and the option it becomes:
+
+| | Claude Code | Codex |
+|---|---|---|
+| Model | `--model` (alias or full name), `--effort`, `--fallback-model` | `--model`, reasoning effort as `-c model_reasoning_effort=…` |
+| Execution and permissions | `--permission-mode` (`dontAsk`, `acceptEdits`, `plan`, `auto`) | `--sandbox`, `--ask-for-approval`, `--profile`, `--ignore-user-config` |
+| Limits | `--max-turns`, `--max-budget-usd`, step timeout | step timeout |
+| Folders and tools | `--tools`, deny rules, `--add-dir`, `--mcp-config` with `--strict-mcp-config` and the MCP tools allowed | web search (`-c web_search=…`), `--add-dir` |
+| Prompt | `--append-system-prompt`, extra instructions | extra instructions |
+| Session and streaming | keep or drop the CLI's session transcript, live activity | ephemeral session, live activity |
+| Configuration | | `-c key=value` overrides |
+| Custom arguments | developer only | developer only |
+
+**Where the lists come from.** *Refresh* asks the installed CLIs, without any
+model call, for their version, login and help, and Codex for its model
+catalog (`codex debug models`, or the catalog shipped with the binary when
+that does not answer) and its profile files. A setting whose option the
+installed CLI does not list is shown disabled with that reason, except where
+the CLI's documentation names it (`--max-turns` is not printed by `claude
+--help`). Claude Code has no command that lists models: its list is the
+aliases its documentation names. You can always type another model ID.
+
+**Listed is not usable.** No list says what your account may use. A model
+that nothing has confirmed is marked *Not verified for your account*, and
+*Test configuration* offers *Test with a real call*: after you confirm, the
+CLI is started once and the model is asked for one word, with no writing tool.
+That is the only action on this page that calls a model and uses a little of
+your plan; its answer is remembered with its date.
+
+**Three levels.** A value is looked up in the task, then in the project, then
+in the global preferences, then in PatchRondo's default. The nearest level
+that sets it wins, and each value on the page shows where it comes from, with
+a button to go back to the inherited one. *New task → Advanced* sets the
+model and effort of one task; its other settings are on *Agents* once the
+task exists (from *Agent settings* on its page).
+
+**A step keeps the settings it started with.** The settings in effect are
+frozen when a step (one role in one iteration) first starts and saved with
+the task. A resume, a retry and an automatic recovery of that step repeat the
+same call, whatever was edited meanwhile; an edit applies from the next step.
+When a stopped step's settings differ from those of now, the task page says so
+and offers *Use the current settings*: nothing is switched silently. The task
+header, its details, the report and the start of every attempt in *Live
+Activity* name the model and effort that were used; the *Logs* tab has the
+command of each configured step, with credentials masked.
+
+**What does not change.** The reviewer is read-only: a Codex reviewer always
+runs in the `read-only` sandbox and a Claude reviewer with its three reading
+tools, and neither can be given custom arguments, additional writable folders
+or MCP servers. Claude Code always runs `--restricted`, which refuses
+`bypassPermissions`. An option that widens what the developer can touch
+(`danger-full-access`, a tool that runs commands, a folder outside the task's
+copy, MCP servers, an unreviewed configuration key, any custom argument) is
+saved only after you tick an acknowledgement that says what it allows, asked
+again whenever the value changes. Options that remove a protection or change
+how a step is started (`--dangerously-skip-permissions`,
+`--dangerously-bypass-approvals-and-sandbox`, `--bare`, `--settings`,
+`--resume` and others) are refused with or without it. The policy is in
+[SECURITY.md](SECURITY.md#agent-settings).
+
+**When a choice does not work.** A model the provider refuses pauses the task
+as *The model is not available*; an option the installed CLI refuses, as *The
+CLI did not accept an option*, before anything was sent to a model. Neither is
+retried by automatic recovery. Fix the setting on *Agents*, press *Use the
+current settings* on the task page, and resume.
+
+None of these options had been confirmed by a call to an authenticated CLI
+when this was written: the options and their meaning come from the CLIs' help
+and documentation read on October 12, 2026 (Claude Code 2.1.295, codex-cli
+0.161.0), and from scripted providers.
 
 ### Live Activity
 
@@ -396,6 +491,10 @@ patchrondo new \
 
 You can reverse the roles with `--developer codex --reviewer claude`, or provide
 a longer specification with `--task-file ./requirements.md` instead of `--description`.
+`--developer-model`, `--developer-effort`, `--reviewer-model` and
+`--reviewer-effort` set the model and effort of this task only; everything
+else comes from the [agent settings](#agents-models-and-options) of the
+project and of the home.
 
 The command returns an ID such as `T-a1b2c3d4e5f6` and creates a Git worktree on
 the `patchrondo/<task-id>` branch.
@@ -646,10 +745,11 @@ now without automatic recovery stays possible in both cases.
 ```text
 ~/.patchrondo/                  # the home (--home or PATCHRONDO_HOME)
   settings.json                 # global preferences: default roles, theme, selected project
+  agents.json                   # global agent settings, your presets, models you added or tested
   projects.json                 # project registry: ID, display name, state directory
   projects/
     P-1a2b3c4d/                 # state directory of one project
-      config.json               # repository, workflow, tests, rag, recovery, optional agents
+      config.json               # repository, workflow, tests, rag, recovery, optional agents and agent_settings
       empty-hooks/
       index/
         rag.sqlite3             # local retrieval index (rebuildable; safe to delete)
@@ -657,7 +757,8 @@ now without automatic recovery stays possible in both cases.
       tasks/
         T-.../
           task.md
-          state.json            # also the last environment check, under "environment"
+          state.json            # also the last environment check ("environment"), the task's own agent
+                                # settings ("agent_settings") and what each step was started with ("agent_runs")
           handoff.md
           feedback.md
           report.md
@@ -667,6 +768,7 @@ now without automatic recovery stays possible in both cases.
           runs/
             iteration-001/
               developer.prompt.md
+              developer.command.txt      # the command of a step that had agent settings, credentials masked
               developer.stdout.log
               developer.stderr.log
               developer.reply.md
@@ -742,6 +844,8 @@ are cleaned up automatically. *Settings → RAG → Update index now* does what
 1. **No shell for orchestrated commands.** Python uses `subprocess.Popen([...], shell=False)`; test commands are argument arrays, not shell-interpreted strings.
 2. **Claude developer:** `--restricted --permission-mode dontAsk --tools Read,Glob,Grep,Edit,Write --allowedTools ... --disallowedTools mcp__*`. No Bash or MCP tools are authorized. **Claude reviewer:** only `Read,Glob,Grep`, with the same restricted mode. Output is requested with `--output-format stream-json --verbose` for [Live Activity](#live-activity): that changes what is printed, not what is allowed.
 3. **Codex developer:** `codex --ask-for-approval never exec --json --sandbox workspace-write` (`--json` only makes Codex print its activity as events). **Codex reviewer:** `read-only` sandbox. The runner does not use `--yolo`, approval bypasses or `danger-full-access`. Codex can execute commands allowed by its sandbox: prompt instructions do not disable tools, and personal configuration can affect behavior.
+
+   These are the commands without [agent settings](#agents-models-and-options). Settings add a model and options to them; the reviewer's read-only limits and Claude's `--restricted` never change, and what widens the developer (`danger-full-access` included) is applied only after your explicit acknowledgement for that role.
 4. **Separate worktree:** the main repository is not edited; no automatic commit, push or merge. Worktree creation disables Git hooks for the checkout command, but **does not create an OS sandbox** or prevent every possible effect of external Git configuration.
 5. **Credentials:** prompts are sent through stdin, not shell arguments. State has private permissions on POSIX; the child environment removes several API key/secret/token variables. Local CLI credentials remain managed **by the CLIs**, not the orchestrator. Keep secrets out of the repository: file access and test scripts could expose them.
 6. **Test execution:** unlike sandboxed agent tools, test commands run **on the host with your permissions**. A malicious repository can execute arbitrary code through its test suite. For untrusted code, run **the entire orchestrator inside an isolated VM/container**, without production credentials and with appropriate network/firewall settings.
@@ -826,8 +930,10 @@ The check starts the real server and drives a headless Chrome or Edge on your
 computer through the DevTools protocol, with the Python standard library only.
 Runs it starts are real `patchrondo run` processes whose provider commands
 reach a synthetic executable only; the runner refuses to start while a real
-`claude` or `codex` is reachable. Ten scenarios compare the page with the
-files on disk: a task started from the home page with one description and one
+`claude` or `codex` is reachable. Eleven scenarios compare the page with the
+files on disk: models and options chosen on the Agents page for both roles, at
+the global and the project level, and a task that is then started with exactly
+those arguments; a task started from the home page with one description and one
 press, the test consent and a guided repair of a preparation problem; first
 start and setup wizard; a run followed live with
 duplicate starts refused; the activity of a scripted agent shown while it
@@ -847,7 +953,9 @@ of a 6 MB log was shown in about 0.15 seconds. These are measurements of one
 machine, not guarantees. On October 11, 2026, with the `live` scenario added,
 the same setup passed all 234 checks, and a message printed by the scripted
 CLI reached the page in about 0.2 seconds. With the `start` scenario of 0.2.1
-added, it passed all 268 checks. The check needs a local Chromium-based browser and
+added, it passed all 268 checks; the `agents` scenario of October 12, 2026
+adds 48 more (see the [technical review](docs/REVIEW.md#agent-settings-october-12-2026)
+for the run on the final code). The check needs a local Chromium-based browser and
 reports that it was skipped when there is none; it has not been run on Linux,
 macOS, Firefox or Safari, and it is not part of CI.
 
@@ -944,6 +1052,8 @@ resumption after an interruption have not been checked with real accounts. Detai
 - Approval requests for risky tools and notifications.
 - Stall detection based on Git/test changes.
 - Confirm live activity with authorized real runs of both CLIs, and record the result per CLI version; consider word-by-word output for Claude Code, which today would also carry thinking deltas.
+- Confirm the agent settings with authorized real runs: each option against the CLI versions that accept it, and the wording of both providers when a model is not available to an account.
+- Continuing a CLI session across the steps of a task (`--resume`, `codex exec resume`), which PatchRondo does not do: every step is a new call that starts from the task's files.
 - A diff view per iteration.
 - Dedicated illustrations of Rondo for each state (see [docs/DESIGN.md](docs/DESIGN.md)).
 - Browser checks of the interface on Linux and macOS, and in Firefox and Safari.

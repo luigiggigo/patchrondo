@@ -187,15 +187,17 @@ class Journal:
 
 
 @contextmanager
-def attempt(task_path: Path, *, iteration: int, role: str, provider: str, clock=None):
+def attempt(task_path: Path, *, iteration: int, role: str, provider: str, clock=None, details: dict | None = None):
     """Record one attempt of a step: its start, what the caller emits, and how it ended.
 
     Whatever ends the attempt is raised again unchanged. `completed` means the
     step returned; whether its result is accepted is decided by the engine afterwards.
+    `details` are facts about the attempt known when it starts, such as the
+    model it was configured with; they are recorded with its start.
     """
     journal = Journal(task_path, iteration=iteration, role=role, provider=provider, clock=clock)
     started = time.monotonic()
-    journal.emit("status", status="started")
+    journal.emit("status", status="started", **(details or {}))
     outcome, kind = "completed", None
     try:
         yield journal

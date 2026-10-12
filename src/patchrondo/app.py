@@ -24,11 +24,11 @@ import threading
 import time
 from typing import NamedTuple
 
-from . import __version__, activity, doctor, environment, providers, rag, recovery, repair, runinfo
+from . import __version__, activity, agents, doctor, environment, providers, rag, recovery, repair, runinfo, streams
 from .commands import join_command, split_command
 from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, config, create_task, effective_config,
-                   record_environment, validate_config, validate_overrides)
-from .storage import FileMutex, LockBusy, TaskLock, now, read_json, save_json
+                   record_environment, refresh_agent_settings, validate_config, validate_overrides)
+from .storage import FileMutex, LockBusy, TaskLock, now, private_dir, read_json, save_json
 from .workspace import NotFound, Project, Workspace
 
 TASK_ID = re.compile(r"T-[a-f0-9]{12}")
@@ -51,6 +51,8 @@ WORKFLOW_FIELDS = ("max_iterations", "agent_timeout_seconds", "test_timeout_seco
 RAG_LIMITS = {"max_chunks": (1, 50), "max_chars": (1000, 100000)}
 REPO_TTL_SECONDS = 30
 PROVIDER_TTL_SECONDS = 300
+CAPABILITY_TTL_SECONDS = 3600  # what a CLI offers is asked again after this long, or when the user refreshes
+VERIFY_TIMEOUT_SECONDS = 180
 QUICK_TITLE = 80
 ENVIRONMENT_FIELDS = ("status", "stage", "error_kind", "cause", "message", "provider", "repair", "repair_available",
                       "repair_applied", "requires_user_action", "checked_at")
@@ -244,31 +246,54 @@ class Providers:
         self.checked_at: str | None = None
         self.checked_monotonic = 0.0
         self.checking = False
+        # What each CLI says it offers (`doctor.discover`): kept here for the agent settings, not sent with the status.
+        self.capabilities: dict[str, dict | None] = {}
+        self._asked: dict[str, tuple] = {}
+        self.force = False
 
     def view(self, refresh: bool = False) -> dict:
         with self.lock:
             stale = self.data is None or time.monotonic() - self.checked_monotonic > PROVIDER_TTL_SECONDS
             if (refresh or stale) and not self.checking:
                 self.checking = True
+                self.force = self.force or refresh
                 threading.Thread(target=self._check, name="patchrondo-providers", daemon=True).start()
             return {"checking": self.checking, "checked_at": self.checked_at, "providers": self.data,
                     "system": self.system}
 
-    def _check(self) -> None:
+    def _discover(self, name: str, status: dict, cwd: Path, force: bool) -> dict | None:
+        key = (status.get("path"), status.get("version"))
+        known = self._asked.get(name)
+        if known and known[0] == key and not force and time.monotonic() - known[1] < CAPABILITY_TTL_SECONDS:
+            return known[2]
         try:
-            cwd = self.cwd if self.cwd.is_dir() else Path.home()
-            data = doctor.check_all(cwd)
+            found = doctor.discover(status, cwd)
+        except Exception:  # noqa: BLE001 - not knowing what a CLI offers never breaks its status
+            found = None
+        self._asked[name] = (key, time.monotonic(), found)
+        return found
+
+    def _check(self) -> None:
+        cwd = self.cwd if self.cwd.is_dir() else Path.home()
+        with self.lock:
+            force, self.force = self.force, False
+        try:
+            data = {name: dict(status) for name, status in doctor.check_all(cwd).items()}
         except Exception as exc:  # noqa: BLE001 - shown in the interface instead of killing the thread
             data = {name: {"name": name, "label": spec["label"], "installed": None, "path": None, "version": None,
                            "authenticated": None, "auth_method": None, "warning": f"Check failed: {exc}",
                            "hint": spec["install"], "login_command": spec["login"], "docs": spec["docs"]}
                     for name, spec in doctor.PROVIDERS.items()}
+        capabilities = {}
+        for name, status in data.items():
+            given = status.pop("capabilities", None)  # a scripted status may say what its CLI offers
+            capabilities[name] = given if isinstance(given, dict) else self._discover(name, status, cwd, force)
         try:
             system = environment.system()
         except Exception:  # noqa: BLE001 - the indicator shows "unknown" instead of killing the thread
             system = None
         with self.lock:
-            self.data, self.system = data, system
+            self.data, self.system, self.capabilities = data, system, capabilities
             self.checked_at, self.checked_monotonic = now(), time.monotonic()
             self.checking = False
         if self.on_change:
@@ -542,6 +567,323 @@ class App:
         self.changed.set()
         return settings
 
+    # --- agent settings -------------------------------------------------------------
+
+    def _agent_scope(self, project_id, task_id):
+        """What a request about agent settings is about: (level, project, task path, configuration, state)."""
+        if task_id and not project_id:
+            raise ValueError("A task is named together with its project")
+        project = self.ws.get(project_id) if project_id else None
+        path = self.task_path(project, task_id) if task_id else None
+        cfg = config(project.home) if project else None
+        state = read_json(path / "state.json") if path else None
+        return ("task" if path else "project" if project else "global"), project, path, cfg, state
+
+    @staticmethod
+    def _agent_layers(level: str, store: dict, cfg: dict | None, state: dict | None) -> tuple[list, list[str]]:
+        """The levels up to `level`, and what is wrong with those that cannot be read (they count as empty)."""
+        found, problems = [("global", store["settings"])], []
+        for name, holder in (("project", cfg), ("task", state)):
+            if holder is None:
+                break
+            try:
+                found.append((name, agents.clean_layer(holder.get("agent_settings"))))
+            except ValueError as exc:
+                found.append((name, {}))
+                problems.append(f"The agent settings saved with the {name} cannot be used: {exc}")
+        return found[:agents.LEVELS.index(level) + 1], problems
+
+    @staticmethod
+    def _command_preview(provider: str, role: str, values: dict, cfg: dict | None, state: dict | None) -> dict:
+        """The command a step would be started with, for reading only: placeholders stand for what a run fills in."""
+        argv = agents.command(provider, role, values, live=streams.enabled() and values.get("live_activity") is not False,
+                              workspace=state["worktree"] if state else "<task copy>",
+                              turns=cfg["workflow"]["claude_max_turns"] if cfg else 12,
+                              schema="<review schema>", last_message=f"<run>/{role}.last-message.txt")
+        return agents.preview(argv)
+
+    def _known(self) -> tuple[dict, dict]:
+        with self.providers.lock:
+            return dict(self.providers.data or {}), dict(self.providers.capabilities)
+
+    def agents_view(self, project_id=None, task_id=None) -> dict:
+        """Everything the Agents page shows for one level: both roles, both providers, values and where they come from."""
+        level, project, path, cfg, state = self._agent_scope(project_id, task_id)
+        store = agents.read_store(self.ws.root)
+        layers, problems = self._agent_layers(level, store, cfg, state)
+        available = agents.presets(store)
+        statuses, capabilities = self._known()
+        defaults = self.ws.settings()["defaults"]
+        roles = {}
+        for role in agents.ROLES:
+            chosen = (cfg or {}).get("agents") or {}
+            if state is not None:
+                provider, source = state.get(role), "task"
+            elif chosen.get(role):
+                provider, source = chosen[role], "project"
+            else:
+                provider, source = defaults[role], "global"
+            blocks = {}
+            for name in agents.PROVIDERS:
+                resolved, outer = agents.resolve(name, role, layers), agents.resolve(name, role, layers[:-1])
+                blocks[name] = {"own": ((layers[-1][1].get(role) or {}).get(name)) or {}, "values": resolved["values"],
+                                # What this level would have without its own block: the values a reset goes back to.
+                                "inherited": {"values": outer["values"], "sources": outer["sources"]},
+                                "sources": resolved["sources"], "preset": agents.preset_of(name, resolved["values"], available),
+                                "risks": agents.risks(name, role, resolved["values"]),
+                                "preview": self._command_preview(name, role, resolved["values"], cfg, state)}
+            roles[role] = {"provider": provider, "provider_source": source, "blocks": blocks,
+                           "provider_own": chosen.get(role) if level == "project" else provider if level == "global" else None}
+        described = {}
+        for name in agents.PROVIDERS:
+            offered = capabilities.get(name) or {}
+            described[name] = {"status": statuses.get(name), "catalog": agents.catalog(name, offered, store),
+                               "profiles": offered.get("profiles") or [], "discovered": bool(offered.get("flags")),
+                               "notes": offered.get("notes") or [],
+                               "schema": {role: agents.schema(name, role, offered) for role in agents.ROLES}}
+        running = None
+        if path is not None:
+            running = runinfo.runtime(path, state, self._owned((project.id, task_id)))["lock"] is not None
+        return {"level": level, "project": project.id if project else None, "task": task_id,
+                "task_title": state.get("title") if state else None, "task_status": state.get("status") if state else None,
+                "locked": bool(running) or (state or {}).get("status") in {"done", "blocked"},
+                "categories": [list(pair) for pair in agents.CATEGORIES], "providers": described, "presets": available,
+                "roles": roles, "problems": problems, "checking": self.providers.checking,
+                "checked_at": self.providers.checked_at}
+
+    def agents_save(self, payload: dict) -> dict:
+        """Replace the settings one level keeps for a role, and optionally who plays the role at that level.
+
+        `blocks` maps a provider to its whole block at this level: a key left
+        out inherits, `null` asks for the default. Everything is validated
+        before anything is written; an option that widens what the developer
+        can touch needs `risk_acknowledged: true` in the same block.
+        """
+        unknown = sorted(set(payload) - {"project", "task", "role", "provider", "blocks"})
+        if unknown:
+            raise ValueError(f"Unknown field: {', '.join(unknown)}")
+        role, blocks = payload.get("role"), payload.get("blocks", {})
+        if role not in agents.ROLES:
+            raise ValueError("role must be developer or reviewer")
+        if not isinstance(blocks, dict) or set(blocks) - set(agents.PROVIDERS):
+            raise ValueError("blocks may only contain claude and codex")
+        level, project, path, cfg, _ = self._agent_scope(payload.get("project"), payload.get("task"))
+        clean = {name: agents.clean_block(name, role, block) for name, block in blocks.items()}
+        for name, block in clean.items():
+            agents.check_folders(name, role, block, private=(self.ws.root, *([project.home] if project else [])),
+                                 repository=Path(cfg["repository"]) if cfg else None)
+        provider = payload.get("provider")
+        if "provider" in payload and (level == "task" or not (provider in VALID_AGENTS or (provider is None and level == "project"))):
+            raise ValueError("The agents of a task are chosen when it is created" if level == "task"
+                             else "provider must be claude or codex" + (", or null to use the global default" if level == "project" else ""))
+
+        def merged(layer) -> dict:
+            layer = copy.deepcopy(layer) if isinstance(layer, dict) else {}
+            for name, block in clean.items():
+                layer.setdefault(role, {})[name] = block
+            return agents.clean_layer(layer)
+
+        if level == "global":
+            agents.update_store(self.ws.root, lambda store: store.__setitem__("settings", merged(store["settings"])))
+            if "provider" in payload:
+                self.ws.update_settings({"defaults": {role: provider}})
+        elif level == "project":
+            file = project.home / "config.json"
+            with FileMutex(file):
+                candidate = read_json(file)
+                if not isinstance(candidate, dict):
+                    raise ValueError("The saved configuration is not a JSON object")
+                layer = merged(candidate.get("agent_settings"))
+                candidate.pop("agent_settings", None)
+                if layer:
+                    candidate["agent_settings"] = layer
+                if "provider" in payload:
+                    chosen = {key: value for key, value in (candidate.get("agents") or {}).items() if key != role}
+                    if provider:
+                        chosen[role] = provider
+                    candidate.pop("agents", None)
+                    if chosen:
+                        candidate["agents"] = chosen
+                validate_config(copy.deepcopy(candidate), project.home)  # nothing invalid reaches the disk
+                save_json(file, candidate)
+        else:
+            with self.run_slot((project.id, payload["task"])):  # no run of this task starts while its settings change
+                held = TaskLock(path)  # and none is running: a step never sees its task's settings change under it
+                try:
+                    with held:
+                        state = read_json(path / "state.json")
+                        if state.get("status") in {"done", "blocked"}:
+                            raise Conflict(f"Task is {state['status']}: its settings are no longer used")
+                        layer = merged(state.get("agent_settings"))
+                        state.pop("agent_settings", None)
+                        if layer:
+                            state["agent_settings"] = layer
+                        state["updated_at"] = now()
+                        save_json(path / "state.json", state)
+                except LockBusy as exc:
+                    raise Conflict("The task is running or its lock is present: change its settings when it has stopped") from exc
+        self.changed.set()
+        return self.agents_view(payload.get("project"), payload.get("task"))
+
+    def agents_test(self, payload: dict) -> dict:
+        """Test configuration: check one role's settings without starting anything.
+
+        `values`, when given, is the block being edited at this level and not
+        saved yet. The checks use the last answers of the CLIs; a model the
+        account may not have is a warning here, and `agents_verify` settles it.
+        """
+        unknown = sorted(set(payload) - {"project", "task", "role", "provider", "values"})
+        if unknown:
+            raise ValueError(f"Unknown field: {', '.join(unknown)}")
+        role, provider = payload.get("role"), payload.get("provider")
+        if role not in agents.ROLES or provider not in agents.PROVIDERS:
+            raise ValueError("role must be developer or reviewer, and provider claude or codex")
+        level, project, _, cfg, state = self._agent_scope(payload.get("project"), payload.get("task"))
+        store = agents.read_store(self.ws.root)
+        layers, problems = self._agent_layers(level, store, cfg, state)
+        if "values" in payload:
+            block = agents.clean_block(provider, role, payload["values"])
+            agents.check_folders(provider, role, block, private=(self.ws.root, *([project.home] if project else [])),
+                                 repository=Path(cfg["repository"]) if cfg else None)
+            layer = copy.deepcopy(layers[-1][1])
+            layer.setdefault(role, {})[provider] = block
+            layers[-1] = (level, layer)
+        values = agents.resolve(provider, role, layers)["values"]
+        statuses, capabilities = self._known()
+        folders = {}
+        if cfg:
+            folders["project repository"] = cfg["repository"]
+        if state:
+            folders["task's copy of the project"] = state.get("worktree")
+        checks = agents.diagnose(provider, role, values, status=statuses.get(provider), capabilities=capabilities.get(provider),
+                                 models=agents.catalog(provider, capabilities.get(provider), store), folders=folders)
+        checks += [{"id": "saved", "label": "Saved settings can be read", "status": "failed", "detail": text, "fix": ""}
+                   for text in problems]
+        return {"ok": not any(check["status"] == "failed" for check in checks), "checks": checks, "role": role,
+                "provider": provider, "model": values.get("model"), "effort": values.get("effort"),
+                "preview": self._command_preview(provider, role, values, cfg, state), "tested_at": now(),
+                "cli_checked_at": self.providers.checked_at}
+
+    def agents_verify(self, payload: dict) -> dict:
+        """Ask a model for one word with the real CLI, to learn whether this login can use it.
+
+        The only action of the agent settings that calls a model. It uses a
+        little of the plan, so it needs `confirm: true`, and its answer is
+        remembered with its date so that it is not asked again without need.
+        """
+        if set(payload) - {"provider", "model", "effort", "confirm"}:
+            raise ValueError("Unknown field")
+        provider = payload.get("provider")
+        if provider not in agents.PROVIDERS:
+            raise ValueError("provider must be claude or codex")
+        if payload.get("confirm") is not True:
+            raise ValueError("A test call is a real call that uses a little of your plan: confirm must be true")
+        block = agents.clean_block(provider, "reviewer", {"model": payload.get("model"), "effort": payload.get("effort")})
+        if not block.get("model"):
+            raise ValueError("Choose the model to test")
+        with self.runs:
+            if self.closing:
+                raise Conflict("PatchRondo is shutting down")
+        result = providers.OfficialCLI(timeout=VERIFY_TIMEOUT_SECONDS).verify(
+            provider, block["model"], block.get("effort"), private_dir(self.ws.root / "verify"))
+        version = (self._known()[0].get(provider) or {}).get("version")
+        mark = {"ok": result["ok"], "kind": result["kind"], "message": None if result["ok"] else result["message"], "at": now(),
+                "effort": block.get("effort"), "cli": version}
+        agents.update_store(self.ws.root, lambda store: store["models"]["verified"][provider].__setitem__(block["model"], mark))
+        self.changed.set()
+        return {**mark, "provider": provider, "model": block["model"]}
+
+    def agents_preset(self, payload: dict) -> dict:
+        """Save a custom preset; with the `id` of an existing one, replace it."""
+        preset = agents.clean_preset(payload)
+
+        def change(store: dict) -> None:
+            kept = [item for item in store["presets"] if item["id"] != preset["id"]]
+            if any(item["name"].casefold() == preset["name"].casefold() for item in kept):
+                raise ValueError(f"A preset named “{preset['name']}” already exists")
+            if len(kept) >= agents.MAX_ITEMS:
+                raise ValueError(f"At most {agents.MAX_ITEMS} presets can be saved")
+            position = next((index for index, item in enumerate(store["presets"]) if item["id"] == preset["id"]), len(kept))
+            store["presets"] = kept[:position] + [preset] + kept[position:]
+
+        store = agents.update_store(self.ws.root, change)
+        self.changed.set()
+        return {"preset": preset, "presets": agents.presets(store)}
+
+    def agents_preset_remove(self, preset_id: str) -> dict:
+        def change(store: dict) -> None:
+            if not any(item["id"] == preset_id for item in store["presets"]):
+                raise FileNotFoundError("Preset not found")
+            store["presets"] = [item for item in store["presets"] if item["id"] != preset_id]
+
+        return {"presets": agents.presets(agents.update_store(self.ws.root, change))}
+
+    def agents_model(self, payload: dict) -> dict:
+        """Add a model ID to the list of a provider, or remove one that was added. Nothing is checked about it."""
+        provider, model = payload.get("provider"), payload.get("id")
+        if set(payload) - {"provider", "id", "remove"} or provider not in agents.PROVIDERS or type(payload.get("remove", False)) is not bool:
+            raise ValueError("provider must be claude or codex, id a model name, remove true or false")
+        model = agents.clean_block(provider, "reviewer", {"model": model}).get("model")
+        if not model:
+            raise ValueError("Enter a model name")
+
+        def change(store: dict) -> None:
+            names = [name for name in store["models"]["custom"][provider] if name != model]
+            store["models"]["custom"][provider] = names if payload.get("remove") else names + [model]
+
+        store = agents.update_store(self.ws.root, change)
+        return {"catalog": agents.catalog(provider, self._known()[1].get(provider), store)}
+
+    def agents_refresh_step(self, project: Project, task_id) -> dict:
+        """Let the step a stopped task is at start again with the settings of now, not those it was frozen with."""
+        path = self.task_path(project, task_id)
+        with self.run_slot((project.id, task_id)):
+            held = TaskLock(path)
+            try:
+                with held:
+                    state = read_json(path / "state.json")
+                    if state.get("status") in {"done", "blocked"}:
+                        raise Conflict(f"Task is {state['status']}: no step will start again")
+                    roles = refresh_agent_settings(state)
+                    if roles:
+                        state["updated_at"] = now()
+                        save_json(path / "state.json", state)
+            except LockBusy as exc:
+                raise Conflict("The task is running or its lock is present: its step keeps the settings it started with") from exc
+            finally:
+                self.changed.set()
+        return {"refreshed": roles}
+
+    @staticmethod
+    def _used(state: dict) -> dict:
+        """Provider, model and effort of each role's most recent step, from the records the engine froze."""
+        runs = state.get("agent_runs") if isinstance(state.get("agent_runs"), dict) else {}
+        used = {}
+        for role in agents.ROLES:
+            record = next((runs[key] for key in sorted(runs, reverse=True) if key.endswith(f":{role}") and isinstance(runs[key], dict)), None)
+            values = record.get("values") if record and isinstance(record.get("values"), dict) else {}
+            used[role] = {"provider": state.get(role), "model": values.get("model"), "effort": values.get("effort"),
+                          "frozen": record is not None}
+        return used
+
+    def _task_agents(self, state: dict, cfg: dict | None) -> dict:
+        """For the task page: what the step in progress is frozen with, and what the settings of now would give."""
+        runs = state.get("agent_runs") if isinstance(state.get("agent_runs"), dict) else {}
+        pending = None if state.get("status") in {"done", "blocked"} else "developer" if state.get("phase") == "develop" else "reviewer"
+        try:
+            layers, error = agents.layers(self.ws.root, cfg, state), None
+        except (ValueError, OSError) as exc:
+            layers, error = None, str(exc)
+        result = {"error": error, "pending": pending, "roles": {}}
+        for role in agents.ROLES:
+            provider = state.get(role)
+            frozen = runs.get(agents.step_key(state, role)) if isinstance(state.get("iteration"), int) else None
+            frozen = frozen if isinstance(frozen, dict) and frozen.get("provider") == provider else None
+            current = agents.freeze(provider, role, layers) if layers is not None and provider in agents.PROVIDERS else None
+            result["roles"][role] = {"provider": provider, "frozen": frozen, "current": current,
+                                     "differs": bool(frozen and current and role == pending and frozen.get("digest") != current["digest"])}
+        return result
+
     # --- retrieval index ------------------------------------------------------------
 
     def index_status(self, project: Project, light: bool = False) -> dict:
@@ -628,6 +970,7 @@ class App:
                 pass
         signature = _signature(path / RUN_LOG)
         item["log_size"] = signature[1] if signature else 0
+        item["agents"] = self._used(state)
         item["runtime"] = runinfo.runtime(path, state, self._owned((project.id, path.name)))
         return item
 
@@ -667,10 +1010,16 @@ class App:
         if not isinstance(acceptance, list) or not all(isinstance(item, str) for item in acceptance):
             raise ValueError("acceptance must be a list of strings")
         overrides = validate_overrides(payload.get("overrides"))
+        # The task's own level of the agent settings, checked like any other level before anything is created.
+        chosen = agents.clean_layer(payload.get("agent_settings"))
+        for role, blocks in chosen.items():
+            for name, block in blocks.items():
+                agents.check_folders(name, role, block, private=(self.ws.root, project.home),
+                                     repository=project.repository and Path(project.repository))
 
         def create() -> dict:
             task_id, _ = create_task(project.home, acceptance=[item.strip() for item in acceptance if item.strip()],
-                                     overrides=overrides or None, **fields)
+                                     overrides=overrides or None, agent_settings=chosen or None, **fields)
             with self._cache_lock:
                 self._repos.pop(project.id, None)
             self.changed.set()
@@ -688,7 +1037,8 @@ class App:
         nor changed. A task that was created but could not be started is
         returned with the reason, so nothing is created twice.
         """
-        unknown = sorted(set(payload) - {"description", "title", "developer", "reviewer", "acceptance", "request_id"})
+        unknown = sorted(set(payload) - {"description", "title", "developer", "reviewer", "acceptance", "request_id",
+                                         "agent_settings"})
         if unknown:
             raise ValueError(f"Unknown field: {', '.join(unknown)}")
         description, title = payload.get("description"), payload.get("title")
@@ -705,7 +1055,8 @@ class App:
 
         def create_and_start() -> dict:
             created = self.new_task(project, {"title": title or "Task", "description": description, **roles,
-                                              "acceptance": payload.get("acceptance", [])})
+                                              "acceptance": payload.get("acceptance", []),
+                                              "agent_settings": payload.get("agent_settings")})
             try:
                 return {**created, "started": True, "run": self.start_run(project, created["id"], {})}
             except (Conflict, RuntimeError, OSError, ValueError) as exc:
@@ -752,7 +1103,7 @@ class App:
             except ValueError as exc:
                 config_error = str(exc)
         worktree = state.get("worktree")
-        return {"project": project.id, "state": state,
+        return {"project": project.id, "state": state, "agents": self._task_agents(state, cfg),
                 "summary": self.task_summary(project, path, state, cfg),
                 "effective": effective, "config_error": config_error,
                 "worktree_exists": isinstance(worktree, str) and Path(worktree).is_dir(),
@@ -933,8 +1284,9 @@ class App:
                          else {"start_new_session": True})
                 # The child runs from the state directory: make inherited entries absolute.
                 inherited = [os.path.abspath(entry) for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep) if entry]
+                # The run is given the project's own state directory: tell it where the global agent settings are.
                 env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PATCHRONDO_UI_CHILD": "1",
-                       "PYTHONPATH": os.pathsep.join([PACKAGE_ROOT, *inherited])}
+                       agents.WORKSPACE: str(self.ws.root), "PYTHONPATH": os.pathsep.join([PACKAGE_ROOT, *inherited])}
                 process = subprocess.Popen(self.run_command(project, task_id, flags), cwd=project.home,
                                            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                            env=env, **extra)

@@ -17,7 +17,7 @@ from .gitops import repo_root, create_worktree, changes, stat, fingerprint
 from .process import execute, short_log
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
-from . import activity, providers, rag, recovery, winacl
+from . import activity, agents, providers, rag, recovery, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -169,12 +169,14 @@ def task_dir(home: Path, task_id: str) -> Path:
 
 
 def create_task(home: Path, *, title: str, description: str, acceptance: list[str],
-                developer: str, reviewer: str, overrides: dict | None = None) -> tuple[str, Path]:
+                developer: str, reviewer: str, overrides: dict | None = None,
+                agent_settings: dict | None = None) -> tuple[str, Path]:
     if developer not in VALID_AGENTS or reviewer not in VALID_AGENTS:
         raise ValueError("Supported agents: claude, codex")
     if not title.strip() or not description.strip():
         raise ValueError("Title and description are required")
     overrides = validate_overrides(overrides)
+    agent_settings = agents.clean_layer(agent_settings)
     cfg = config(home)
     repo = repo_root(Path(cfg["repository"]))
     task_id = "T-" + uuid.uuid4().hex[:12]
@@ -200,6 +202,8 @@ def create_task(home: Path, *, title: str, description: str, acceptance: list[st
              "review": None, "last_error": None, "handoff": None, "recovery": None}
     if overrides:
         state["overrides"] = overrides  # absent otherwise, as in states written by earlier versions
+    if agent_settings:
+        state["agent_settings"] = agent_settings  # the task's own level of the agent settings
     save_json(task_path / "state.json", state)
     return task_id, worktree
 
@@ -320,16 +324,72 @@ def parse_review(text: str) -> dict:
     return obj
 
 
-def _invoke(adapter, path: Path, state: dict, role: str, prompt: str, workspace: Path, run_dir: Path):
+def _agent_settings(root: Path, home: Path, cfg: dict, state: dict, role: str) -> dict:
+    """The agent settings of the step about to start for `role`: frozen when it first starts, kept afterwards.
+
+    A step is one role in one iteration. The first time it starts, the three
+    levels of settings are resolved and the result is saved with the task
+    under `agent_runs`, in the same write as the event that starts the step.
+    A resume, a retry or an automatic recovery of that step finds the record
+    and runs with it, whatever was edited meanwhile; an edit applies from the
+    next step, or to this one after `refresh_agent_settings`. Settings that
+    cannot be used pause the task before the agent is called.
+    """
+    provider, key = state[role], agents.step_key(state, role)
+    runs = state.get("agent_runs") if isinstance(state.get("agent_runs"), dict) else {}
+    try:
+        values = agents.thaw(runs.get(key), provider, role)
+        if values is None:
+            record = agents.freeze(provider, role, agents.layers(root, cfg, state))
+            values = agents.thaw(record, provider, role)
+            agents.check_folders(provider, role, values, private=(root, home), repository=Path(cfg["repository"]))
+            runs[key] = record
+            state["agent_runs"] = dict(list(runs.items())[-agents.KEPT_RUNS:])
+    except (ValueError, OSError) as exc:
+        raise AgentFailure(f"The agent settings of the {role} cannot be used: {exc}", "configuration", provider=provider) from exc
+    return values
+
+
+def refresh_agent_settings(state: dict) -> list[str]:
+    """Let the step a task is stopped at take the settings of now when it starts again. Returns the roles affected.
+
+    Never done by a run: it is the user's decision, asked for in the interface
+    while the task is not running, and it is recorded in the task's history.
+    """
+    role = "developer" if state.get("phase") == "develop" else "reviewer"
+    runs = state.get("agent_runs") if isinstance(state.get("agent_runs"), dict) else {}
+    if runs.pop(agents.step_key(state, role), None) is None:
+        return []
+    state["agent_runs"] = runs
+    _event(state, "agent_settings_refreshed", role=role)
+    return [role]
+
+
+def _configured(settings: dict) -> dict:
+    """What an event says about the configuration of a step; empty when the CLI's own defaults are used."""
+    return {key: settings[key] for key in ("model", "effort") if settings.get(key)}
+
+
+def _instructions(settings: dict) -> str:
+    extra = settings.get("instructions")
+    return f"\n## Additional instructions from the user's agent settings\n{extra}\n" if extra else ""
+
+
+def _invoke(adapter, path: Path, state: dict, role: str, prompt: str, workspace: Path, run_dir: Path,
+            settings: dict | None = None):
     """Call the agent of `role`, recording the attempt in the task's activity journal.
 
     The journal only observes: the reply, and every failure, pass through unchanged.
+    `settings` are the frozen agent settings of the step; an adapter that is
+    not `configurable` is called as before and never sees them.
     """
     provider = state[role]
-    with activity.attempt(path, iteration=state["iteration"], role=role, provider=provider) as journal:
-        if getattr(adapter, "journals", False):
-            return adapter.invoke(provider, role, prompt, workspace, run_dir, journal=journal)
-        return adapter.invoke(provider, role, prompt, workspace, run_dir)
+    with activity.attempt(path, iteration=state["iteration"], role=role, provider=provider,
+                          details=_configured(settings or {})) as journal:
+        options = {"journal": journal} if getattr(adapter, "journals", False) else {}
+        if settings and getattr(adapter, "configurable", False):
+            options["settings"] = settings
+        return adapter.invoke(provider, role, prompt + _instructions(settings or {}), workspace, run_dir, **options)
 
 
 def _run_tests(cfg: dict, workspace: Path, run_dir: Path, journal) -> list[dict]:
@@ -513,7 +573,8 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
 
 
 def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = False,
-             auto_resume: bool | None = None, clock=None, retry_of: str | None = None, environment=None) -> dict:
+             auto_resume: bool | None = None, clock=None, retry_of: str | None = None, environment=None,
+             agents_root: Path | None = None) -> dict:
     """Run one task under its lock until it completes, blocks or pauses.
 
     `auto_resume` overrides `recovery.enabled`. While recovery is active, a
@@ -525,7 +586,13 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
     the first provider call and again before each review. `environment` is the
     manager that does it; the default one is used unless the checks are
     switched off with `PATCHRONDO_PREFLIGHT=0`.
+
+    Every step is started with the agent settings of its role, frozen when
+    the step first starts (`_agent_settings`). `agents_root` is the folder
+    whose agents.json holds the global level; by default it is found from
+    the state directory.
     """
+    root = Path(agents_root) if agents_root is not None else agents.workspace_root(home)
     cfg = config(home)
     clock = clock or recovery.utcnow
     path = task_dir(home, task_id)
@@ -566,11 +633,12 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                 iteration = state["iteration"]
                 run_dir = private_dir(path / "runs" / f"iteration-{iteration:03d}")
                 if state["phase"] == "develop":
-                    _event(state, "development_started")
+                    settings = _agent_settings(root, home, cfg, state, "developer")
+                    _event(state, "development_started", **_configured(settings))
                     _save(path, state)
                     context = _context(home, cfg, path, state, workspace, "developer")
                     reply = _invoke(adapter, path, state, "developer",
-                                    _developer_prompt(path, state, workspace, context), workspace, run_dir)
+                                    _developer_prompt(path, state, workspace, context), workspace, run_dir, settings)
                     atomic_text(path / "handoff.md", f"# Handoff — iteration {iteration}\n\n{reply.text[:30000]}\n")
                     state["handoff"] = str(path / "handoff.md")
                     _event(state, "development_completed", agent=state["developer"])
@@ -583,11 +651,12 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     if manager is not None:
                         # Before every review; a ready result is reused only while nothing it depends on changed.
                         _environment(manager, home, path, state, cfg, live=live, reviewer_only=True)
-                    _event(state, "review_started")
+                    settings = _agent_settings(root, home, cfg, state, "reviewer")
+                    _event(state, "review_started", **_configured(settings))
                     _save(path, state)
                     context = _context(home, cfg, path, state, workspace, "reviewer")
                     reply = _invoke(adapter, path, state, "reviewer",
-                                    _review_prompt(path, state, workspace, context), workspace, run_dir)
+                                    _review_prompt(path, state, workspace, context), workspace, run_dir, settings)
                     review = parse_review(reply.text)
                     _check_test_context(state, cfg, workspace)
                     state["review"] = review

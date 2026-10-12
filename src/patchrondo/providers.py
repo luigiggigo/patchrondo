@@ -8,7 +8,7 @@ from pathlib import Path
 import json
 import re
 
-from . import streams
+from . import agents, streams
 from .process import Result, execute, short_log
 from .storage import atomic_text
 
@@ -39,7 +39,17 @@ _ERROR_KINDS = (
     ("authentication", re.compile(r"not logged in|authentication failed|unauthorized|please login|login required")),
     ("quota", re.compile(r"rate.?limit|usage.?limit|quota|too many requests|out of credits|insufficient credits"
                          r"|limit reached|resets at")),
+    # General wording of a provider that refuses the model it was asked for, not a form observed in an
+    # authorized run. It comes last: a login or a usage limit named in the same message still decides.
+    ("model_unavailable", re.compile(r"model_not_found|issue with the selected model|(?:invalid|unknown|unsupported) model"
+                                     r"|model\b[^\n]{0,80}(?:does not exist|not found|do not have access|is not supported"
+                                     r"|is not available|not available)")),
 )
+# A CLI that stops at its own arguments names the option it refused. Shapes of the two argument parsers:
+# "unknown option '--x'" and "option '--x <v>' argument 'y' is invalid" (Claude Code), "unexpected argument
+# '--x' found" and "invalid value 'y' for '--x <V>'" (Codex).
+_OPTION_REFUSED = re.compile(r"(?:unknown|unexpected|unrecognized|invalid)\b[^\n]{0,60}(?:option|argument|value)[^\n]{0,120}--?[a-z]"
+                             r"|option '--?[^'\n]+' argument '[^'\n]*' is invalid", re.I)
 
 
 def _classify_error(body: str) -> str:
@@ -63,8 +73,14 @@ def simulated() -> bool:
     return execute is not _execute
 
 
+# The questions a provider CLI may be asked besides the sandbox self-check, each an exact command:
+# its help and, for Codex, its model catalog. None of them takes a prompt.
+PROBES = (("claude", "--help"), ("codex", "--help"), ("codex", "exec", "--help"), ("codex", "debug", "models"),
+          ("codex", "debug", "models", "--bundled"))
+
+
 def probe(argv: list[str], cwd: Path, *, timeout: int, on_stdout=None) -> Result:
-    """Run a model-free command of a provider CLI: its help text or its sandbox self-check.
+    """Run a model-free command of a provider CLI: its help, its model catalog or its sandbox self-check.
 
     Never used for a prompt. Refused while provider commands are simulated, so
     a test or a synthetic run cannot start a real CLI and no call is counted
@@ -72,8 +88,8 @@ def probe(argv: list[str], cwd: Path, *, timeout: int, on_stdout=None) -> Result
     """
     if simulated():
         raise RuntimeError("Provider commands are simulated: no real CLI is started")
-    if argv[:1] != ["codex"] or argv[1:2] != ["sandbox"]:
-        raise ValueError("Only the sandbox self-check of the Codex CLI may be probed")
+    if tuple(argv) not in PROBES and (argv[:1] != ["codex"] or argv[1:2] != ["sandbox"]):
+        raise ValueError("Only the help, the model catalog and the sandbox self-check of a provider CLI may be probed")
     return _execute(argv, cwd, timeout=timeout, **({"on_stdout": on_stdout} if on_stdout is not None else {}))
 
 
@@ -251,6 +267,7 @@ def _noted(*_args, **_fields) -> None:
 
 class OfficialCLI:
     journals = True  # `invoke` accepts the journal of the attempt and records the CLI's activity in it
+    configurable = True  # `invoke` accepts the agent settings of the step and starts the CLI with them
 
     def __init__(self, timeout: int = 600, claude_turns: int = 12, clock=None):
         self.timeout = timeout
@@ -259,7 +276,7 @@ class OfficialCLI:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def invoke(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path,
-               journal=None) -> AgentReply:
+               journal=None, settings: dict | None = None) -> AgentReply:
         """Run one step with the provider's CLI and return its final answer.
 
         The CLI is asked to print its activity while it works; what it prints
@@ -267,24 +284,65 @@ class OfficialCLI:
         refuses the streaming options before it starts, or live activity is
         switched off, the step runs with the options used before streaming
         existed and the journal says so.
+
+        `settings` are the agent settings of the step for this role and
+        provider, as `agents.clean_block` validated them. Without them the
+        CLI is started with the command PatchRondo always used.
         """
         if provider not in {"claude", "codex"} or role not in {"developer", "reviewer"}:
             raise ValueError("Invalid provider or role")
+        settings = settings or {}
         emit = journal.emit if journal is not None else _noted
-        if not streams.enabled():
+        if not streams.enabled() or settings.get("live_activity") is False:
+            switch = f"({streams.SWITCH})" if not streams.enabled() else "in the agent settings of this role"
             emit("status", status="notice", code="stream_off",
-                 text=f"Live activity is switched off ({streams.SWITCH}): this step shows its result when it ends.")
-            return self._step(provider, role, prompt, workspace, run_dir, emit, live=False)
+                 text=f"Live activity is switched off {switch}: this step shows its result when it ends.")
+            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=False)
         try:
-            return self._step(provider, role, prompt, workspace, run_dir, emit, live=True)
+            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=True)
         except _StreamRefused as refusal:
             emit("status", status="notice", code="stream_unsupported",
                  text=f"This {provider} CLI did not accept the options for live activity ({refusal}). "
                       "The step runs without them and shows its result when it ends.")
-            return self._step(provider, role, prompt, workspace, run_dir, emit, live=False)
+            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=False)
 
-    def _step(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path, emit, *,
-              live: bool) -> AgentReply:
+    def verify(self, provider: str, model: str, effort: str | None, folder: Path) -> dict:
+        """Ask a model for one word, to learn whether this login can use it: {"ok", "kind", "message"}.
+
+        A real call, the smallest there is: no tool that writes, an empty
+        folder. It uses a little of the plan, so it runs only when a person asks.
+        """
+        folder.mkdir(parents=True, exist_ok=True)
+        out = folder / "last-message.txt"
+        out.unlink(missing_ok=True)
+        try:
+            result = execute(agents.verification(provider, model, effort, folder=folder, last_message=out), folder,
+                             stdin="Reply with the single word OK.", timeout=min(self.timeout, 180))
+            if result.timed_out:
+                raise AgentFailure(f"No answer from {model} in time", "timeout", provider=provider)
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip()
+                refused = next((line for line in detail.splitlines()[:40] if _OPTION_REFUSED.search(line)), None)
+                if refused and _classify_error(detail) == "agent_error":
+                    raise AgentFailure(short_log(refused, 300), "unsupported_option", provider=provider)
+                raise classified_failure(short_log(detail, 600), detail, provider, self.clock(), result.stdout.strip())
+            text = _claude_text(result.stdout, self.clock(), result.stderr) if provider == "claude" else \
+                out.read_text(encoding="utf-8") if out.is_file() else ""
+            if not text.strip():
+                raise AgentFailure(f"{model} returned nothing", "empty_output", provider=provider)
+        except FileNotFoundError:
+            return {"ok": False, "kind": "configuration", "message": f"CLI not found: {provider}"}
+        except AgentFailure as failure:
+            return {"ok": False, "kind": failure.kind, "message": short_log(str(failure), 600)}
+        finally:
+            out.unlink(missing_ok=True)
+        return {"ok": True, "kind": None, "message": short_log(text.strip(), 200)}
+
+    def _step(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path, emit,
+              settings: dict | None = None, *, live: bool) -> AgentReply:
+        settings = settings or {}
+        timeout = settings.get("timeout_seconds") or self.timeout
+        turns = settings.get("max_turns") or self.claude_turns
         run_dir.mkdir(parents=True, exist_ok=True)
         atomic_text(run_dir / f"{role}.prompt.md", prompt)
         schema = {
@@ -303,31 +361,27 @@ class OfficialCLI:
                 }},
             },
         }
-        # Streaming only changes how output is printed: tools, permissions, sandbox and login are untouched.
-        if provider == "claude":
-            tools = "Read,Glob,Grep,Edit,Write" if role == "developer" else "Read,Glob,Grep"
-            argv = ["claude", "-p", "--output-format", *(("stream-json", "--verbose") if live else ("json",)),
-                    "--restricted",
-                    "--permission-mode", "dontAsk", "--tools", tools,
-                    "--allowedTools", tools, "--disallowedTools", "mcp__*",
-                    "--max-turns", str(self.claude_turns)]
-            if role == "reviewer":
-                argv += ["--json-schema", json.dumps(schema, separators=(",", ":"))]
-        else:
-            out = run_dir / f"{role}.last-message.txt"
+        missing = agents.missing_folders(settings)
+        if missing:
+            raise AgentFailure(f"The agent settings of the {role} name a folder or a file that is not there: "
+                               f"{', '.join(missing)}. Create it or change the settings, then resume.",
+                               "configuration", provider=provider)
+        out = run_dir / f"{role}.last-message.txt"
+        schema_text = json.dumps(schema, separators=(",", ":"))
+        if provider != "claude":
             out.unlink(missing_ok=True)
-            argv = ["codex", "--ask-for-approval", "never", "exec", *(("--json",) if live else ()), "--sandbox",
-                    "workspace-write" if role == "developer" else "read-only",
-                    "--cd", str(workspace),
-                    "--ephemeral", "--output-last-message", str(out)]
+            schema_text = str(run_dir / "review.schema.json")
             if role == "reviewer":
-                schema_path = run_dir / "review.schema.json"
-                atomic_text(schema_path, json.dumps(schema, indent=2))
-                argv += ["--output-schema", str(schema_path)]
-            argv.append("-")
+                atomic_text(run_dir / "review.schema.json", json.dumps(schema, indent=2))
+        # The settings decide the model and the options of the call; the command itself is built in one place.
+        argv = agents.command(provider, role, settings, workspace=workspace, live=live, turns=self.claude_turns,
+                              schema=schema_text, last_message=out)
+        if settings:
+            # The command this step was started with, for the Logs tab: credentials masked, long values shortened.
+            atomic_text(run_dir / f"{role}.command.txt", agents.preview(argv)["line"] + "\n")
         stream = streams.open_stream(provider, role, workspace, emit) if live else None
         try:
-            result = execute(argv, workspace, stdin=prompt, timeout=self.timeout,
+            result = execute(argv, workspace, stdin=prompt, timeout=timeout,
                              pid_file=run_dir / f"{role}.active-process.json",
                              **({"on_stdout": stream.feed} if stream is not None else {}))
         except FileNotFoundError as exc:
@@ -343,13 +397,13 @@ class OfficialCLI:
         atomic_text(run_dir / f"{role}.stdout.log", short_log(stdout))
         atomic_text(run_dir / f"{role}.stderr.log", short_log(result.stderr))
         if result.timed_out:
-            raise AgentFailure(f"Timeout after {self.timeout}s for {provider}/{role}", "timeout", provider=provider)
+            raise AgentFailure(f"Timeout after {timeout}s for {provider}/{role}", "timeout", provider=provider)
         turn_limit = None
         if provider == "claude" and _claude_subtype(stream.result if stream is not None else result.stdout) == CLAUDE_TURN_LIMIT \
                 and _classify_error(result.stderr) == "agent_error":
             # Decided from the CLI's own result, never from wording in its activity. A login or usage
             # diagnostic on stderr still decides, as for every other failure.
-            turn_limit = AgentFailure(f"{provider}/{role} used all {self.claude_turns} turns allowed for one step "
+            turn_limit = AgentFailure(f"{provider}/{role} used all {turns} turns allowed for one step "
                                       f"without finishing ({CLAUDE_TURN_LIMIT}). Raise workflow.claude_max_turns or "
                                       "narrow the task, then resume.", "max_turns", provider=provider)
         reported = "\n".join(stream.errors) if stream is not None else ""
@@ -357,6 +411,14 @@ class OfficialCLI:
             if stream is not None and not stream.recognized and streams.refused(provider, result.stderr or result.stdout):
                 refusal = next(iter((result.stderr or result.stdout).strip().splitlines()), "")
                 raise _StreamRefused(short_log(refusal, 200))
+            started = stream is not None and stream.recognized
+            refused = None if started else next((line.strip() for line in (result.stderr or result.stdout).splitlines()[:40]
+                                                 if _OPTION_REFUSED.search(line)), None)
+            if refused and _classify_error(result.stderr) == "agent_error":
+                # The CLI stopped at its own arguments: nothing was sent to a model. Waiting cannot fix it.
+                raise AgentFailure(f"The {provider} CLI did not accept an option of this step: {short_log(refused, 300)} "
+                                   "Open the agent settings and press Test configuration, then resume.",
+                                   "unsupported_option", provider=provider)
             if turn_limit is not None:
                 raise turn_limit
             # Either stream may carry the cause or the reset; stderr comes first when both do.
