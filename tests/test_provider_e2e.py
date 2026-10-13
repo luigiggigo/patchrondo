@@ -74,11 +74,14 @@ class ProviderCheckTests(unittest.TestCase):
         self.root.mkdir()
 
     def test_no_provider_call_without_authorization(self):
-        code, out, calls = self.check("--run-fixture-tests")
-        self.assertEqual(code, 0)
-        self.assertEqual(calls, [])
-        self.assertIn("No model calls were made", out)
-        self.assertEqual(list(self.root.iterdir()), [])
+        for args, announced in ((["--run-fixture-tests"], "up to 4 provider calls per pairing"),
+                                ([], "1 developer call per pairing; the reviewer is called only with --run-fixture-tests")):
+            code, out, calls = self.check(*args)
+            self.assertEqual(code, 0)
+            self.assertEqual(calls, [])
+            self.assertIn("No model calls were made", out)
+            self.assertIn(announced, out)
+            self.assertEqual(list(self.root.iterdir()), [])
 
     def test_no_provider_call_when_a_cli_is_not_ready(self):
         def probe(name):
@@ -89,18 +92,46 @@ class ProviderCheckTests(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertIn("codex: not on PATH", out)
 
-    def test_both_pairings_pause_at_the_disabled_test_gate(self):
+    def test_without_the_fixture_tests_only_the_developer_is_called_and_checked(self):
         code, out, calls = self.check("--authorize-provider-calls", "--keep")
         self.assertEqual(code, 0, out)
-        self.assertEqual([argv[0] for argv in calls], ["claude", "codex", "codex", "claude"])
+        # One call per pairing, and each is the developer's: no review schema, no read-only sandbox.
+        self.assertEqual([argv[0] for argv in calls], ["claude", "codex"])
+        self.assertNotIn("--json-schema", calls[0])
+        self.assertNotEqual(calls[1][calls[1].index("--sandbox") + 1], "read-only")
         self.assertIn("claude -> codex: PASS", out)
         self.assertIn("codex -> claude: PASS", out)
         self.assertNotIn("FAILED", out)
+        self.assertEqual(out.count("[ok] developer CLI reported its activity while it worked (1 developer events)"), 2)
+        self.assertEqual(out.count("[ok] loop paused at the missing test consent, before any review"), 2)
+        # What the run did not reach is said, and is never printed as passed.
+        for name in ("reviewer call returned a valid review", "reviewer left the worktree unchanged",
+                     "reviewer CLI reported its activity while it worked"):
+            self.assertEqual(out.count(f"[not exercised] {name}"), 2)
+            self.assertNotIn(f"[ok] {name}", out)
+        self.assertIn("RESULT: PASS · claude -> codex, codex -> claude · developer side only: "
+                      "6 reviewer checks not exercised (add --run-fixture-tests)", out)
         tests = read_json(self.root / "state" / "config.json")["tests"]
         self.assertIs(tests["enabled"], False)
         self.assertIs(tests["trust_acknowledged"], False)
         states = [read_json(file) for file in (self.root / "state" / "tasks").glob("T-*/state.json")]
         self.assertEqual([state["last_error"]["kind"] for state in states], ["tests_disabled"] * 2)
+        for state in states:
+            self.assertNotIn("review_started", [entry["event"] for entry in state["history"]])
+
+    def test_a_review_without_the_fixture_tests_fails_the_check(self):
+        real = provider_e2e.run_task
+
+        def past_the_consent(home, task_id):
+            state = real(home, task_id)
+            state["history"].append({"event": "review_started"})
+            return state
+
+        with patch.object(provider_e2e, "run_task", side_effect=past_the_consent):
+            code, out, calls = self.check("--authorize-provider-calls", "--pairing", "claude-codex")
+        self.assertEqual(code, 1)
+        self.assertIn("[FAILED] loop paused at the missing test consent, before any review", out)
+        self.assertIn("RESULT: FAIL", out)
 
     def test_fixture_tests_run_only_with_consent_and_complete_the_task(self):
         code, out, calls = self.check("--authorize-provider-calls", "--run-fixture-tests",
@@ -108,6 +139,12 @@ class ProviderCheckTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertEqual([argv[0] for argv in calls], ["codex", "claude"])
         self.assertIn("task completed with passing tests and an approved review", out)
+        for name in ("developer CLI reported its activity while it worked (1 developer events)",
+                     "reviewer call returned a valid review (verdict APPROVED)", "reviewer left the worktree unchanged",
+                     "reviewer CLI reported its activity while it worked (1 reviewer events)"):
+            self.assertIn(f"[ok] {name}", out)
+        self.assertNotIn("not exercised", out)
+        self.assertIn("RESULT: PASS · codex -> claude\n", out)
         tests = read_json(self.root / "state" / "config.json")["tests"]
         self.assertIs(tests["enabled"], True)
         self.assertIs(tests["trust_acknowledged"], True)
@@ -116,15 +153,26 @@ class ProviderCheckTests(unittest.TestCase):
         self.assertEqual([item["status"] for item in state["tests"]], ["passed"])
 
     def test_a_cli_that_reports_no_activity_fails_the_check(self):
-        code, out, calls = self.check("--authorize-provider-calls", "--pairing", "claude-codex", silent=True)
+        code, out, calls = self.check("--authorize-provider-calls", "--run-fixture-tests", "--pairing", "claude-codex",
+                                      silent=True)
         self.assertEqual(code, 1)
-        self.assertIn("[FAILED] both CLIs reported their activity while they worked", out)
-        self.assertIn("0 developer and 0 reviewer events", out)
-        self.assertIn("The CLI printed no activity", out)
+        self.assertIn("[FAILED] developer CLI reported its activity while it worked (0 developer events; "
+                      "The CLI printed no activity", out)
+        self.assertIn("[FAILED] reviewer CLI reported its activity while it worked (0 reviewer events; "
+                      "The CLI printed no activity", out)
         self.assertIn("[ok] reviewer call returned a valid review", out)  # the loop itself still worked
+        self.assertIn("[ok] task completed with passing tests and an approved review", out)
+
+    def test_a_silent_developer_fails_the_check_without_the_fixture_tests_too(self):
+        code, out, calls = self.check("--authorize-provider-calls", "--pairing", "claude-codex", silent=True)
+        self.assertEqual((code, [argv[0] for argv in calls]), (1, ["claude"]))
+        self.assertIn("[FAILED] developer CLI reported its activity while it worked (0 developer events; "
+                      "The CLI printed no activity", out)
+        self.assertIn("[not exercised] reviewer CLI reported its activity while it worked", out)
 
     def test_reviewer_that_edits_the_worktree_fails_the_check(self):
-        code, out, calls = self.check("--authorize-provider-calls", "--pairing", "claude-codex", reviewer_edits=True)
+        code, out, calls = self.check("--authorize-provider-calls", "--run-fixture-tests", "--pairing", "claude-codex",
+                                      reviewer_edits=True)
         self.assertEqual(code, 1)
         self.assertIn("[FAILED] reviewer left the worktree unchanged", out)
         self.assertIn("stale_tests", out)

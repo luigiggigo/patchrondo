@@ -170,13 +170,27 @@ class WorkflowTests(unittest.TestCase):
                     cfg["tests"]["commands"] = [[sys.executable, "-c", "raise SystemExit(1)"]]
                 save_json(self.home / "config.json", cfg)
                 agent = FakeProvider()
+                before = read_json(self.home / "tasks" / task_id / "state.json")
+                self.assertEqual((before["phase"], [item["status"] for item in before["tests"]]), ("review", ["passed"]))
                 state = run_task(self.home, task_id, adapter=agent)
                 self.assertEqual(state["status"], "paused")
-                self.assertEqual(state["last_error"]["kind"], "stale_tests")
+                # Either way the review is not reached and the run goes back to the tests.
+                # Withdrawn consent is named as such: the passed results are replaced, not kept as stale.
+                self.assertEqual(state["last_error"]["kind"], "tests_disabled" if disable else "stale_tests")
+                self.assertEqual(state["phase"], "test")
                 self.assertEqual(agent.calls, [])
+                if disable:
+                    self.assertEqual([item["status"] for item in state["tests"]], ["skipped"])
+                    self.assertEqual(state["test_context"]["commands"], [])
                 cfg["tests"]["enabled"] = True
                 cfg["tests"]["commands"] = original
                 save_json(self.home / "config.json", cfg)
+                # With the settings back, the review is given tests that ran again, never the saved ones.
+                finished = run_task(self.home, task_id, adapter=agent)
+                events = [entry["event"] for entry in finished["history"]]
+                self.assertEqual((finished["status"], [call[1] for call in agent.calls]), ("done", ["reviewer"]))
+                self.assertEqual(events.count("tests_started"), 2)
+                self.assertLess(len(events) - 1 - events[::-1].index("tests_started"), events.index("review_completed"))
 
     def test_review_rejection_and_max_iterations(self):
         task_id, _ = self._task()
@@ -185,6 +199,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(state["status"], "blocked")
         self.assertEqual(state["iteration"], 3)
         self.assertEqual(state["last_error"], "max_iterations_reached")
+        self.assertEqual([call[1] for call in adapter.calls], ["developer", "reviewer"] * 3)
+        self.assertIn("CHANGES_REQUESTED", adapter.calls[2][2])
 
     def test_missing_tests_requires_explicit_ack(self):
         cfg = read_json(self.home / "config.json")
@@ -202,13 +218,61 @@ class WorkflowTests(unittest.TestCase):
         paused = run_task(self.home, task_id, adapter=agent)
         self.assertEqual(paused["status"], "paused")
         self.assertEqual(paused["phase"], "test")
+        self.assertEqual(paused["last_error"]["kind"], "tests_disabled")
+        self.assertEqual(paused["tests"][0]["status"], "skipped")
         self.assertEqual(paused["iteration"], 1)
-        self.assertEqual(len(agent.calls), 2)
+        self.assertEqual([call[1] for call in agent.calls], ["developer"])
+        history = list(paused["history"])
+        for _ in range(3):
+            repeated = run_task(self.home, task_id, adapter=agent)
+            self.assertEqual(repeated["history"], history)
+            self.assertEqual(repeated["last_error"], paused["last_error"])
+            self.assertEqual([call[1] for call in agent.calls], ["developer"])
         cfg["tests"]["enabled"] = True
         save_json(self.home / "config.json", cfg)
         finished = run_task(self.home, task_id, adapter=agent)
         self.assertEqual(finished["status"], "done")
-        self.assertEqual([call[1] for call in agent.calls], ["developer", "reviewer", "reviewer"])
+        self.assertEqual(finished["iteration"], 1)
+        self.assertEqual([call[1] for call in agent.calls], ["developer", "reviewer"])
+
+    def test_disabled_tests_old_review_checkpoint_never_calls_reviewer(self):
+        cfg = read_json(self.home / "config.json")
+        cfg["tests"]["enabled"] = False
+        save_json(self.home / "config.json", cfg)
+        task_id, _ = self._task()
+        agent = FakeProvider()
+        run_task(self.home, task_id, adapter=agent)
+        path = self.home / "tasks" / task_id / "state.json"
+        state = read_json(path)
+        state["phase"] = "review"  # pre-fix state persisted an unreachable review step
+        save_json(path, state)
+        history = list(state["history"])
+        paused = run_task(self.home, task_id, adapter=agent)
+        self.assertEqual(paused["status"], "paused")
+        self.assertEqual(paused["phase"], "test")
+        self.assertEqual(paused["history"], history)
+        self.assertEqual([call[1] for call in agent.calls], ["developer"])
+
+    def test_disabling_tests_at_saved_review_checkpoint_stops_before_review(self):
+        task_id, _ = self._task()
+
+        class PausingReviewer(FakeProvider):
+            def invoke(self, provider, role, prompt, workspace, run_dir):
+                if role == "reviewer":
+                    raise AgentFailure("temporary outage", "quota")
+                return super().invoke(provider, role, prompt, workspace, run_dir)
+
+        run_task(self.home, task_id, adapter=PausingReviewer())
+        cfg = read_json(self.home / "config.json")
+        cfg["tests"]["enabled"] = False
+        save_json(self.home / "config.json", cfg)
+        agent = FakeProvider()
+        paused = run_task(self.home, task_id, adapter=agent)
+        self.assertEqual(paused["phase"], "test")
+        self.assertEqual(paused["last_error"]["kind"], "tests_disabled")
+        self.assertEqual(agent.calls, [])
+        history = list(paused["history"])
+        self.assertEqual(run_task(self.home, task_id, adapter=agent)["history"], history)
 
     def test_invalid_review_and_critical_issue_override(self):
         with self.assertRaises(AgentFailure):

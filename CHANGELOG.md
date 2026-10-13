@@ -9,6 +9,34 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Test consent before the review — October 13, 2026
+
+- **No review without the test consent.** With tests not enabled, a task
+  pauses at the test checkpoint with `tests_disabled` after development and
+  before the reviewer is called. Until this change it was reviewed once and
+  then paused, and every Resume without the consent called the reviewer
+  again.
+- **Resume is idempotent.** Resuming such a pause while tests are still not
+  enabled returns the saved state: no provider call, no environment check, no
+  history event.
+- **A saved review checkpoint.** When tests are disabled after a task reached
+  the review, the next run goes back to the test checkpoint with
+  `tests_disabled` and replaces the saved results with a skipped entry.
+  Enabling tests runs them again before the review. `CHANGES_REQUESTED` still
+  sends the feedback to the next developer iteration, within
+  `max_iterations`.
+- **An access problem is still reported first.** The reviewer's environment
+  check runs before the pause for the missing consent, so a problem the review
+  would meet is not hidden behind `tests_disabled`.
+- **Real-provider check.** `tools/provider_e2e.py` without
+  `--run-fixture-tests` makes one developer call per pairing and checks the
+  developer side only; the reviewer's checks are printed as `not exercised`
+  and counted in the result line, never as passed. With `--run-fixture-tests`
+  the developer and the reviewer are checked as before.
+- The pages and the documents that said "developed and reviewed once" say
+  what now happens. Three removed protections were added to
+  `tools/recovery_checks.py`.
+
 ### Agent settings — October 12, 2026
 
 - **Agents page.** A card for the developer and one for the reviewer: who

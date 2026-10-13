@@ -18,9 +18,12 @@ integration. Logs may contain private project data.
 with `--authorize-provider-calls`. `--run-fixture-tests` is separate consent to
 run a unit test on the host against agent-written code. After a failed check,
 or with `--keep`, its temporary directory holds prompts and provider
-transcripts; delete it when no longer needed and do not publish it. A passing
-check shows that the reviewer did not change files in that run. It does not
-show that a provider sandbox would block an attempt.
+transcripts; delete it when no longer needed and do not publish it. Only a run
+with `--run-fixture-tests` reaches the reviewer: without it the loop pauses at
+the missing test consent and the reviewer's checks are reported as not
+exercised. A passing check with that flag shows that the reviewer did not
+change files in that run. It does not show that a provider sandbox would block
+an attempt.
 
 Automatic quota recovery is disabled by default. When enabled through
 `recovery.enabled` or `--auto-resume`, a waiting `run`/`resume` process calls
@@ -45,7 +48,8 @@ conservative. Use WSL2 for POSIX process-group cleanup.
 
 ## Environment check and repairs
 
-Before a run calls an agent, and before each review, PatchRondo checks that
+Before a run calls an agent, and before each review or the pause for a missing
+test consent that takes its place, PatchRondo checks that
 the agents are installed and logged in, that Git accepts the task worktree,
 and that a Codex reviewer's sandbox can read the worktree and cannot write it.
 The check calls no model. It exists to stop early and explain; it is not

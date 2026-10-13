@@ -8,11 +8,14 @@ untouched, that both replies are extracted and parsed, and that both CLIs
 accept the streaming options and report their activity while they work.
 
 Without --authorize-provider-calls it only reports installation, versions and
-login, and makes no model calls. With it, each pairing costs one developer and
-one reviewer call; the loop then pauses at the disabled test gate. Add
+login, and makes no model calls. With it, each pairing costs one developer
+call: the fixture's tests are not authorized, so the loop pauses at the missing
+test consent before any review. That run checks the developer side only, and
+the reviewer's checks are printed as "not exercised", never as passed. Add
 --run-fixture-tests to consent to running the fixture's unit test on this
-machine against the agent-written code and to require a completed, approved
-task (at most two iterations, so up to four calls per pairing).
+machine against the agent-written code: the reviewer is then called and
+checked too, and a completed, approved task is required (at most two
+iterations, so up to four calls per pairing).
 
     python tools/provider_e2e.py
     python tools/provider_e2e.py --authorize-provider-calls
@@ -60,6 +63,8 @@ if __name__ == "__main__":
 DESCRIPTION = ("Create `greeting.py` in the repository root with a function `greet(name)` that returns "
                "`Hello, <name>!`. The existing `test_greeting.py` must pass unchanged. Change nothing else.")
 ACCEPTANCE = ['`greet("Rondo")` returns `Hello, Rondo!`', "`test_greeting.py` is not modified"]
+NOT_EXERCISED = "the loop stops before the review without --run-fixture-tests"
+MARKS = {True: "ok", False: "FAILED", None: "not exercised"}
 
 
 def probe(name: str) -> dict:
@@ -133,7 +138,12 @@ def recorded_activity(task_path: Path) -> list[dict]:
 
 
 def run_pairing(repo: Path, home: Path, developer: str, reviewer: str, *, run_tests: bool) -> dict:
-    """Run one task with the real adapter and check each stage of the loop."""
+    """Run one task with the real adapter and check each stage of the loop that the run reaches.
+
+    A check is True, False or, when the run cannot reach it, None: without the
+    fixture's tests the loop stops before the review, so nothing is learned
+    about the reviewer.
+    """
     task_id, workspace = create_task(home, title="Add a greeting helper", description=DESCRIPTION,
                                      acceptance=ACCEPTANCE, developer=developer, reviewer=reviewer)
     started = time.monotonic()
@@ -148,13 +158,22 @@ def run_pairing(repo: Path, home: Path, developer: str, reviewer: str, *, run_te
     if run_tests:
         expected, ended = "task completed with passing tests and an approved review", state["status"] == "done"
     else:
-        expected = "loop paused at the disabled test gate"
-        ended = state["status"] == "paused" and kind == "tests_disabled"
+        # A reviewer call here would mean that the loop went past the missing consent.
+        expected = "loop paused at the missing test consent, before any review"
+        ended = state["status"] == "paused" and kind == "tests_disabled" and "review_started" not in events
     outcome = f"status {state['status']}" + (f" · {kind}" if kind else "")
     recorded = recorded_activity(home / "tasks" / task_id)
-    live = {role: sum(event["role"] == role and event["type"] in {"message", "tool", "file"} for event in recorded)
-            for role in ("developer", "reviewer")}
-    notices = [str(event.get("text", ""))[:200] for event in recorded if event.get("status") == "notice"]
+
+    def reported(role: str) -> tuple[bool, str]:
+        seen = sum(event["role"] == role and event["type"] in {"message", "tool", "file"} for event in recorded)
+        notices = [str(event.get("text", ""))[:200] for event in recorded
+                   if event["role"] == role and event.get("status") == "notice"]
+        return seen > 0, f"{seen} {role} events" + (f"; {notices[0]}" if notices else "")
+
+    def of_reviewer(ok: bool, detail: str = "") -> tuple[bool | None, str]:
+        """A reviewer check: not exercised, rather than passed or failed, in a run that stops before the review."""
+        return (ok, detail) if run_tests else (None, NOT_EXERCISED)
+
     checks = [
         ("developer call returned a handoff",
          "development_completed" in events and reply.is_file() and reply.stat().st_size > 0, ""),
@@ -163,16 +182,17 @@ def run_pairing(repo: Path, home: Path, developer: str, reviewer: str, *, run_te
         ("developer made no commits and the main checkout is clean",
          git("rev-parse", "HEAD", cwd=workspace) == state["base_sha"] == git("rev-parse", "HEAD", cwd=repo)
          and not git("status", "--porcelain", cwd=repo), ""),
-        ("reviewer call returned a valid review", "review_completed" in events,
-         f"verdict {review.get('verdict')}" if review else ""),
-        ("reviewer left the worktree unchanged", "review_started" in events
-         and state.get("test_context", {}).get("fingerprint") == fingerprint(workspace), ""),
-        ("both CLIs reported their activity while they worked", all(live.values()),
-         f"{live['developer']} developer and {live['reviewer']} reviewer events" + (f"; {notices[0]}" if notices else "")),
+        ("developer CLI reported its activity while it worked", *reported("developer")),
+        ("reviewer call returned a valid review",
+         *of_reviewer("review_completed" in events, f"verdict {review.get('verdict')}" if review else "")),
+        ("reviewer left the worktree unchanged", *of_reviewer(
+            "review_started" in events and state.get("test_context", {}).get("fingerprint") == fingerprint(workspace))),
+        ("reviewer CLI reported its activity while it worked", *of_reviewer(*reported("reviewer"))),
         (expected, ended, outcome if ended or not message else f"{outcome}: {message[:600]}"),
     ]
     return {"pairing": f"{developer} -> {reviewer}", "seconds": seconds, "checks": checks,
-            "passed": all(ok for _, ok, _ in checks), "stop": kind in STOP_KINDS}
+            "passed": all(ok is not False for _, ok, _ in checks),
+            "not_exercised": sum(ok is None for _, ok, _ in checks), "stop": kind in STOP_KINDS}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -183,7 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--authorize-provider-calls", action="store_true",
                         help="Consent to real Claude/Codex calls that use your plan quota")
     parser.add_argument("--run-fixture-tests", action="store_true",
-                        help="Consent to running the fixture's unit test on this machine against agent-written code")
+                        help="Consent to running the fixture's unit test on this machine against agent-written code; "
+                             "without it the loop stops before the review and the reviewer is not checked")
     parser.add_argument("--pairing", action="append", choices=sorted(PAIRINGS),
                         help="Developer-reviewer pairing to run (repeatable; default: both)")
     parser.add_argument("--agent-timeout", type=int, default=600, help="Seconds allowed for each provider call")
@@ -200,9 +221,9 @@ def main(argv: list[str] | None = None) -> int:
         ready = ready and info["ready"]
         print(f"{name}: {info['path'] or 'not on PATH'} · {info['version'] or 'version unknown'} · {info['note']}")
     if not args.authorize_provider_calls:
-        calls = "up to 4" if args.run_fixture_tests else "2"
-        print(f"No model calls were made. --authorize-provider-calls would run {plan} "
-              f"({calls} provider calls per pairing).")
+        calls = ("up to 4 provider calls per pairing" if args.run_fixture_tests else
+                 "1 developer call per pairing; the reviewer is called only with --run-fixture-tests")
+        print(f"No model calls were made. --authorize-provider-calls would run {plan} ({calls}).")
         return 0 if ready else 1
     if not ready:
         print("Error: a required CLI is missing or not logged in; no model calls were made.", file=sys.stderr)
@@ -218,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
             results.append(result)
             print(f"{result['pairing']}: {'PASS' if result['passed'] else 'FAIL'} ({result['seconds']}s)")
             for name, ok, detail in result["checks"]:
-                print(f"  [{'ok' if ok else 'FAILED'}] {name}" + (f" ({detail})" if detail else ""))
+                print(f"  [{MARKS[ok]}] {name}" + (f" ({detail})" if detail else ""))
             if result["stop"]:
                 print("Stopping: another pairing would repeat this failure and use more quota.")
                 break
@@ -229,7 +250,10 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(root, ignore_errors=True)
     if root.exists():
         print(f"\nFixture and private task state, including provider transcripts, kept in {root}")
-    print(f"\nRESULT: {'PASS' if passed else 'FAIL'} · {plan}")
+    skipped = sum(result["not_exercised"] for result in results)
+    # A check the run could not reach is counted beside the verdict, never inside it.
+    scope = f" · developer side only: {skipped} reviewer checks not exercised (add --run-fixture-tests)" if skipped else ""
+    print(f"\nRESULT: {'PASS' if passed else 'FAIL'} · {plan}{scope}")
     return 0 if passed else 1
 
 

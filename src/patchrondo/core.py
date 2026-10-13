@@ -414,7 +414,13 @@ def _run_tests(cfg: dict, workspace: Path, run_dir: Path, journal) -> list[dict]
     return results
 
 
-def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path) -> None:
+def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path, reviewer_check=None) -> None:
+    """Run the authorized tests, or stop at the missing consent before any review.
+
+    `reviewer_check` is the environment check of the reviewer: it runs before
+    the pause for a missing consent, so a problem the review would meet is
+    reported first instead of being found after the consent.
+    """
     settings = cfg["tests"]
     run_dir = private_dir(path / "runs" / f"iteration-{state['iteration']:03d}")
     results = []
@@ -429,6 +435,13 @@ def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path) -> None:
     state["test_context"] = {"fingerprint": fingerprint(workspace),
                              "commands": settings["commands"] if settings["enabled"] else []}
     _event(state, "tests_completed", statuses=[x["status"] for x in results])
+    if not settings["enabled"]:
+        # Missing consent is a prerequisite, not work for the read-only reviewer.
+        # Keep phase=test so a later authorized Resume runs the missing tests.
+        _save(path, state)
+        if reviewer_check is not None:
+            reviewer_check()
+        raise AgentFailure("Configure tests and set trust_acknowledged=true, then run resume", "tests_disabled")
     if any(x["status"] == "timeout" for x in results):
         _save(path, state)
         raise AgentFailure("Tests timed out; check the logs before resuming", "timeout")
@@ -583,7 +596,8 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
     started by `recovery.supervise` for the plan with that `resume_at`.
 
     Every run, also a resumed or retried one, checks the environment before
-    the first provider call and again before each review. `environment` is the
+    the first provider call and again before each review, or before the pause
+    that takes its place while the test consent is missing. `environment` is the
     manager that does it; the default one is used unless the checks are
     switched off with `PATCHRONDO_PREFLIGHT=0`.
 
@@ -614,6 +628,16 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
             return state
         if state["phase"] not in {"develop", "test", "review"}:
             raise ValueError(f"Invalid task phase: {state['phase']}")
+        error = state.get("last_error")
+        if (state["status"] == "paused" and isinstance(error, dict)
+                and error.get("kind") == "tests_disabled" and not cfg["tests"]["enabled"]):
+            # Idempotent Resume: no new events, environment probes or agent calls
+            # while the same consent prerequisite remains unmet.
+            if state["phase"] == "review":
+                state["phase"] = "test"  # no version saved this pause at the review: an edited checkpoint
+                _save(path, state)
+            if state["phase"] == "test":
+                return state
         # Checked before `last_error` is cleared: a planned retry must not start early.
         proceed, changed = recovery.admit(state, cfg, active=auto, retry_of=retry_of, now=clock())
         if not proceed:
@@ -626,6 +650,12 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
         state["status"] = "running"
         state["last_error"] = None  # historical failures remain in the event journal
         _save(path, state)
+
+        def reviewer_ready() -> None:
+            # An access problem is not hidden behind the missing test consent. It calls no model.
+            if manager is not None:
+                _environment(manager, home, path, state, cfg, reviewer_only=True, live=live)
+
         try:
             if manager is not None:
                 _environment(manager, home, path, state, cfg, live=live)
@@ -644,8 +674,11 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     _event(state, "development_completed", agent=state["developer"])
                     state["phase"] = "test"
                     _save(path, state)
+                if state["phase"] == "review" and not cfg["tests"]["enabled"]:
+                    # A saved review checkpoint can outlive the consent or the configuration.
+                    state["phase"] = "test"
                 if state["phase"] == "test":
-                    _test_stage(path, state, cfg, workspace)
+                    _test_stage(path, state, cfg, workspace, reviewer_ready)
                 if state["phase"] == "review":
                     _check_test_context(state, cfg, workspace)
                     if manager is not None:
@@ -677,17 +710,6 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     elif review["verdict"] == "BLOCKED":
                         reason = "review_blocked"
                     _feedback(path, state, reason)
-                    if not cfg["tests"]["enabled"]:
-                        # Never burn through subscribed CLI quotas in a loop
-                        # that cannot meet the independent test gate.
-                        state["status"] = "paused"
-                        state["phase"] = "test"
-                        state["last_error"] = {"kind": "tests_disabled", "message":
-                            "Configure tests and set trust_acknowledged=true, then run resume"}
-                        _event(state, "task_paused", reason="tests_disabled")
-                        _save(path, state)
-                        _report(path, state)
-                        return state
                     if review["verdict"] == "BLOCKED" or iteration >= cfg["workflow"]["max_iterations"]:
                         state["status"] = "blocked"
                         state["last_error"] = reason if review["verdict"] == "BLOCKED" else "max_iterations_reached"

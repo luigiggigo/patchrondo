@@ -63,7 +63,7 @@ function runDialog(task, detail) {
         body: [
           h("p", {}, `${dev} develops and ${rev} reviews in the task's own worktree. `, h("strong", {}, "This calls the real CLIs and uses your plan quota.")),
           effective && !effective.tests_enabled ? callout({ tone: "warn", iconName: "flask", title: "Project tests are disabled",
-            body: "The task will pause after the first review: a task is done only when tests pass and the review approves." }) : null,
+            body: "The task will pause after development, before the review: a task is done only when tests pass and the review approves." }) : null,
           missing.map((provider) => callout({ tone: "warn", iconName: "alert", title: `${provider.label} is ${provider.installed === false ? "not installed" : "not logged in"}`, body: provider.hint })),
           h("div", { class: "card" }, h("label", { class: "setting" },
             h("div", { class: "setting-text" }, h("div", { class: "field-label" }, "Automatic quota recovery"), hint),
@@ -534,7 +534,7 @@ function testsPanel() {
     const effective = detail.effective;
     memo(el, [tests, effective, task.project], () => [
       effective && !effective.tests_enabled ? callout({ tone: "accent", iconName: "info", title: "Tests are disabled for this project",
-        body: "Without tests a task is developed and reviewed once, then pauses: it is never marked done.",
+        body: "Without tests a task is developed, then pauses before the review: it is never marked done.",
         actions: [h("a", { class: "link", href: href("settings", task.project, "tests") }, "Open test settings")] }) : null,
       tests.length ? h("div", { class: "card list" }, tests.map((test, index) => h("div", { class: "test-row" },
         h("div", { class: "row" }, badge(test.status || "unknown", TEST_TONE[test.status] || "neutral", { dot: true }),

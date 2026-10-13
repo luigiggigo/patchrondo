@@ -47,6 +47,7 @@ interface cannot bypass the lock, the checkpoints or the consent rules.
 - Claude reviewer uses read-only file tools; Codex reviewer uses the `read-only` sandbox and can execute commands allowed by it. Change requests are passed to the developer as data.
 - State moves between atomically saved checkpoints: `develop` -> `test` -> `review` -> `complete`, or `develop` in the next iteration.
 - If an agent subprocess fails, the loop stops in `PAUSED`. A failed test proceeds to review so the reviewer can provide useful feedback; test timeouts pause at the test phase.
+- Tests that are not enabled are a missing prerequisite, not work for the reviewer: the loop pauses at the `test` checkpoint with `tests_disabled` before any reviewer call, also from a saved `review` checkpoint whose tests were disabled afterwards (the saved results are replaced by a skipped entry). A run started while that pause and the missing consent both still hold returns the saved state unchanged: no event, no environment check, no provider call. With tests enabled, Resume runs them and then the review.
 - Only a `quota` pause can be retried without a person, only when recovery is active, and never before its persisted `resume_at`. No task lock is held while waiting, and no lock is ever removed automatically (section 8).
 - The orchestrator does not automatically merge, push, commit or install dependencies.
 - The task branch is separate from main. The external test runner executes project commands on the host and requires explicit consent.
@@ -214,10 +215,14 @@ admitted any runs.
 `tools/provider_e2e.py` invokes authenticated provider CLIs only with
 `--authorize-provider-calls`. It creates a temporary repository and state
 directory, runs `run_task` once per pairing and inspects the saved state: the
-developer's handoff and file, unchanged Git history, a parsed review and an
-unchanged worktree fingerprint after review. Fixture tests stay disabled unless
-`--run-fixture-tests` is given. Without that flag, agent-written code is checked
-statically and never imported. Files are deleted only after every check passes.
+developer's handoff and file, unchanged Git history, the developer's activity
+and, when the run reaches the review, a parsed review, an unchanged worktree
+fingerprint after it and the reviewer's activity. Fixture tests stay disabled
+unless `--run-fixture-tests` is given. Without that flag the loop pauses at the
+missing test consent after one developer call: the reviewer's checks are
+reported as not exercised (`None`, neither passed nor failed), a review seen in
+that run fails the check, and agent-written code is checked statically and
+never imported. Files are deleted only when no check failed.
 
 `tools/reliability_e2e.py` exercises the same adapters with an exclusive route
 to local synthetic Python executables. Each runner removes provider CLI
@@ -651,8 +656,14 @@ and none of it calls a model.
 **Where it runs.** `run_task` calls `_environment` under the task lock: once
 after the run is marked `running` and before the loop, and again in the
 review phase after the test context was checked and before `review_started`.
+When the tests are not enabled there is no review: `_test_stage` then makes
+that second call itself, after saving the skipped tests and before it raises
+`tests_disabled`, so an access problem of the reviewer is reported first and
+is not found only after the consent.
 That holds for a first run, a resume, a run after a crash and an automatic
-quota retry alike, because they are all `run_task`. The second call passes
+quota retry alike, because they are all `run_task`. The one run that checks
+nothing is a resume of a `tests_disabled` pause while the tests are still not
+enabled: it returns the saved state. The second call passes
 `reviewer_only`: the agents stage is not repeated, and a ready record is
 returned as it is while its `signature` still holds. The signature is a digest
 of the platform, the reviewer, the worktree path, the identity of the Codex

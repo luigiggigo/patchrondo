@@ -75,7 +75,7 @@ export default function mount(root, route, ctx) {
     },
     () => [
       h("h1", {}, "Project tests"),
-      h("p", { class: "lead" }, "A task is done only when your tests pass and the review approves. Without tests a task is developed and reviewed once, then pauses."),
+      h("p", { class: "lead" }, "A task is done only when your tests pass and the review approves. Without tests a task is developed, then pauses before the review."),
       !hasProject() ? callout({ tone: "neutral", iconName: "info", title: "No project chosen", body: "You can set up tests later in Settings → Tests." }) : [
         h("div", { class: "card" }, h("label", { class: "setting" }, h("div", { class: "setting-text" }, h("div", { class: "field-label" }, "Run project tests"),
           h("div", { class: "field-hint" }, "Off unless you turn it on. You can change this any time.")), testsOn)),

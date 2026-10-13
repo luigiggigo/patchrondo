@@ -183,7 +183,8 @@ Content-Security-Policy and no external assets. See [SECURITY.md](SECURITY.md).
 ### Preparation and repairs
 
 Before the first agent call of every run, also a resumed or automatically
-retried one, and again before each review, PatchRondo checks the environment
+retried one, and again before each review (or before the pause that takes its
+place while the tests are not authorized), PatchRondo checks the environment
 of the task. No model is called for it and no quota is used. The task page
 shows it as the first step of the workflow, *Prepare*.
 
@@ -467,8 +468,12 @@ chosen by you for your project:
 **Do not replace the entire `config.json` with this snippet:** change only the
 `tests` section. These commands execute automatically on your computer, so enable
 them **only for repositories you trust**. `trust_acknowledged` is explicit consent;
-it does not create an OS sandbox. Without enabled tests, the system can implement
-and review once, but **pauses** before declaring the task `done`.
+it does not create an OS sandbox. Without enabled tests, the system implements
+the change and then **pauses** before the review (`tests_disabled`): the
+missing consent is a prerequisite, so no reviewer call is made for work that
+cannot be approved. Resuming while tests are still disabled changes nothing
+and calls no agent; after you enable them, Resume runs the tests and then the
+review.
 
 A complete reference configuration is in
 [`examples/config.example.json`](examples/config.example.json). It also includes
@@ -1018,17 +1023,22 @@ the reviewer leaves it unchanged and that both replies are extracted and parsed.
 
 ```bash
 python tools/provider_e2e.py                               # versions and login only, no model calls
-python tools/provider_e2e.py --authorize-provider-calls    # one developer and one reviewer call per pairing
-python tools/provider_e2e.py --authorize-provider-calls --run-fixture-tests
+python tools/provider_e2e.py --authorize-provider-calls    # one developer call per pairing; the reviewer is not checked
+python tools/provider_e2e.py --authorize-provider-calls --run-fixture-tests   # developer and reviewer
 ```
 
 Nothing calls a model without `--authorize-provider-calls`. By default the
-fixture's tests stay disabled, so each pairing ends paused at the test gate after
-two calls. `--run-fixture-tests` is separate consent to run the fixture's unit
-test on your machine against agent-written code; the check then requires a
-completed, approved task and may use up to four calls per pairing. A quota,
+fixture's tests stay disabled, so each pairing ends paused at the missing test
+consent after one developer call and before any review. That run checks the
+developer side only: the reviewer's checks are printed as `not exercised`,
+the result line counts them, and they are never reported as passed.
+`--run-fixture-tests` is separate consent to run the fixture's unit
+test on your machine against agent-written code; the reviewer is then called
+and checked too (a parsed review, an unchanged worktree, its activity), and the
+check requires a completed, approved task and may use up to four calls per
+pairing. A quota,
 login or interruption failure stops before the next pairing. The exit status is
-0 only if every check passes; on failure the fixture and its private task
+0 only if no check fails; on failure the fixture and its private task
 state, including provider transcripts, are kept in a temporary directory for
 diagnosis. `--pairing` selects a single pairing and `--keep` preserves files
 after a pass.
@@ -1036,7 +1046,8 @@ after a pass.
 A pass covers only the platform, CLI versions and login reported in its output.
 Two local runs on October 10, 2026 passed both pairings on WSL2 with
 Claude Code 2.1.291 and codex-cli 0.160.1. The first kept fixture tests disabled
-and paused at the test gate. The second used `--run-fixture-tests`: both
+and paused at the test gate, at that date after one review (since October 13,
+2026 such a run stops before the review). The second used `--run-fixture-tests`: both
 pairings completed with passing tests, an `APPROVED` review and status `done`.
 These checks cover a trivial greeting fixture; native Windows, macOS and
 resumption after an interruption have not been checked with real accounts. Details are in

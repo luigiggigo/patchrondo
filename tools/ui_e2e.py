@@ -1248,8 +1248,8 @@ def scenario_start(env: Env) -> None:
     env.expect("the workflow starts with the preparation PatchRondo does itself", "qa('.workflow-label')[0].textContent === 'Prepare' && qa('.workflow-label').length === 5")
     env.expect("the page shows the run without a reload", "q('.task-head').innerText.includes('Running') || q('.task-head').innerText.includes('Paused')", 15)
     paused = env.wait_state(path, lambda s: s["status"] == "paused", 60)
-    env.check("the task was developed and reviewed once, then stopped at the test consent",
-              paused["last_error"]["kind"] == "tests_disabled" and [c["role"] for c in env.calls()[before:]] == ["developer", "reviewer"],
+    env.check("the task was developed, then stopped at the test consent before any review",
+              paused["last_error"]["kind"] == "tests_disabled" and [c["role"] for c in env.calls()[before:]] == ["developer"],
               f"{paused['last_error']} {env.calls()[before:]}")
     env.check("the environment check of the run is saved as ready", paused["environment"]["status"] == "ready", str(paused["environment"]))
     env.check("starting did not enable or trust the tests", config(home)["tests"] == {"enabled": False, "trust_acknowledged": False, "commands": []},
@@ -1268,6 +1268,8 @@ def scenario_start(env: Env) -> None:
     env.check("the explicit consent saved the typed command, enabled and trusted",
               config(home)["tests"] == {"enabled": True, "trust_acknowledged": True, "commands": [[sys.executable, "-c", TEST_CODE]]}, str(config(home)["tests"]))
     env.check("the resumed run ran the tests and finished", [test["status"] for test in done["tests"]] == ["passed"], str(done["tests"]))
+    env.check("the reviewer was called once, and only after the consent", [c["role"] for c in env.calls()[before:]] == ["developer", "reviewer"],
+              str(env.calls()[before:]))
     env.expect("the page shows Done without a reload", "q('.task-head').innerText.includes('Done') && qa('.workflow-step').every((step) => step.classList.contains('done'))", 10)
     env.shot("task-started-done")
 

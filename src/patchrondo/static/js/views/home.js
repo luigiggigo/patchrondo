@@ -193,7 +193,7 @@ export default function mount(root, route, ctx) {
       else if (item.repo?.error) alerts.push(["danger", `${item.name}: the repository cannot be read`, item.repo.error, "projects"]);
     }
     if (project?.config && !project.config.tests_enabled && tasks.length) {
-      alerts.push(["accent", "Project tests are disabled", "Tasks pause after the first review until tests are enabled: a task is done only when tests pass and the review approves.", `settings/${project.id}/tests`]);
+      alerts.push(["accent", "Project tests are disabled", "Tasks pause before the review until tests are enabled: a task is done only when tests pass and the review approves.", `settings/${project.id}/tests`]);
     }
     memo(el.alerts, alerts, () => alerts.map(([tone, title, body, target]) => callout({ tone, iconName: tone === "accent" ? "info" : "alert", title, body,
       actions: [h("a", { class: "link", href: `#/${target}` }, "Open settings")] })));

@@ -5,7 +5,8 @@ checks and the automatic quota recovery change: October 10, 2026. PatchRondo
 0.2 (interface, several projects, process truth): October 10, 2026. Live
 activity and publication-status update: October 11, 2026. Environment check,
 repairs and one-press start (0.2.1): October 11, 2026. Activity journal reader
-correction and agent settings: October 12, 2026.
+correction and agent settings: October 12, 2026. Test consent before the
+review: October 13, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -54,6 +55,90 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Test consent before the review (October 13, 2026)
+
+This section covers a change to the state machine in `core.py`, developed on
+top of `77cdc14` and validated on the computers named in the table below. The
+package version is unchanged, 0.2.1.
+
+**What was wrong.** With tests not enabled, a task was developed, reviewed
+once and then paused with `tests_disabled` at the test checkpoint. Each Resume
+without the consent repeated the skipped test stage and called the reviewer
+again. Measured with scripted providers on `77cdc14`: four runs of one task
+made one developer and four reviewer calls and grew the history from 7 to 22
+events.
+
+**What changed.** Missing consent is a prerequisite and stops the loop before
+the review: `_test_stage` saves the skipped entry, keeps the phase `test` and
+raises `tests_disabled`. A run that finds that pause while tests are still not
+enabled returns the saved state under the lock, before `run_started`. A saved
+`review` checkpoint whose tests were disabled afterwards goes back to `test`
+the same way. The same four runs now make one developer call and leave five
+events.
+
+**What was kept, and how.** A first version of the change paused before the
+reviewer's environment check, so a task whose worktree the reviewer could not
+read reported `tests_disabled`: the access problem would have been found only
+after the consent. That contradicted
+`test_an_access_problem_is_not_hidden_behind_disabled_tests`, and it was
+corrected in the engine, not in the test: `_test_stage` runs the reviewer's
+check before it raises. The test keeps its first assertions and now also
+asserts that the review never starts and that a further Resume inspects
+nothing. The other expectations that changed are intended:
+
+- `test_workflow`: `tests_disabled` in place of `stale_tests` when tests are
+  disabled at a saved review checkpoint. The test now also asserts that the
+  passed results are replaced by a skipped entry and that, with the settings
+  restored, the tests run again before the one reviewer call. A changed
+  command still gives `stale_tests`.
+- `test_recovery`: one provider call in place of two for a `tests_disabled`
+  pause, still with no wait and no retry plan.
+- `tools/provider_e2e.py` and its tests: without `--run-fixture-tests` the run
+  makes one developer call per pairing; the three reviewer checks are `not
+  exercised` and counted in the result line, and a review seen in such a run
+  fails the check. With the flag the developer and the reviewer are checked as
+  before; the tests of a silent CLI and of a reviewer that edits the worktree
+  use it.
+- Browser `start` scenario: one developer call before the consent, and the
+  reviewer called once, after it.
+
+**Regression tests.** The three workflow tests of the change fail against
+`core.py` of `77cdc14` (23 tests, 3 failures, exit status 1). Three removed
+protections were added, 115 in all: the reviewer called without the consent,
+a Resume that starts a run again, and the access problem hidden behind the
+consent.
+
+Validation on October 13, 2026, after the last change to runtime code, tests
+and tools:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 514 tests, 503 passed, 11 skipped, 307.041 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 514 tests, 503 passed, 11 skipped, 305.422 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 514 tests, 496 passed, 18 skipped, 157.370 s | 0 |
+| Protections | WSL2, Python 3.12.3: 115 of 115 removed safeguards detected, 0 missed (3 of them new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (interruption and stale-lock scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.05 s after the planned time | 0 |
+| Browser, all eleven scenarios | Native Windows, Python 3.13.3, Chrome 154.0.8037.99 headless: 317 passed, 0 failed | 0 |
+| Preflight in the real Codex sandbox (opt-in) | Native Windows, codex-cli 0.161.0, Python 3.13.3 and 3.11.3: 5 tests passed on each | 0 / 0 |
+| Build and `twine check` | Native Windows: sdist and wheel of 0.2.1 built outside the repository; both passed | 0 / 0 |
+| Publication scanner | 109 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass. Every provider was scripted: **no model was
+called** and no plan quota was used. The only real CLI started was Codex's
+sandbox self-check in the opt-in tests, which takes no prompt.
+
+**Not verified.** `tools/provider_e2e.py` was not run with
+`--authorize-provider-calls` after this change, so its new output has been
+seen with simulated CLIs only, and the two runs of October 10, 2026 recorded
+below describe the earlier behavior (one review with the fixture's tests
+disabled). macOS and Linux outside WSL2 were not used.
+
+**Limit.** A project with no test commands now gets no review at all until
+tests are enabled; before this change it got one review that could not
+approve.
 
 ## Agent settings (October 12, 2026)
 

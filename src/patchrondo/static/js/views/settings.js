@@ -260,7 +260,7 @@ export default function mount(root, route, ctx) {
     return [
       callout({ tone: "warn", iconName: "shield", title: "Tests run on your computer with your permissions",
         body: "They are not sandboxed. A malicious repository can run any code through its test suite. Enable tests only for repositories you trust; for unfamiliar code run PatchRondo inside a VM or container." }),
-      formCard({ title: "Project tests", intro: "A task is done only when these pass and the review approves. Without tests a task is developed and reviewed once, then pauses.", onDirty: setDirty,
+      formCard({ title: "Project tests", intro: "A task is done only when these pass and the review approves. Without tests a task is developed, then pauses before the review.", onDirty: setDirty,
         rows: [
           row("Run project tests", "After each development step, in the task worktree.", enabled),
           row("Commands", `One command per line, run in order without a shell; the first failure stops the rest. ${quoting}`, commands, { block: true }),

@@ -469,11 +469,17 @@ class EngineTests(Base):
         self.assertEqual((state["last_error"]["kind"], adapter.calls), ("sandbox_access_denied", ["developer"]))
         self.assertNotIn("tests_disabled", json.dumps(state["last_error"]))
         self.assertEqual(state["tests"][0]["status"], "skipped")  # tests were not run, and not enabled by anything
+        self.assertEqual((state["phase"], state["environment"]["error_kind"]), ("test", "sandbox_access_denied"))
         self.lists.fixable = True
         state = self.run_with(task_id, adapter)
-        # With access restored the review happens, and the consent rule stops the task as it always did.
-        self.assertEqual((state["last_error"]["kind"], adapter.calls), ("tests_disabled", ["developer", "reviewer"]))
+        # With access restored the consent rule stops the task, before the review and without a reviewer call.
+        self.assertEqual((state["last_error"]["kind"], adapter.calls), ("tests_disabled", ["developer"]))
+        self.assertNotIn("review_started", self.events(task_id))
         self.assertEqual((state["environment"]["status"], state["environment"]["error_kind"]), ("ready", None))
+        # Resuming again without the consent checks nothing and calls nobody.
+        inspections, history = self.lists.inspections, state["history"]
+        again = self.run_with(task_id, adapter)
+        self.assertEqual((again["history"], adapter.calls, self.lists.inspections), (history, ["developer"], inspections))
         cfg = read_json(self.home / "config.json")["tests"]
         self.assertEqual((cfg["enabled"], cfg["trust_acknowledged"]), (False, False))
 

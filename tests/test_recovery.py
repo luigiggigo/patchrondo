@@ -816,7 +816,9 @@ class SupervisorTests(RecoveryCase):
         state = self.supervise(task_id, adapter)
         self.assertEqual((state["status"], state["last_error"]["kind"], state["recovery"]),
                          ("paused", "tests_disabled", None))
-        self.assertEqual((len(adapter.calls), self.clock.sleeps), (2, []))
+        # The pause comes before the review: one developer call, nothing waited for, nothing retried.
+        self.assertEqual((len(adapter.calls), self.clock.sleeps), (1, []))
+        self.assertNotIn("review_started", [entry["event"] for entry in state["history"]])
 
     def test_other_failure_during_a_retry_ends_the_recovery_with_its_reason(self):
         task_id, path, _ = self.task()
