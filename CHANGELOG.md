@@ -9,6 +9,14 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Documentation structure ? October 14, 2026
+
+- Shortened the README to the project overview, workflow, requirements, quick
+  start and essential safety limits. Moved the operational reference to
+  `docs/USAGE.md`, validation instructions to `docs/TESTING.md` and future
+  development areas to `docs/ROADMAP.md`. Dated validation results remain in
+  `docs/REVIEW.md`.
+
 ### Refused writes answered on Windows — October 14, 2026
 
 - The interface no longer loses its answer to a write it refuses on the

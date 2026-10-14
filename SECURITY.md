@@ -267,7 +267,7 @@ another origin. Keep the printed link private: whoever has the token can do
 everything the interface can.
 
 **What the interface can do.** Register a local Git repository, edit the
-project settings described in the README, create tasks, start
+project settings described in the [user guide](docs/USAGE.md), create tasks, start
 `patchrondo run` for a task with `--auto-resume`, `--no-auto-resume` or
 `--unlock`, interrupt a run on POSIX, run the environment check of a task
 with the repairs described above (the one that needs a decision only when the

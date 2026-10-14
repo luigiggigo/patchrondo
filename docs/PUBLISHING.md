@@ -44,7 +44,7 @@ do not require `git init` or creating another GitHub repository.
 The CI workflow tests Python 3.11 and 3.13 on Linux, Windows and macOS, with
 package checks on Linux. Jobs use only free standard GitHub-hosted runners for
 public repositories and are skipped for private repositories; no artifacts or
-Actions caches are uploaded. See [Project tests](../README.md#project-tests-no-provider-quota-usage)
+Actions caches are uploaded. See [Project tests](TESTING.md#project-tests-no-provider-quota-usage)
 for the cost controls and triggers. A CI result covers the commit it ran on and
 nothing later. Local publication review is still required, and CI does not
 publish packages or source changes.
