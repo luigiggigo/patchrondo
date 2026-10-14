@@ -5,7 +5,10 @@
 | Module | Responsibility |
 |---|---|
 | `cli.py` | CLI parsing, user input validation, project resolution, `init/new/run/resume/status/report/list/projects/index/search/ui/doctor` commands; no command opens the interface |
-| `core.py` | Deterministic state machine and completion criteria; configuration and task-override validation |
+| `core.py` | Deterministic state machine and completion criteria; configuration and task-override validation; the operations a person has on a task's criteria |
+| `acceptance.py` | The acceptance criteria of a task as typed records: classification by fixed rules, planning against the detected capabilities, verification against the evidence ledger, the settling of a review, the results of the task |
+| `capabilities.py` | What each executor of a task can do (developer, reviewer, PatchRondo itself, the user), read from settings and from the computer; nothing is started |
+| `evidence.py` | The evidence ledger of a task: append-only, hash-chained records of commands, reviews, checks by the user and decisions; invalidation and integrity |
 | `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse; starts each step with its agent settings |
 | `agents.py` | Agent settings: the typed table of what each CLI can be started with, validation, the three levels and their resolution, the frozen record of a step, the command of a step, presets, model lists and the checks of *Test configuration* |
 | `streams.py` | Parsers of the two CLIs' activity streams into provider-independent events; drop internal reasoning; keep a bounded transcript |
@@ -41,11 +44,13 @@ interface cannot bypass the lock, the checkpoints or the consent rules.
 
 ## 2. Invariants
 
-- A task is `DONE` **if and only if** review is approved, all tests pass and changes exist (or `allow_no_changes=true`).
+- The code of a task is approved **if and only if** review is approved, all tests pass and changes exist (or `allow_no_changes=true`).
+- A task is `DONE` **if and only if** its code is approved and every required acceptance criterion is verified by records of the evidence ledger that still count ([section 14](#14-acceptance-criteria-capabilities-and-evidence)). Approved code with a required criterion open pauses the task at the `validate` checkpoint; it is never completed and never sent back to a developer who cannot change the outcome.
+- A criterion is verified only by evidence: a command PatchRondo ran, a review the backend settled, a check the user attached. The developer's handoff is never evidence, and the reviewer's word counts only for criteria the plan gives it to verify.
 - File fingerprints and configured test commands must match the test checkpoint before and after review. Changes during a pause require fresh tests. Ignored files, external services and submodule contents are not fingerprinted.
 - The developer cannot award itself an `APPROVED` verdict.
 - Claude reviewer uses read-only file tools; Codex reviewer uses the `read-only` sandbox and can execute commands allowed by it. Change requests are passed to the developer as data.
-- State moves between atomically saved checkpoints: `develop` -> `test` -> `review` -> `complete`, or `develop` in the next iteration.
+- State moves between atomically saved checkpoints: `develop` -> `test` -> `review` -> `complete`, or `develop` in the next iteration. `review` -> `validate` -> `complete` is the path of a task whose code is approved while criteria are open; `validate` goes back to `test` when evidence that only the project's commands and a review can give is missing, and to `develop` when a check by the user failed. No agent is called at `validate`.
 - If an agent subprocess fails, the loop stops in `PAUSED`. A failed test proceeds to review so the reviewer can provide useful feedback; test timeouts pause at the test phase.
 - Tests that are not enabled are a missing prerequisite, not work for the reviewer: the loop pauses at the `test` checkpoint with `tests_disabled` before any reviewer call, also from a saved `review` checkpoint whose tests were disabled afterwards (the saved results are replaced by a skipped entry). A run started while that pause and the missing consent both still hold returns the saved state unchanged: no event, no environment check, no provider call. With tests enabled, Resume runs them and then the review.
 - Only a `quota` pause can be retried without a person, only when recovery is active, and never before its persisted `resume_at`. No task lock is held while waiting, and no lock is ever removed automatically (section 8).
@@ -67,15 +72,31 @@ The reviewer returns only an object:
     {
       "severity": "high",
       "path": "src/auth.py",
-      "description": "Check exp against UTC and add expired-token tests"
+      "description": "Check exp against UTC and add expired-token tests",
+      "kind": "CODE_CHANGES_REQUIRED"
     }
+  ],
+  "criteria": [
+    {"id": "AC-01", "outcome": "CODE_CHANGES_REQUIRED", "note": "Expired tokens are accepted"},
+    {"id": "AC-03", "outcome": "MANUAL_ACTION_REQUIRED", "note": "Needs a browser"}
   ]
 }
 ```
 
-Allowed verdicts are `APPROVED`, `CHANGES_REQUESTED` and `BLOCKED`. An approval
-containing `high` or `critical` issues is automatically downgraded. The orchestrator
-always applies its own test gate, independently of the model's opinion.
+Allowed verdicts are `APPROVED`, `CHANGES_REQUESTED` and `BLOCKED`. The
+verdict is about the **code**. An approval containing `high` or `critical`
+issues about the code is automatically downgraded. The orchestrator always
+applies its own test gate, independently of the model's opinion.
+
+`issues[].kind` says what an issue is about: `CODE_CHANGES_REQUIRED` (the
+default, and the only kind that goes back to the developer),
+`VALIDATION_REQUIRED`, `CAPABILITY_BLOCKED`, `APPROVAL_REQUIRED` or
+`MANUAL_ACTION_REQUIRED`. `criteria` gives each acceptance criterion one
+outcome: `SATISFIED`, one of those five, or `NOT_ASSESSED`. The schema passed
+to the CLIs (`acceptance.REVIEW_SCHEMA`) requires both; `parse_review` also
+accepts an answer without them, which is a review of the code as a whole, as
+before criteria were tracked. The backend validates the answer and settles it
+against the plan of the task; section 14 has the rules.
 
 The developer produces a Markdown handoff with *Changes*, *Decisions*, *Remaining
 concerns* and *Suggested tests*. `task.md`, `handoff.md`, `feedback.md` and test
@@ -97,6 +118,11 @@ creating additional children.
 Configurable parameters include the maximum number of iterations, agent and test
 timeouts, Claude turns, `allow_no_changes`, explicit trust in the configured tests
 and the `recovery` limits described in section 8.
+
+A task paused at `validate` with `awaiting_validation` or
+`awaiting_authorization` is resumed like the pause for a missing test consent:
+while nothing was attached, decided or changed, a run returns the saved state
+with no event, no environment check and no provider call.
 
 A task may carry `overrides` in its `state.json`, written once when it is
 created: `workflow.max_iterations`, `workflow.agent_timeout_seconds`,
@@ -982,3 +1008,274 @@ folder, started by `app.agents_verify` only with `confirm: true`.
   Claude's `--restricted` already ignores user, project and local settings.
 - The test call tells whether one call worked at that moment; it is not a
   guarantee for a later run.
+
+## 14. Acceptance criteria, capabilities and evidence
+
+Before this, a task's criteria were lines of `task.md`, the reviewer had one
+verdict for everything, and every `CHANGES_REQUESTED` went back to the
+developer. A release task whose developer had only file tools was asked six
+times for downloads, a C++ build, real inference, archives, a pull request and
+a check inside another program, while its code was correct and its tests
+passed. The engine described here tells those things apart: what the code
+needs, what a command can prove, what needs a decision and what only a person
+can do. It lowers no standard: a criterion nobody in the workflow can satisfy
+stays required and stays open.
+
+### Data
+
+`state.json` gains `acceptance`, written in the same atomic save as every
+checkpoint:
+
+```json
+{
+  "version": 1,
+  "source": "task",
+  "criteria": [{
+    "id": "AC-02", "text": "Compile the C++ component", "required": true,
+    "categories": ["BUILD"], "needs": ["build"], "toolchains": ["cpp"], "depends_on": [],
+    "classification": {"source": "rules", "signals": ["compiling"], "note": "It mentions compiling"},
+    "executor": "user", "verifier": "user", "proof": ["build"], "feasibility": "needs_tools",
+    "requires": [{"executor": "runtime", "capability": "commands.build", "state": "absent", "source": "No command of this project runs a build"}],
+    "authorization_required": false, "authorization": null,
+    "status": "BLOCKED_CAPABILITY", "reason": "It needs a C or C++ compiler, and none is installed on this computer …",
+    "evidence": [], "missing": ["build"], "review": {"outcome": "SATISFIED", "note": "", "iteration": 1}
+  }],
+  "capabilities": {"detected_at": "…", "executors": {"developer": {}, "reviewer": {}, "runtime": {}, "user": {}}},
+  "code": {"status": "APPROVED", "evidence": "E-0002", "iteration": 1},
+  "outcome": "AWAITING_VALIDATION", "results": ["CODE_APPROVED", "AWAITING_VALIDATION"],
+  "ledger": {"count": 2, "head": "…"}, "summary": {}
+}
+```
+
+Criteria are `acceptance.Criterion` dataclasses and the block an
+`acceptance.Acceptance`; `load` validates every field and refuses a block it
+does not know. IDs are `AC-01`, `AC-02`, … in the order the criteria were
+given, and never change. A task without criteria has one, about its
+description.
+
+Three questions are kept apart for each criterion:
+
+| Question | Fields | Decided by |
+|---|---|---|
+| What kind of work or check is it? | `categories`, `needs`, `toolchains`, `classification` | Fixed rules over its text, or its author |
+| Who could do it and verify it here? | `executor`, `verifier`, `proof`, `requires`, `feasibility` | The capabilities detected for the task |
+| Is it verified? | `status`, `reason`, `evidence`, `missing` | The evidence ledger |
+
+Categories: `CODE`, `TEST`, `BUILD`, `INTEGRATION`, `EXTERNAL`, `PUBLISHING`,
+`MANUAL`; a criterion may have several, and none when it could not be
+classified. Statuses: `PENDING`, `IN_PROGRESS`, `VERIFIED`, `FAILED`,
+`BLOCKED_CAPABILITY`, `AWAITING_AUTHORIZATION`, `AWAITING_MANUAL_VALIDATION`,
+`UNKNOWN`. Feasibility (`automatable`, `needs_tools`, `needs_authorization`,
+`manual`, `unknown`) is not a status: a criterion that can be automated is
+verified only by its evidence.
+
+### Classification
+
+`acceptance.classify` applies a fixed list of patterns to the text, in English
+and in Italian, the two languages criteria had been written in on October 13,
+2026. A rule only says that a criterion asks for more than a change to the
+code: a download or a dependency (`EXTERNAL`), a commit, a pull request or a
+publication (`PUBLISHING`), compiling, packaging or a checksum (`BUILD`),
+passing tests (`TEST`), another program or a real environment
+(`INTEGRATION`), a check by a person (`MANUAL`). A text that matches nothing
+is a criterion about the code. Wording about licences, rules of a platform or
+compliance, with nothing that says who can check it, is left unclassified:
+status `UNKNOWN`, with the reason.
+
+The author decides over the rules: a criterion may start with tags
+(`[manual]`, `[build]`, `[external]`, `[publishing]`, `[integration]`,
+`[test]`, `[code]`, `[optional]`), and the API accepts
+`{"text", "required", "categories", "depends_on"}` instead of text. No model
+classifies anything. The reviewer can only make a criterion ask for more than
+the rules did (below).
+
+### Capabilities
+
+`capabilities.detect` reports what each of four executors can do. A capability
+belongs to one executor, never to the task: a developer without a shell does
+not stop a criterion that asks for passing tests, because running them is a
+capability of the runtime.
+
+| Executor | Read from | Examples |
+|---|---|---|
+| `developer` | Its agent settings, frozen for the step or resolved now | Claude: tools of `--tools` (file tools by default, so no shell); Codex: its sandbox mode. Network, commit and push are absent whatever is set: the developer's prompt forbids them |
+| `reviewer` | Its fixed read-only configuration and the last environment check | Reads; never writes. A sandbox check that passed on a live run makes that `verified` |
+| `runtime` | `tests.*` of the project, PATH | `commands.tests`, `commands.build`, `commands.package` from the configured commands, with the consent; SHA-256 of a file; toolchains found with `shutil.which`. Never the network, never Git writes |
+| `user` | Nothing | Consent and manual checks on request; what the person has outside the project is `unknown` |
+
+States: `verified` (observed on this computer), `declared` (follows from a
+configuration PatchRondo passes or enforces), `absent`, `unknown`. Nothing is
+started to find out: a toolchain is looked for on PATH and never run. What a
+configured command does is read from its own words (`capabilities.covers`:
+`cmake`, `make`, `cargo build`, `npm run build`, `python -m build`, …), so a
+project that adds its build to `tests.commands` gives the runtime the
+capability to prove a build, under the consent the project already gave.
+
+Detection grants nothing. Agents get tools only through their agent settings
+with the acknowledgement (section 13), and commands run only with
+`tests.enabled` and `tests.trust_acknowledged`.
+
+### Planning
+
+`Acceptance._plan` gives each criterion its kinds of `proof` from what it
+needs:
+
+| Need | Proof | Done by | Verified by |
+|---|---|---|---|
+| a change to files | `review` | developer | reviewer |
+| passing tests | `test` | PatchRondo | PatchRondo: the whole run of the project's commands passed |
+| a build, a package | `build`, `package` | PatchRondo when a configured command covers it; otherwise the user | that command's result, or a check by the user |
+| a checksum, another program, a real environment, a person | `manual` | the user | a check by the user |
+| a download, a commit, a publication | `manual`, after an authorization | the user | a check by the user |
+
+The preflight is this plan with an empty ledger. `create_task` computes and
+saves it; `core.preflight` and `POST …/criteria/preview` compute it for a task
+that does not exist yet. It never stops a task from being created.
+
+### Evidence
+
+`<task>/evidence.jsonl` is append-only. Each line is one record:
+
+```json
+{"id": "E-0001", "seq": 1, "at": "…", "kind": "command", "executor": "runtime", "result": "passed", "exit_code": 0,
+ "command": ["python", "-m", "pytest", "-q"], "covers": ["tests"], "run": "001-3f9c2a1b", "of": 1,
+ "log": "iteration-001/test-01.log", "log_sha256": "…", "iteration": 1, "fingerprint": "…", "base": "…", "scope": "code",
+ "prev": "", "hash": "…"}
+```
+
+| Kind | Written when | By |
+|---|---|---|
+| `command` | A configured command of the project ran in the test stage | `_record_commands` |
+| `review` | A review was parsed and settled | `_record_review` |
+| `manual` | The user attached a check: what was done, a reference or a file hashed by PatchRondo, passed or failed | `attach_evidence` |
+| `authorization` | The user granted or denied an operation | `decide_authorization` |
+| `invalidation` | Earlier records stopped counting | `_sync`, `_validate_stage` |
+| `restart` | The ledger was started again after failing its check | `evidence.restart` |
+
+`fingerprint` is the digest of the task's files the record was made on
+(`gitops.fingerprint`), `base` the commit the task started from. `prev` and
+`hash` chain the records: a record that was changed, removed or inserted is
+found when the file is read, and from that record on nothing is trusted. This
+makes silent edits visible; it is not a signature, and the files belong to the
+user. The task state keeps the count and the last hash it saw, so a shortened
+ledger is noticed too. A ledger that fails is put aside unchanged
+(`evidence.damaged-<n>-<time>.jsonl`), a new one starts with a `restart`
+record and numbers its records apart (`E2-0001`), and what the old one
+verified has to be verified again.
+
+Records are never edited. When the fingerprint of the files changes, records
+with `scope: "code"` made on other files are named by an `invalidation`
+record; a record with `artifacts` is invalidated when one of the files it
+named is gone or no longer the file that was hashed. A check of a download
+has `scope: "independent"`; a decision of the user does not depend on files.
+The developer's step invalidates what was verified on the files as they were,
+which is how a criterion goes back from `VERIFIED` to open.
+
+### Verification
+
+`Acceptance.refresh` judges every criterion again from the ledger; nothing is
+carried over from the previous judgement. A criterion is `VERIFIED` when each
+kind of proof it needs has records that count, the criteria it depends on are
+verified and, for an operation that needs consent, the user's last decision
+is a grant. Otherwise its status says what is missing, in this order: waiting
+for another criterion; being developed; a change to the code asked by the
+reviewer, or a command or a check that failed (`FAILED`); a decision
+(`AWAITING_AUTHORIZATION`, also when the project's commands are configured
+and not allowed); a missing program or command (`BLOCKED_CAPABILITY`); a
+check by the user (`AWAITING_MANUAL_VALIDATION`, or `UNKNOWN` for an
+unclassified criterion); the review or the commands that have not run yet
+(`PENDING`).
+
+### The review, settled
+
+`Acceptance.settle_review` validates a parsed review against the plan:
+
+- An outcome for an unknown or repeated criterion is counted in
+  `ignored_criteria` and not applied.
+- `APPROVED` with a criterion marked `CODE_CHANGES_REQUIRED` becomes
+  `CHANGES_REQUESTED` (`normalized: "code_change_named"`).
+- `CHANGES_REQUESTED` with no issue about the code and no
+  `CODE_CHANGES_REQUIRED` outcome, while at least one criterion was handed
+  over and every criterion of the developer is `SATISFIED` or handed over,
+  becomes `APPROVED` (`normalized: "no_code_change_requested"`,
+  `reported_verdict` keeps the answer). It asked nothing of the developer, so
+  nothing is sent to the developer. `BLOCKED` is never changed.
+- An outcome that hands a criterion over (`VALIDATION_REQUIRED`,
+  `CAPABILITY_BLOCKED`, `APPROVAL_REQUIRED`, `MANUAL_ACTION_REQUIRED`,
+  `NOT_ASSESSED`) replaces the review of the code by a check of the user as
+  its proof, until a later review judges the code itself. This is the only
+  way a model changes a plan, and it only asks for more.
+- `SATISFIED` for a criterion that the reviewer does not verify is kept with
+  the criterion and proves nothing.
+
+These decisions come from the structured answer, never from its prose.
+`feedback.md` then holds the issues about the code and the outcomes of the
+developer's criteria; what is open outside the code is listed apart, under
+"Not work for the developer", and the developer's prompt names the criteria
+that are its work and those that are not.
+
+### In the loop
+
+```text
+create_task          criteria classified, capabilities detected, plan saved (the preflight)
+run start            _sync: a task without a record gets one from its task.md, nothing verified
+develop              developer told which criteria are its work; afterwards evidence on the old files is invalidated
+test                 one `command` record per command; criteria that commands prove are judged
+review               reviewer given criteria, capabilities and evidence; answer settled; `review` record
+  code approved      every required criterion verified -> done
+                     otherwise                          -> phase `validate`, paused: awaiting_validation | awaiting_authorization
+  not approved       feedback -> develop (next iteration), or blocked at the iteration limit, as before
+validate (a run)     nothing changed                    -> the saved state is returned: no event, no check, no call
+                     every required criterion verified  -> done
+                     a check by the user failed         -> feedback, develop (next iteration)
+                     evidence of commands or review missing (files or commands changed, ledger restarted) -> test
+```
+
+Results kept apart from the five statuses of the workflow: `code`
+(`PENDING`, `CHANGES_REQUIRED`, `APPROVED`) and `outcome` (`IN_PROGRESS`,
+`AWAITING_VALIDATION`, `AWAITING_AUTHORIZATION`, `RELEASE_READY`); `results`
+lists what holds, such as `["CODE_APPROVED", "AWAITING_VALIDATION"]`. A task
+that went back to `test` from `validate` with its files unchanged is not
+reviewed again: the review that approved these files still counts, and only
+the commands run. If they fail, the approval is withdrawn.
+
+### What a person does
+
+Three operations, in `core.py`, each under the task lock, none calling an
+agent or a command and none changing the status of the task:
+
+| Operation | Route | Rule |
+|---|---|---|
+| `attach_evidence` | `POST …/criteria/AC-nn/evidence` | Only for a criterion a person may verify, never in place of the review or of the tests. A statement alone is refused: a passed check names a reference or a file. A failed check goes to the developer at the next run, once |
+| `decide_authorization` | `POST …/criteria/AC-nn/authorization` | Only for a criterion about an operation that needs consent. A grant needs `confirm: true`. Nothing is run either way: the operation stays the user's, and its evidence too |
+| `recheck_acceptance` | `POST …/criteria/check` | Detects capabilities again and judges the criteria from the ledger |
+
+With `resume: true` the interface starts a run only when that run would
+complete the task without calling an agent (`completes`). The command line
+has the same three: `patchrondo criteria`, `evidence`, `authorize`.
+
+### Older tasks
+
+A state without `acceptance` is a task created before criteria were tracked.
+A task that ended is returned as it is by `run_task`; the interface lists its
+criteria as written and says nothing about them. A task that runs again gets
+its criteria from `task.md` (`acceptance_planned`, `source: "task.md"`), with
+nothing verified: saved test results and a saved review were never evidence,
+so a review that was about to start waits for the tests to run again. The
+schema is versioned (`acceptance.VERSION`, `evidence.VERSION`); a block that
+cannot be read is rebuilt the same way.
+
+### Limits
+
+- The runtime runs only the commands a project configured and allowed. There
+  is no separate executor for builds, packaging, downloads or publication: a
+  criterion that needs one is done by the user, or by a command the user adds
+  to the project's commands.
+- An authorization is a recorded decision. It gives nobody a permission.
+- Classification is a list of patterns. It can be wrong in both directions; a
+  wrong guess is corrected with a tag when the task is created, not afterwards.
+- A check by the user is the user's statement with a reference, or a file
+  PatchRondo hashed. PatchRondo does not open the reference.
+- The ledger shows edits; it does not prevent them.
+- The extended review schema had not been confirmed with a call to an
+  authenticated CLI on October 13, 2026.

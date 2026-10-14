@@ -6,8 +6,8 @@ import { duration } from "../format.js";
 import { href, navigate } from "../router.js";
 import { emptyState } from "../rondo.js";
 import { defaultsFor, projectList, selectedProjectId, state } from "../store.js";
-import { AGENTS, agentName } from "../tasks.js";
-import { busy, button, callout, field, iconButton, numberInput, segmented, selectInput } from "../ui.js";
+import { AGENTS, CRITERION_STATUS, FEASIBILITY, agentName, executorName } from "../tasks.js";
+import { badge, busy, button, callout, field, iconButton, numberInput, segmented, selectInput } from "../ui.js";
 
 const DRAFT = "patchrondo.draft";
 
@@ -39,6 +39,8 @@ export default function mount(root, route, ctx) {
   const description = h("textarea", { class: "input", rows: 7, placeholder: "What should be built or changed, where, and any constraints the agents must respect." });
   description.value = draft.description || "";
   const criteria = h("div", { class: "stack criteria" });
+  const preflightHost = h("div", {});
+  let preflightTimer = null, preflightTurn = 0;
   const projectSelect = selectInput(projectList().map((project) => ({ value: project.id, label: project.name })), projectId,
     { onchange: () => { projectId = projectSelect.value; roles = defaultsFor(projectId); roleControls(); update(); save(); } });
   const repoNote = h("div", {});
@@ -155,7 +157,38 @@ export default function mount(root, route, ctx) {
     loadAgents();
   }
 
+  // The preflight: how the backend would classify the criteria typed so far, and who could do and verify each.
+  // Asked again a moment after the last change; an answer that arrives after a newer question is dropped.
+  function preflight() {
+    clearTimeout(preflightTimer);
+    preflightTimer = setTimeout(async () => {
+      const turn = ++preflightTurn;
+      const texts = [...criteria.querySelectorAll("input")].map((input) => input.value.trim()).filter(Boolean);
+      if (!texts.length) { clear(preflightHost); return; }
+      let view = null, problem = null;
+      try { view = await api.post(`/api/projects/${projectId}/criteria/preview`, { acceptance: texts, ...roles }); } catch (error) { problem = error; }
+      if (turn !== preflightTurn) return;
+      if (!view) { clear(preflightHost, h("div", { class: "preflight muted" }, `The criteria could not be checked: ${problem.message}`)); return; }
+      const counts = view.summary.feasibility;
+      const task = { developer: roles.developer, reviewer: roles.reviewer };
+      clear(preflightHost, h("div", { class: "preflight", role: "status" },
+        h("div", { class: "row wrap" }, h("strong", {}, `Preflight · ${view.criteria.length} ${view.criteria.length === 1 ? "criterion" : "criteria"}`),
+          Object.entries(FEASIBILITY).map(([key, meta]) => counts[key] ? badge(`${counts[key]} · ${meta.label}`, meta.tone, { outline: true }) : null)),
+        view.criteria.map((criterion) => {
+          const meta = FEASIBILITY[criterion.feasibility] || { label: criterion.feasibility, tone: "neutral" };
+          const waits = CRITERION_STATUS[criterion.status];
+          return h("div", { class: "preflight-row" }, badge(meta.label, meta.tone, { dot: true }),
+            h("div", { class: "grow" }, h("div", { class: "break" }, `${criterion.id} · ${criterion.text}`),
+              h("div", { class: "muted break" }, `Done by ${executorName(criterion.executor, task)}, verified by ${executorName(criterion.verifier, task)}`,
+                criterion.feasibility === "automatable" ? "" : ` · ${waits ? `${waits.label}: ` : ""}${criterion.reason}`)));
+        }),
+        view.summary.missing.length ? h("div", { class: "muted break" }, "Missing in this workflow: ", view.summary.missing.map((item) => `${item.label} (${item.criteria.join(", ")})`).join("; ")) : null,
+        h("div", { class: "faint" }, "Nothing here stops the task from being created: development is done either way, and what agents cannot do waits for you instead of going back to them.")));
+    }, 350);
+  }
+
   function save() {
+    preflight();
     try {
       sessionStorage.setItem(DRAFT, JSON.stringify({ project: projectId, title: title.value, description: description.value, roles,
         acceptance: [...criteria.querySelectorAll("input")].map((input) => input.value),
@@ -216,7 +249,9 @@ export default function mount(root, route, ctx) {
       h("div", { class: "card pad stack" }, fields.project, repoNote, fields.title, fields.description,
         h("div", { class: "field" }, h("div", { class: "field-label" }, "Acceptance criteria", h("span", { class: "optional" }, "optional")), criteria,
           h("div", { class: "row" }, button("Add criterion", { size: "sm", variant: "ghost", iconName: "plus", onClick: () => { const row = criterion(); criteria.append(row); row.querySelector("input").focus(); } })),
-          h("div", { class: "field-hint" }, "One per line; both agents see them. Press Enter to add the next one."))),
+          h("div", { class: "field-hint" }, "One per line; both agents see them. Press Enter to add the next one. Start one with [manual], [build], [external], ",
+            "[publishing], [test] or [code] to say what kind of check it is, and with [optional] when the task may finish without it."),
+          preflightHost)),
       h("div", { class: "card pad stack" }, h("h2", {}, "Agents"), roleHost, roleNote),
       h("details", { class: "card advanced" }, h("summary", {}, h("span", { class: "grow" }, h("span", { class: "field-label" }, "Advanced"),
         h("span", { class: "field-hint" }, "Limits for this task only. Leave empty to use the project's settings.")), icon("chevronDown")), h("div", { class: "card-body" }, advancedHost)),
@@ -224,6 +259,7 @@ export default function mount(root, route, ctx) {
   for (const input of [title, description]) input.addEventListener("input", save);
   roleControls();
   advanced();
+  preflight();
 
   function update() {
     const project = state.projects.get(projectId);
@@ -239,5 +275,5 @@ export default function mount(root, route, ctx) {
     if (memo(roleNote, [state.providers?.providers, roles], () => [])) roleHints();
   }
 
-  return { update, destroy() {} };
+  return { update, destroy() { clearTimeout(preflightTimer); preflightTurn += 1; } };
 }

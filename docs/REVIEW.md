@@ -6,7 +6,7 @@ checks and the automatic quota recovery change: October 10, 2026. PatchRondo
 activity and publication-status update: October 11, 2026. Environment check,
 repairs and one-press start (0.2.1): October 11, 2026. Activity journal reader
 correction and agent settings: October 12, 2026. Test consent before the
-review: October 13, 2026.
+review, and the capability and acceptance engine: October 13, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -55,6 +55,145 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Capability and acceptance engine (October 13, 2026)
+
+This section covers three new modules (`acceptance.py`, `capabilities.py`,
+`evidence.py`), their use in `core.py`, the criteria routes of the interface
+and its *Criteria and checks* section, developed on top of `b7347fe` and
+validated on the computers named in the table below. The package version is
+unchanged, 0.2.1. [Architecture, section 14](ARCHITECTURE.md#14-acceptance-criteria-capabilities-and-evidence)
+describes the design.
+
+**What was wrong.** A task's criteria were lines of text, the reviewer had one
+verdict for everything, and every `CHANGES_REQUESTED` went back to the
+developer. A release task of another project had used six iterations that
+way: its developer had file tools only and was asked each time for downloads,
+a C++ build, real inference, archives, a pull request and a check inside
+another program, while its code was correct and its tests passed. Measured
+with scripted providers on `b7347fe`: a task with the criteria "feature.txt
+contains good" and "Verified inside Mod Organizer 2", passing tests and a
+reviewer that answers `CHANGES_REQUESTED` with no issue, saying only that
+nobody verified it in that program, made **six developer and six reviewer
+calls**, wrote 38 events and ended `blocked` with `max_iterations_reached`.
+
+**What changed.** The same task now makes **one developer and one reviewer
+call**: the backend settles the answer as an approval of the code (it named no
+change to the code), the first criterion is verified by the review, the second
+waits for a check by the user, and the task pauses at `validate` with
+`awaiting_validation` after 9 events. Two further resumes return the saved
+state. Attaching the evidence of that check and resuming completes the task
+with no further call.
+
+**What was kept.** For a task whose criteria are about the code and its tests,
+the provider calls, the checkpoints and the history are those of `b7347fe`:
+the 514 tests that existed before pass with no expectation changed. Two were
+added to, both in `tests/test_ui.py`: the new routes in the token test and the
+sample task with criteria in the demo test. In the browser tool two
+expectations follow the page: six workflow steps, and *Criteria and checks* as
+the tab after *Overview*. The reviewer's schema gained two required fields;
+`parse_review` still accepts an answer without them, which every scripted
+provider of the existing tests and tools gives. The test consent, the
+environment check, the frozen agent settings and quota recovery are untouched:
+the 115 earlier removed protections are all still detected.
+
+**Decisions that are not obvious.**
+
+- A request for changes with no issue about the code and no criterion marked
+  as needing a change to the code, while every criterion of the developer is
+  satisfied or handed over, is settled as an approval of the code. It is read
+  from the structured answer only. `BLOCKED` is never settled into anything
+  else.
+- An outcome of the reviewer may move a criterion from "the reviewer reads the
+  code" to "the user checks it", and back when a later review judges the code
+  itself. It never verifies a criterion that needs a command, a decision or a
+  person.
+- A task that returns from `validate` to `test` with unchanged files is not
+  reviewed again. If the commands then fail, the approval is withdrawn.
+- A saved state without criteria gets them from `task.md` with nothing
+  verified, and a review that was about to start waits for the tests to run
+  again: saved test results were never evidence.
+- An authorization runs nothing. It records that the user takes an operation
+  on themselves.
+
+**Regression tests.** `tests/test_acceptance.py` (55 tests) and
+`tests/test_criteria_ui.py` (8 tests) cover classification, capability
+detection, the ledger, the settling of a review and ten engine scenarios: a
+Python task verified by review and tests; a missing compiler; a developer
+without a shell while PatchRondo runs the tests; a check only a person can
+do, with three resumes that change nothing; approved code with packaging
+missing; a restart in another process; evidence invalidated by a changed file
+and by a changed artifact; a denied authorization; tasks created before
+criteria were tracked; and a review that names a real defect together with an
+outside check. Twenty-six removed protections were added, 141 in all, and each
+is detected: among them a criterion verified without its evidence, a
+statement accepted alone, the reviewer verifying what is not its to verify,
+evidence about other files still counting, an edited ledger trusted, approved
+code completing a task with open criteria, and a run started by an action when
+it would call an agent.
+
+**Defects found by these checks and fixed before the final round.**
+
+- The workflow bar, with a sixth step, overflowed its card at 1024 pixels: the
+  browser's layout scenario failed. Below 1080 pixels each label now sits
+  under its node.
+- A first version of the API tests replaced `subprocess.Popen` to observe a
+  run start, which also broke the Git calls of the action under test. The
+  tests now use a child process that leaves a mark, as the environment tests
+  do.
+- The message of the pause said that every open criterion needed an
+  authorization when only one did.
+
+Validation on October 13, 2026, after the last change to runtime code, tests
+and tools:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 577 tests, 566 passed, 11 skipped, 377.708 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 577 tests, 566 passed, 11 skipped, 355.767 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 577 tests, 559 passed, 18 skipped, 154.664 s | 0 |
+| Protections | WSL2, Python 3.12.3: 141 of 141 removed safeguards detected, 0 missed (26 of them new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (interruption and stale-lock scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.05 s after the planned time | 0 |
+| Browser, all twelve scenarios | Native Windows, Python 3.13.3, Chrome 154.0.8037.99 headless: 350 passed, 0 failed (33 in the new `criteria` scenario) | 0 |
+| Build and `twine check` | Native Windows: sdist and wheel of 0.2.1 built outside the repository; both passed; the three new modules and `criteria.js` are in both | 0 / 0 |
+| Publication scanner | 115 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass. Every provider was scripted: **no model was
+called** and no plan quota was used. No real CLI was started in this round.
+The opt-in tests of the reviewer preflight in the real Codex sandbox were not
+run: `environment.py`, `preflight.py`, `winacl.py`, `repair.py` and
+`core._environment` did not change.
+
+**Not verified.**
+
+- The review answer with `issues[].kind` and `criteria` has been produced by
+  scripted providers only. Whether Claude Code 2.1.295 and codex-cli 0.161.0
+  accept the larger schema with `--json-schema` and `--output-schema`, and how
+  well a real reviewer follows the outcomes, has not been checked with an
+  authorized call. `tools/provider_e2e.py` was not run with
+  `--authorize-provider-calls`.
+- The task that showed the problem was not run again: its criteria were used
+  as classification examples, and the loop was reproduced with scripted
+  providers.
+- macOS and Linux outside WSL2 were not used. The browser checks ran in Chrome
+  on native Windows only.
+
+**Limits.**
+
+- PatchRondo runs only the commands a project configured and allowed. A
+  criterion about a build or a package is verified by PatchRondo only when
+  such a command is among them; otherwise the user does it and attaches the
+  evidence. Downloads and publication are always the user's.
+- Classification is a list of patterns for English and Italian and can be
+  wrong in both directions. A tag corrects it when the task is created; the
+  kind of a criterion cannot be changed afterwards.
+- A check by the user is a statement with a reference that PatchRondo does not
+  open, or a file it hashed. The ledger makes edits visible and does not
+  prevent them.
+- A task created before this, and paused at a review, runs its tests again
+  before that review.
 
 ## Test consent before the review (October 13, 2026)
 

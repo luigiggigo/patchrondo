@@ -8,7 +8,10 @@ Run/Resume on a task created in the demo calls the real CLIs.
 
 The sample tasks are saved states only: no process is attached to them, and the
 interface says so. A saved "running" status without a process is shown as
-interrupted, and a saved retry plan as not attended.
+interrupted, and a saved retry plan as not attended. One of them has its
+acceptance criteria and an evidence ledger, written with the engine's own
+functions: its code is approved and it waits for what only a person can do.
+The other samples have the shape of tasks created before criteria were tracked.
 
     python tools/demo_dashboard.py
 """
@@ -24,7 +27,8 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from patchrondo.storage import atomic_text, save_json  # noqa: E402
+from patchrondo import acceptance, capabilities, evidence  # noqa: E402
+from patchrondo.storage import atomic_text, read_json, save_json  # noqa: E402
 from patchrondo.ui import RunsAtExit, serve  # noqa: E402
 from patchrondo.workspace import Workspace  # noqa: E402
 
@@ -138,6 +142,45 @@ def seed(home: Path, second: bool = False) -> None:
          review={"verdict": "CHANGES_REQUESTED", "summary": "Two callers still import the exporter.", "issues": [
              {"severity": "high", "path": "reports/legacy.py", "description": "Still imports XmlExporter."}]})
     task(5, "Add Redis cache for product lookups", "ready", "develop", 1, "claude", "codex", 3000)
+    waiting(home, ago, passed)
+
+
+def waiting(home: Path, ago, passed: list[dict]) -> None:
+    """A task whose code is approved and that waits at `validate`, with the evidence that says so."""
+    task_id = f"T-{6:012x}"
+    path = home / "tasks" / task_id
+    wanted = ["Expired tokens are rejected", "The test suite passes", "[manual] The login page still works in the browser",
+              "Publish the package on the internal index"]
+    record = acceptance.Acceptance.create(acceptance.parse_items(wanted))
+    state = {"id": task_id, "title": "Release the token library 2.1", "status": "paused", "phase": "validate", "iteration": 2,
+             "developer": "claude", "reviewer": "codex", "created_at": ago(120), "updated_at": ago(14), "tests": passed,
+             "worktree": str(home / "worktrees" / task_id), "base_sha": "0" * 40, "handoff": None, "recovery": None,
+             "review": {"verdict": "APPROVED", "summary": "The expiry check is correct and covered by tests.", "issues": [],
+                        "criteria": [{"id": "AC-01", "outcome": "SATISFIED", "note": ""},
+                                     {"id": "AC-03", "outcome": "MANUAL_ACTION_REQUIRED", "note": "Needs a browser"}]},
+             "history": [{"at": ago(40), "event": "run_started", "iteration": 1, "previous_status": "ready"},
+                         {"at": ago(22), "event": "development_completed", "iteration": 2, "agent": "claude"},
+                         {"at": ago(18), "event": "tests_completed", "iteration": 2, "statuses": ["passed", "passed"]},
+                         {"at": ago(15), "event": "review_completed", "iteration": 2, "verdict": "APPROVED"},
+                         {"at": ago(14), "event": "code_approved", "iteration": 2, "evidence": "E-0003", "open": 2},
+                         {"at": ago(14), "event": "task_paused", "iteration": 2, "reason": "awaiting_authorization"}]}
+    run = "002-demo0001"
+    for item in passed:
+        evidence.append(path, "command", executor="runtime", criteria=[], result="passed", exit_code=0, command=item["command"],
+                        covers=capabilities.covers(item["command"]), run=run, of=len(passed), iteration=2, fingerprint="demo", scope="code")
+    approved = evidence.append(path, "review", executor="reviewer", provider="codex", result="approved", verdict="APPROVED",
+                               criteria=["AC-01", "AC-03"], outcomes={"AC-01": "SATISFIED", "AC-03": "MANUAL_ACTION_REQUIRED"},
+                               issues=0, iteration=2, fingerprint="demo", scope="code")
+    record.settle_review(state["review"], 2)
+    record.approve_code(approved["id"], 2)
+    # What this computer has is not looked at for a sample: no toolchain is searched for.
+    found = capabilities.detect(read_json(home / "config.json"), state, settings={"developer": {}}, which=lambda _name: None)
+    record.refresh(evidence.read(path), capabilities=found)
+    state["acceptance"] = record.dump()
+    state["last_error"] = {"kind": "awaiting_authorization", "source": "acceptance", "message": record.pending_message(), "at": ago(14)}
+    save_json(path / "state.json", state)
+    atomic_text(path / "task.md", "# Release the token library 2.1\n\n## Description\n\nShip the expiry check as version 2.1.\n\n"
+                "## Acceptance criteria\n\n" + "".join(f"- {line}\n" for line in wanted))
 
 
 def runs_may_be_active(home: Path, runs: RunsAtExit) -> bool:

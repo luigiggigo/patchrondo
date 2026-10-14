@@ -8,7 +8,7 @@ from pathlib import Path
 import json
 import re
 
-from . import agents, streams
+from . import acceptance, agents, streams
 from .process import Result, execute, short_log
 from .storage import atomic_text
 
@@ -345,22 +345,8 @@ class OfficialCLI:
         turns = settings.get("max_turns") or self.claude_turns
         run_dir.mkdir(parents=True, exist_ok=True)
         atomic_text(run_dir / f"{role}.prompt.md", prompt)
-        schema = {
-            "type": "object", "additionalProperties": False,
-            "required": ["verdict", "summary", "issues"],
-            "properties": {
-                "verdict": {"type": "string", "enum": ["APPROVED", "CHANGES_REQUESTED", "BLOCKED"]},
-                "summary": {"type": "string"},
-                "issues": {"type": "array", "items": {
-                    "type": "object", "additionalProperties": False,
-                    "required": ["severity", "path", "description"],
-                    "properties": {
-                        "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
-                        "path": {"type": "string"}, "description": {"type": "string"},
-                    },
-                }},
-            },
-        }
+        # A verdict about the code, and one outcome for each acceptance criterion: what the backend validates.
+        schema = acceptance.REVIEW_SCHEMA
         missing = agents.missing_folders(settings)
         if missing:
             raise AgentFailure(f"The agent settings of the {role} name a folder or a file that is not there: "

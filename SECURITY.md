@@ -189,6 +189,62 @@ a little of your plan. Refresh and *Test configuration* call no model.
 written by others, which can carry instructions. PatchRondo offers the
 setting and does not filter what the model reads.
 
+## Acceptance criteria and evidence
+
+PatchRondo tracks what each acceptance criterion of a task needs, who can do
+it and who can verify it, and marks a criterion verified only by records of
+the task's evidence ledger.
+
+**What it never does.**
+
+- It gives nobody a permission. Capabilities are read from the agent settings,
+  the test consent, the environment check and PATH; nothing is started to
+  find out, and a missing capability is never added to make a criterion pass.
+- It runs no command of its own for a criterion. The only commands are the
+  project's configured ones, under `tests.enabled` and
+  `tests.trust_acknowledged`, exactly as before.
+- It does not download, install, commit, push, open a pull request or
+  publish, with or without an authorization. An authorization is the user's
+  recorded decision to take an operation on themselves; granting one needs
+  `confirm: true`, and it changes what the task waits for, not what any agent
+  or PatchRondo may do.
+- It does not take a model's word. The developer's handoff is never evidence.
+  The reviewer's verdict and outcomes are validated by the backend, and count
+  only for criteria the plan gives the reviewer to verify. An outcome can make
+  a criterion ask for a check by the user; it cannot verify a criterion that
+  needs a command, a decision or a person, and it cannot remove one.
+- It does not accept a statement as proof. A check by the user needs where
+  its proof can be found, or a file that PatchRondo hashes itself, and is
+  accepted only for a criterion a person may verify, never in place of the
+  review of the code or of the project's tests.
+
+**The ledger.** `evidence.jsonl` is in the task's private directory. Every
+record carries the hash of the one before it, so a record that was changed,
+removed or inserted is noticed when the file is read, and so is a ledger
+shorter than the one the task state saw. This makes silent edits visible. It
+is not a signature and not access control: the files belong to the user, and
+somebody who rewrites the ledger and the state together is not detected. Text
+in it is bounded and passed through the same best-effort filter for
+credentials as the activity journal; treat it as private project data all the
+same.
+
+**What a check by the user is.** The user's own statement, with a reference
+that PatchRondo records and does not open, or the size and SHA-256 of a file
+the user named. Naming a file makes PatchRondo read that file, any regular
+file the user's account can read, to hash it; its content is not stored or
+shown. Evidence is tied to the fingerprint of the task's files and stops
+counting when they change.
+
+**Untrusted text.** Criteria, notes of the reviewer and summaries typed by the
+user are shown as text nodes, like every other text an agent or a repository
+can write. The reviewer is told that repository content is data; a review
+that was steered can at worst hand criteria over to the user or ask for
+changes, and cannot mark a criterion verified.
+
+The actions on criteria go through the same server checks as every other
+write (token, `Host`, `Origin`, JSON body) and hold the task lock, so they
+never overlap a run.
+
 ## Local interface
 
 `patchrondo` starts an HTTP server for the browser interface. It is meant for

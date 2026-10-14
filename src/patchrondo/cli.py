@@ -9,8 +9,8 @@ import signal
 import sqlite3
 import sys
 
-from . import __version__, agents, doctor, rag, recovery, runinfo
-from .core import config, create_task, initialize, task_config, task_dir
+from . import __version__, acceptance, agents, doctor, evidence, rag, recovery, runinfo
+from .core import attach_evidence, config, create_task, decide_authorization, initialize, recheck_acceptance, task_config, task_dir
 from .storage import read_json
 from .workspace import REGISTRY, Project, Workspace
 
@@ -35,7 +35,9 @@ def parser() -> argparse.ArgumentParser:
     body = new.add_mutually_exclusive_group(required=True)
     body.add_argument("--description")
     body.add_argument("--task-file", type=Path)
-    new.add_argument("--accept", action="append", default=[], help="Acceptance criterion (repeatable)")
+    new.add_argument("--accept", action="append", default=[],
+                     help="Acceptance criterion (repeatable). Start it with a tag to say what it is, as in \"[manual] Tried in "
+                          "the game\" or \"[optional] ...\"; kinds: code, test, build, integration, external, publishing, manual")
     new.add_argument("--developer", choices=["claude", "codex"], default="claude")
     new.add_argument("--reviewer", choices=["claude", "codex"], default="codex")
     for role in agents.ROLES:
@@ -51,6 +53,23 @@ def parser() -> argparse.ArgumentParser:
                              help="After a provider usage limit, keep this process waiting and retry at the reset "
                                   "or after a backoff, within the configured caps. --no-auto-resume runs once and "
                                   "cancels a pending retry plan. Default: recovery.enabled in config.json")
+    shown = sub.add_parser("criteria", help="Show the acceptance criteria of a task: who verifies each one, and with what evidence")
+    shown.add_argument("task_id", help="Task ID such as T-0123456789ab")
+    shown.add_argument("--check", action="store_true",
+                       help="Detect capabilities and judge the criteria from the evidence again first (no model calls)")
+    attest = sub.add_parser("evidence", help="Record a check you did by hand for one criterion (no model calls)")
+    attest.add_argument("task_id", help="Task ID such as T-0123456789ab")
+    attest.add_argument("criterion", help="Criterion ID such as AC-03")
+    attest.add_argument("--summary", required=True, help="What you did and what you saw")
+    attest.add_argument("--reference", help="Where the proof can be found: a link, a commit, a log")
+    attest.add_argument("--artifact", help="A file PatchRondo hashes (SHA-256) as part of the evidence")
+    attest.add_argument("--failed", action="store_true", help="The check did not pass: the developer gets it as a change request")
+    decide = sub.add_parser("authorize", help="Decide about the operation a criterion needs. PatchRondo runs nothing either way")
+    decide.add_argument("task_id", help="Task ID such as T-0123456789ab")
+    decide.add_argument("criterion", help="Criterion ID such as AC-05")
+    choice = decide.add_mutually_exclusive_group(required=True)
+    choice.add_argument("--grant", action="store_true", help="You take the operation on yourself, and its evidence")
+    choice.add_argument("--deny", action="store_true", help="The operation is not done; the criterion stays open")
     sub.add_parser("list", help="List tasks")
     sub.add_parser("projects", help="List the projects registered in this home")
     index = sub.add_parser("index", help="Update the local retrieval index (no model calls)")
@@ -90,6 +109,27 @@ def _print_tasks(home: Path) -> None:
     for file in sorted(folder.glob("T-*/state.json")) if folder.exists() else []:
         s = read_json(file)
         print(f"{s['id']} · {s['status']:8} · {s['developer']} → {s['reviewer']} · {s['title']}")
+
+
+def _print_criteria(path: Path) -> None:
+    """The criteria of one task as saved, with the evidence that counts for each. Nothing is judged again here."""
+    record = acceptance.Acceptance.load(read_json(path / "state.json"))
+    if record is None:
+        print("This task was created before criteria were tracked. They are recorded, with nothing taken as verified, "
+              "at its next run or with: patchrondo criteria TASK --check")
+        return
+    counts = record.summary()
+    print(f"Code: {record.code.get('status')} · Overall: {record.outcome} · "
+          f"{counts['required_verified']} of {counts['required']} required criteria verified")
+    for criterion in record.criteria:
+        kinds = ", ".join(criterion.categories) or "unclassified"
+        print(f"{criterion.id} · {criterion.status:26} · {'required' if criterion.required else 'optional'} · {kinds} · "
+              f"done by {criterion.executor}, verified by {criterion.verifier}")
+        print(f"    {criterion.text}")
+        print(f"    {criterion.reason}" + (f" [{', '.join(criterion.evidence)}]" if criterion.evidence else ""))
+    problems = evidence.read(path).problems
+    for problem in problems:
+        print(f"Warning: {problem}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -156,6 +196,22 @@ def main(argv: list[str] | None = None) -> int:
                 if plan:
                     print(plan)
                 return 0 if state["status"] == "done" else 2
+            elif command in {"criteria", "evidence", "authorize"}:
+                shared = root if (root / REGISTRY).exists() or (root / agents.STORE).exists() else None
+                if command == "evidence":
+                    done = attach_evidence(home, opts.task_id, opts.criterion, summary=opts.summary, reference=opts.reference,
+                                           artifact=opts.artifact, passed=not opts.failed, agents_root=shared)
+                    print(f"Recorded {done['record']['id']} for {opts.criterion}: {done['record']['result']}")
+                elif command == "authorize":
+                    done = decide_authorization(home, opts.task_id, opts.criterion, granted=opts.grant, agents_root=shared)
+                    print(f"Recorded {done['record']['id']} for {opts.criterion}: {done['record']['result']}. Nothing was run.")
+                elif opts.check:
+                    done = recheck_acceptance(home, opts.task_id, agents_root=shared)
+                else:
+                    done = None
+                _print_criteria(task_dir(home, opts.task_id))
+                if done and done["completes"]:
+                    print(f"Every required criterion is verified. To complete the task: patchrondo resume {opts.task_id}")
             elif command == "status":
                 print(json.dumps(read_json(task_dir(home, opts.task_id) / "state.json"), indent=2, ensure_ascii=False))
             elif command == "report":

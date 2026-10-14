@@ -42,6 +42,7 @@ CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'nonce-{nonce}
        "frame-ancestors 'none'")
 PROJECT = r"/api/projects/(P-[a-f0-9]{8})"
 TASK = PROJECT + r"/tasks/([^/]+)"
+CRITERION = TASK + r"/criteria/(AC-\d{2,4})"
 
 
 def _load_assets() -> tuple[str, dict[str, tuple[bytes, str]]]:
@@ -356,6 +357,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return 200, app.agents_model(payload)
         if match := re.fullmatch(TASK + "/agents/refresh", path):
             return 200, app.agents_refresh_step(app.ws.get(match.group(1)), unquote(match.group(2)))
+        if match := re.fullmatch(PROJECT + "/criteria/preview", path):
+            return 200, app.criteria_preview(app.ws.get(match.group(1)), payload)
+        if match := re.fullmatch(TASK + "/criteria/check", path):
+            return 200, app.criteria_check(app.ws.get(match.group(1)), unquote(match.group(2)), payload)
+        if match := re.fullmatch(CRITERION + "/evidence", path):
+            return 201, app.criteria_evidence(app.ws.get(match.group(1)), unquote(match.group(2)), match.group(3), payload)
+        if match := re.fullmatch(CRITERION + "/authorization", path):
+            return 200, app.criteria_authorize(app.ws.get(match.group(1)), unquote(match.group(2)), match.group(3), payload)
         if match := re.fullmatch(PROJECT + "/index", path):
             return 202, app.start_index(app.ws.get(match.group(1)))
         if match := re.fullmatch(PROJECT + "/tasks", path):

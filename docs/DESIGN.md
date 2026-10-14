@@ -97,11 +97,43 @@ Defined in `css/app.css` and built by `js/ui.js`:
 | Command palette | Ctrl/Cmd+K: navigation, projects and tasks |
 
 Task-specific pieces are in `js/components.js`: the workflow bar
-(Prepare → Develop → Test → Review → Complete with the repeat loop), the
-five-segment mini workflow in list rows, the task row and the timeline event.
-*Prepare* is what PatchRondo does itself before an agent is called; its state
-is the environment check saved with the task, and it is drawn as running only
-while the backend verifies a running process.
+(Prepare → Develop → Test → Review → Validate → Complete with the repeat
+loop), the six-segment mini workflow in list rows, the task row and the
+timeline event. *Prepare* is what PatchRondo does itself before an agent is
+called; its state is the environment check saved with the task, and it is
+drawn as running only while the backend verifies a running process.
+*Validate* is where a task whose code is approved waits for evidence the
+agents cannot give; nobody works there, so it is never drawn as running, and
+it says "waiting for you".
+
+**Criteria and checks** (`js/views/criteria.js`) is the task's own section for
+its acceptance criteria. It is built for somebody who will not read JSON or
+logs:
+
+- Two results side by side, never merged: *Code* (approved or not) and *Task
+  as a whole*. A progress bar counts required criteria that are verified.
+- One row per criterion, a native `details`: a mark in the tone of its status,
+  its text, its ID, the status in words, its kind. Rows that need the user
+  (failed, blocked, waiting for an authorization or a check, unclear) are open
+  by default; what the reader opened or closed is kept across live updates.
+- Inside a row: one sentence that says why it is where it is; who does it and
+  who verifies it; what it takes and who has that; the reviewer's opinion,
+  marked as not being evidence when the criterion is not the reviewer's to
+  verify; the evidence, each record with who made it, when, its result and
+  whether it still counts; and the actions.
+- Actions exist only where the backend carries them out: *Attach evidence…*,
+  *Authorize or decline…*, *Check again*, *Complete the task*. An action the
+  backend would refuse is not drawn; when a check by the user cannot be
+  recorded, the reason the backend gives is shown in its place. Nothing here
+  claims to build, download or publish.
+- *Who can do what in this task* is closed by default: the four executors,
+  each capability with *Observed*, *Configured*, *Not available* or *Unknown*
+  and where that was read from.
+
+The *New task* form shows the preflight under the criteria while they are
+typed: counts by what each one will take, then one line per criterion. It is
+information, never an obstacle: the form says that nothing in it stops the
+task from being created.
 
 Three pieces carry the "nothing to configure" path:
 
@@ -174,6 +206,7 @@ motion and a status mark on the avatar, not by a different drawing.
 | Preparing | Task note | head | gentle bob | bolt, accent | Which stage he is at: the agents, the project, the safe environment, or that he is fixing an access problem |
 | Task running | Dashboard, task note | full / head | gentle bob | bolt, accent | Who is working, which phase and iteration |
 | A fix or a decision is needed | Task note | head | none | pause, amber | That a small fix is needed and which button applies it, or that the tests wait for the user's say-so |
+| Code approved, criteria open | Task note | head | none | pause, amber | That the code is approved, that he did not send it back to the developer for things the developer cannot do, and how many criteria still need a check or a decision |
 | Waiting for a usage limit | Task note, wizard usage step | head | slow breathing | clock, violet | That only waiting helps, and until when |
 | Needs attention | Dashboard, task note | head | none | pause, amber | What is wrong and what to do |
 | Error, blocked, stale lock | Task note | head | slight tilt, static | alert, red | The cause in plain words |

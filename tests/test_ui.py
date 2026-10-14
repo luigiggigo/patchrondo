@@ -128,7 +128,12 @@ class ProtectionTests(ServerCase):
                   ("POST", "/api/projects/P-00000000/tasks"), ("POST", "/api/projects/P-00000000/start"),
                   ("POST", "/api/projects/P-00000000/tasks/T-000000000000/run"),
                   ("POST", "/api/projects/P-00000000/tasks/T-000000000000/repair"),
-                  ("POST", "/api/projects/P-00000000/tasks/T-000000000000/stop"), ("PATCH", "/api/settings"),
+                  ("POST", "/api/projects/P-00000000/tasks/T-000000000000/stop"),
+                  ("POST", "/api/projects/P-00000000/criteria/preview"),
+                  ("POST", "/api/projects/P-00000000/tasks/T-000000000000/criteria/check"),
+                  ("POST", "/api/projects/P-00000000/tasks/T-000000000000/criteria/AC-01/evidence"),
+                  ("POST", "/api/projects/P-00000000/tasks/T-000000000000/criteria/AC-01/authorization"),
+                  ("PATCH", "/api/settings"),
                   ("PATCH", "/api/projects/P-00000000"), ("PATCH", "/api/projects/P-00000000/config"),
                   ("DELETE", "/api/projects/P-00000000")]
         for method, path in routes:
@@ -1277,6 +1282,11 @@ class DemoTests(unittest.TestCase):
             activities = {task["title"]: task["runtime"]["activity"] for task in tasks}
             self.assertEqual(activities["Handle JWT expiration"], "interrupted")
             self.assertEqual(activities["Paginate the /orders endpoint"], "plan_only")
+            # One sample has criteria and evidence: approved code that waits is never shown as finished.
+            waiting = next(task for task in tasks if task["title"] == "Release the token library 2.1")
+            self.assertEqual((waiting["status"], waiting["phase"], waiting["acceptance"]["results"], waiting["acceptance"]["verified"]),
+                             ("paused", "validate", ["CODE_APPROVED", "AWAITING_AUTHORIZATION"], 2))
+            self.assertEqual(sum(task["acceptance"] is None for task in tasks), 7)  # the others predate tracked criteria
             self.assertTrue(app.ws.settings()["onboarding_completed"])
 
     def run_demo(self, outcome, *args, lock=False):

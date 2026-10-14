@@ -9,6 +9,83 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Capability and acceptance engine — October 13, 2026
+
+A release task had reached its sixth iteration with `CHANGES_REQUESTED` every
+time. Its developer had file tools only and was asked, again and again, for
+downloads, a C++ build, real inference, archives, a pull request and a check
+inside another program, while its code was correct and its tests passed. The
+loop had one verdict for everything and one place to send it.
+
+- **Criteria are records.** Every acceptance criterion of a task has an ID
+  (`AC-01`, …), a kind, what it needs, who does it, who verifies it, a status
+  with its reason, and the evidence that counts for it. They are saved with
+  the task state under `acceptance`. Kinds: `CODE`, `TEST`, `BUILD`,
+  `INTEGRATION`, `EXTERNAL`, `PUBLISHING`, `MANUAL`. Statuses: `PENDING`,
+  `IN_PROGRESS`, `VERIFIED`, `FAILED`, `BLOCKED_CAPABILITY`,
+  `AWAITING_AUTHORIZATION`, `AWAITING_MANUAL_VALIDATION`, `UNKNOWN`.
+- **Classification by fixed rules, corrected by the author.** The kind is read
+  from the text of a criterion, in English and Italian; what cannot be placed
+  is `UNKNOWN` with its reason. A leading tag (`[manual]`, `[build]`,
+  `[external]`, `[publishing]`, `[integration]`, `[test]`, `[code]`,
+  `[optional]`) or the fields of the API decide over the rules. No model
+  classifies anything.
+- **Capabilities per executor.** `capabilities.py` reports what the developer,
+  the reviewer, PatchRondo itself and the user can do, each as observed,
+  configured, absent or unknown, from the agent settings, the test consent,
+  the environment check and PATH. Nothing is started for it. A developer
+  without a shell no longer stops a criterion that PatchRondo can verify with
+  the project's own commands.
+- **A preflight when a task is created**, and in the *New task* form while the
+  criteria are typed: how many are automatic, need a tool, need an
+  authorization, need a check by the user or are unclear, and which
+  capabilities are missing. It never stops a task from being created.
+- **The review is about the code, with an outcome per criterion.** The
+  reviewer is given the criteria, the capabilities and the recorded evidence,
+  and answers `SATISFIED`, `CODE_CHANGES_REQUIRED`, `VALIDATION_REQUIRED`,
+  `CAPABILITY_BLOCKED`, `APPROVAL_REQUIRED`, `MANUAL_ACTION_REQUIRED` or
+  `NOT_ASSESSED` for each; an issue has a `kind`. The backend validates the
+  answer against the plan. A request for changes that names no change to the
+  code asks nothing of the developer and starts no development step; an
+  approval that names one is not an approval. What the reviewer says about a
+  criterion it cannot verify is recorded and is not evidence. An answer in the
+  earlier shape is still a review of the code as a whole.
+- **Approved code is not a finished task.** New results beside the five
+  statuses: `CODE_APPROVED`, and `AWAITING_VALIDATION`,
+  `AWAITING_AUTHORIZATION` or `RELEASE_READY`. A task is `done` only with the
+  code approved and every required criterion verified. Otherwise it pauses at
+  a new `validate` checkpoint with `awaiting_validation` or
+  `awaiting_authorization`. No agent is called there, and resuming while
+  nothing changed returns the saved state.
+- **Evidence ledger.** `<task>/evidence.jsonl` records each command PatchRondo
+  ran (exit code, log and its hash, what it covers), each validated review,
+  each check and each decision of the user, with the fingerprint of the files
+  it was made on. Records are chained by hash and never edited; evidence about
+  files that changed, or about an artifact that changed, is invalidated by a
+  later record, and the criterion is open again. A ledger that fails its check
+  is put aside and started again.
+- **Three actions of the user**, in the interface and on the command line
+  (`patchrondo criteria`, `evidence`, `authorize`), none of which calls an
+  agent or a command: attach the evidence of a check (a statement alone is
+  refused; a file is hashed by PatchRondo), authorize or decline an operation
+  (nothing is run either way), and check again. A check that did not pass goes
+  to the developer at the next run.
+- **Criteria and checks** on the task page: approval of the code and the task
+  as a whole shown apart, progress, one row per criterion with who does it,
+  who verifies it, why it is open, what it takes and its evidence; *Who can do
+  what in this task*; a *Validate* step in the workflow.
+- **Tasks created before this** keep working. One that ended is left as it
+  is, with nothing said about each criterion. One that runs again gets its
+  criteria from its `task.md`, with nothing taken as verified.
+- **Limits.** PatchRondo runs only the commands a project configured and
+  allowed: it does not build, package, download or publish by itself, and an
+  authorization is a recorded decision that gives nobody a permission. The
+  review answer with an outcome per criterion had not been confirmed with a
+  call to an authenticated CLI on October 13, 2026.
+- Twenty-six removed protections were added to `tools/recovery_checks.py`, a
+  `criteria` scenario to the browser checks, and a sample task with criteria
+  to the demo.
+
 ### Test consent before the review — October 13, 2026
 
 - **No review without the test consent.** With tests not enabled, a task

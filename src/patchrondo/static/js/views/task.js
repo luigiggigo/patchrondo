@@ -1,4 +1,4 @@
-// Task workspace: header, workflow, live activity, timeline, logs, tests, review, changed files and documents.
+// Task workspace: header, workflow, criteria, live activity, timeline, logs, tests, review, changed files and documents.
 // The header follows the live summary; the panels follow the detail fetched after each change.
 
 import { api } from "../api.js";
@@ -8,13 +8,15 @@ import { ago, bytes, clock, duration, fullDate, humanize, markdown, plural } fro
 import { href, navigate, replace } from "../router.js";
 import { emptyState, rondoNote, taskMessage } from "../rondo.js";
 import { getTask, state } from "../store.js";
-import { RECOVERY_SOURCES, SEVERITY, TEST_TONE, VERDICTS, activityOf, agentName, configured, errorOf, preparation, stopReason } from "../tasks.js";
+import { CRITERION_STATUS, OUTCOMES, RECOVERY_SOURCES, SEVERITY, TEST_TONE, VERDICTS, activityOf, agentName, configured, errorOf, preparation,
+  stopReason } from "../tasks.js";
 import { activityBadge, badge, busy, button, callout, confirm, copyButton, dialog, iconButton, loadingBlock, menuItem, popover, tabs,
   toast, toastError, toggle } from "../ui.js";
+import { criteriaPanel } from "./criteria.js";
 import { livePanel } from "./live.js";
 
 const TABS = [
-  ["overview", "Overview", "home"], ["live", "Live Activity", "bolt"], ["activity", "Timeline", "activity"], ["logs", "Logs", "terminal"],
+  ["overview", "Overview", "home"], ["criteria", "Criteria and checks", "tasks"], ["live", "Live Activity", "bolt"], ["activity", "Timeline", "activity"], ["logs", "Logs", "terminal"],
   ["tests", "Tests", "flask"],
   ["review", "Review", "eye"], ["files", "Files changed", "diff"], ["handoff", "Handoff", "file"], ["report", "Report", "book"],
   ["raw", "Advanced", "code"],
@@ -61,7 +63,11 @@ function runDialog(task, detail) {
       }) });
       return {
         body: [
-          h("p", {}, `${dev} develops and ${rev} reviews in the task's own worktree. `, h("strong", {}, "This calls the real CLIs and uses your plan quota.")),
+          // At Validate a run finishes the task or leaves it as it is; an agent is called only for files that changed.
+          task.phase === "validate"
+            ? h("p", {}, "The code of this task is approved and it waits for its criteria. Resuming completes it when every required criterion is verified, and otherwise changes nothing. ",
+              h("strong", {}, `If the files or the project's commands changed since the approval, the tests run again and ${rev} reviews again, which uses your plan quota.`))
+            : h("p", {}, `${dev} develops and ${rev} reviews in the task's own worktree. `, h("strong", {}, "This calls the real CLIs and uses your plan quota.")),
           effective && !effective.tests_enabled ? callout({ tone: "warn", iconName: "flask", title: "Project tests are disabled",
             body: "The task will pause after development, before the review: a task is done only when tests pass and the review approves." }) : null,
           missing.map((provider) => callout({ tone: "warn", iconName: "alert", title: `${provider.label} is ${provider.installed === false ? "not installed" : "not logged in"}`, body: provider.hint })),
@@ -264,7 +270,23 @@ function consentCard(task, detail) {
       h("p", { class: "faint" }, "This applies to the whole project, not only to this task. Nothing runs until you press the button.")));
 }
 
-// --- Panels --------------------------------------------------------------------------
+// The code is approved and the task waits for something that is not development: what, and where to act on it.
+function validationCard(task, detail, error) {
+  const view = detail.acceptance;
+  const open = (view?.criteria || []).filter((criterion) => criterion.required && criterion.status !== "VERIFIED");
+  const ready = view?.outcome === "RELEASE_READY";
+  return callout({ tone: ready ? "ok" : "warn", iconName: ready ? "check" : "tasks",
+    title: ready ? "Every required criterion is verified" : error.title,
+    body: [h("div", {}, ready ? "Complete the task from “Criteria and checks”: no agent is called for that." : error.help),
+      open.length ? h("div", { class: "check-list" }, open.slice(0, 6).map((criterion) => {
+        const meta = CRITERION_STATUS[criterion.status] || { label: criterion.status, tone: "neutral" };
+        return h("div", { class: "check-row" }, badge(meta.label, meta.tone, { dot: true }),
+          h("div", { class: "grow" }, h("div", { class: "break" }, `${criterion.id} · ${criterion.text}`), h("div", { class: "muted break" }, criterion.reason)));
+      })) : null,
+      open.length > 6 ? h("div", { class: "muted" }, `and ${open.length - 6} more`) : null,
+      h("div", { class: "muted" }, "The work done so far is kept as it is. No agent is called while the task waits here.")],
+    actions: [button("Open criteria and checks", { size: "sm", variant: "primary", iconName: "tasks", href: href("tasks", task.project, task.id, "criteria") })] });
+}
 
 function recoveryCard(task, plan) {
   if (!plan || typeof plan !== "object") return null;
@@ -307,6 +329,9 @@ function overviewPanel() {
     const prepare = preparation(task);
     const record = prepare.state === "problem" && data.environment?.error_kind === error?.kind ? data.environment : null;
     const consent = error?.kind === "tests_disabled" && task.status === "paused" && task.runtime.can_start;
+    const validation = ["awaiting_validation", "awaiting_authorization"].includes(error?.kind) && task.status === "paused";
+    const counts = detail.acceptance?.tracked ? detail.acceptance.summary : null;
+    const outcome = counts ? OUTCOMES[detail.acceptance.outcome] : null;
     // The consent form keeps what was typed in it: it is rebuilt only when the task or its commands change.
     let form = null;
     if (consent) {
@@ -319,7 +344,8 @@ function overviewPanel() {
     }
     // `stamp` changes with every fetched detail: timestamps in the state only have one-second resolution.
     const frozen = Object.values(detail.agents?.roles || {}).map((item) => (item.frozen ? ago(item.frozen.frozen_at) : ""));
-    memo(el, [detail.stamp, task.runtime, detail.effective, detail.worktree_exists, ago(data.recovery?.resume_at), state.providers?.providers, frozen], () => [
+    memo(el, [detail.stamp, task.runtime, detail.effective, detail.worktree_exists, ago(data.recovery?.resume_at), state.providers?.providers, frozen,
+      detail.acceptance?.summary, detail.acceptance?.outcome], () => [
       h("div", { class: "stack" },
         task.runtime.activity === "stale_lock" && !task.runtime.can_unlock ? callout({ tone: "danger", iconName: "lock", title: "The lock has to be removed by hand on native Windows",
           body: ["PatchRondo found no live process for this lock, but on native Windows the engine cannot confirm that for the agent's child processes. After checking that no claude, codex or test process is still running, delete ",
@@ -331,13 +357,18 @@ function overviewPanel() {
             task.runtime.unverified.map((pid, index) => [index ? ", " : "", h("span", { class: "mono break" }, `${state.projects.get(task.project)?.home}/tasks/${task.id}/attached/${pid}.json`)]), "."] }) : null,
         record ? environmentCard(task, record, error)
           : consent ? form
+          : validation ? validationCard(task, detail, error)
           : error && task.status !== "done" ? callout({ tone: task.status === "blocked" ? "danger" : "warn", iconName: "alert", title: error.title,
             body: [h("div", {}, error.help), error.message ? h("pre", { class: "error-message" }, error.message) : null] }) : null,
         !detail.worktree_exists ? callout({ tone: "danger", iconName: "folder", title: "The task worktree is missing", body: `Expected at ${data.worktree}. The task cannot run without it.` }) : null,
         detail.config_error ? callout({ tone: "danger", iconName: "alert", title: "The project configuration cannot be used", body: detail.config_error }) : null,
         task.status !== "done" && task.status !== "blocked" ? agentNotes(task, detail) : null,
         recoveryCard({ ...task, last_error: data.last_error }, data.recovery),
-        h("div", { class: "grid c2" },
+        h("div", { class: "grid c3" },
+          h("a", { class: `card pad summary-card tone-${outcome?.tone || "neutral"}`, href: href("tasks", task.project, task.id, "criteria") },
+            h("div", { class: "stat-top" }, h("span", { class: "stat-icon" }, icon("tasks")), h("span", { class: "stat-label" }, "Criteria")),
+            h("div", { class: "summary-value" }, counts ? `${counts.required_verified} of ${counts.required} verified` : "Not tracked"),
+            h("div", { class: "stat-hint" }, counts ? outcome?.label || "" : "Created before criteria were tracked")),
           h("a", { class: `card pad summary-card tone-${verdict?.tone || "neutral"}`, href: href("tasks", task.project, task.id, "review") },
             h("div", { class: "stat-top" }, h("span", { class: "stat-icon" }, icon("eye")), h("span", { class: "stat-label" }, "Review")),
             h("div", { class: "summary-value" }, verdict ? verdict.label : "Not reviewed yet"),
@@ -420,6 +451,7 @@ function activityPanel() {
 
 function logsPanel(projectId, taskId) {
   let files = [], current = null, start = 0, next = 0, size = 0, follow = true, loading = false, opened = 0;
+  let wanted = null; // a file another panel asked for, shown as soon as the list of files has it
   const select = h("select", { class: "input log-select", "aria-label": "Log file", onchange: () => open(select.value) });
   const info = h("span", { class: "muted num log-info" });
   const view = h("div", { class: "log-view", tabindex: "0", role: "log", "aria-label": "Log output" });
@@ -509,7 +541,7 @@ function logsPanel(projectId, taskId) {
     } catch { /* the next update retries */ } finally { if (turn === opened) loading = false; }
   }
 
-  return { el, update(detail) {
+  return { el, choose(id) { wanted = id; }, update(detail) {
     files = detail.logs;
     el.querySelector(".log-toolbar").hidden = view.hidden = !files.length;
     memo(empty, files.length ? "files" : "none", () => files.length ? null : emptyState({ compact: true, title: "No logs yet",
@@ -521,6 +553,11 @@ function logsPanel(projectId, taskId) {
       return [...groups].map(([group, items]) => h("optgroup", { label: group }, items.map((file) =>
         h("option", { value: file.id, selected: file.id === current }, `${file.label} · ${bytes(file.size)}`))));
     });
+    if (wanted && files.some((file) => file.id === wanted)) {
+      const id = wanted;
+      wanted = null;
+      if (id !== current) { open(id); select.value = id; return; }
+    }
     if (!current || !files.some((file) => file.id === current)) { open(files[0].id); select.value = files[0].id; return; }
     select.value = current;
     if (behind()) append();
@@ -565,9 +602,15 @@ function reviewPanel() {
         review.summary ? h("div", { class: "card pad break" }, review.summary) : null,
         issues.length ? h("div", { class: "card list" }, issues.map((issue) => h("div", { class: "issue-row" },
           badge(issue.severity, SEVERITY[issue.severity] || "neutral"),
-          h("div", { class: "grow" }, h("div", { class: "break" }, issue.description), issue.path ? h("div", { class: "mono muted break" }, issue.path) : null))))
+          h("div", { class: "grow" }, h("div", { class: "break" }, issue.description), issue.path ? h("div", { class: "mono muted break" }, issue.path) : null,
+            issue.kind && issue.kind !== "CODE_CHANGES_REQUIRED" ? h("div", { class: "faint" }, "Not about the code: it is not sent to the developer.") : null))))
           : h("p", { class: "muted" }, "The reviewer reported no issues."),
-        h("p", { class: "faint" }, "An AI review is one input. PatchRondo also requires passing tests, and you should review the changes before merging them."),
+        review.reported_verdict ? callout({ tone: "accent", iconName: "info", title: `The reviewer answered “${(VERDICTS[review.reported_verdict]?.label || review.reported_verdict).toLowerCase()}”`,
+          body: review.normalized === "no_code_change_requested"
+            ? "It named no change to the code: what it found open is a verification outside the code, recorded with the criteria. So nothing was sent back to the developer."
+            : "It also asked for a change to the code for one of the criteria, so the code is not approved.",
+          actions: [h("a", { class: "link", href: href("tasks", task.project, task.id, "criteria") }, "Criteria and checks")] }) : null,
+        h("p", { class: "faint" }, "An AI review is one input. PatchRondo also requires passing tests and recorded evidence for every required criterion, and you should review the changes before merging them."),
       ];
     });
   } };
@@ -682,7 +725,8 @@ export default function mount(root, route, ctx) {
   function panelFor(key) {
     if (!panels.has(key)) {
       panels.set(key, {
-        overview: overviewPanel, live: () => livePanel(projectId, taskId), activity: activityPanel, logs: () => logsPanel(projectId, taskId), tests: testsPanel, review: reviewPanel,
+        overview: overviewPanel, criteria: () => criteriaPanel(projectId, taskId, { openLog }), live: () => livePanel(projectId, taskId),
+        activity: activityPanel, logs: () => logsPanel(projectId, taskId), tests: testsPanel, review: reviewPanel,
         files: () => filesPanel(projectId, taskId),
         handoff: () => documentPanel("handoff", "Developer handoff", ["No handoff yet", "The developer agent writes it at the end of each development step."]),
         report: () => documentPanel("report", "Report", ["No report yet", "PatchRondo writes it when the task completes, pauses or blocks."]),
@@ -690,6 +734,15 @@ export default function mount(root, route, ctx) {
       }[key]());
     }
     return panels.get(key);
+  }
+
+  // Evidence refers to a log by the name the Logs tab lists it under.
+  function openLog(id) {
+    panelFor("logs").choose(id);
+    tab = "logs";
+    replace("tasks", projectId, taskId, tab);
+    tabList.update(undefined, tab);
+    showPanel();
   }
 
   function showPanel() {
@@ -759,15 +812,17 @@ export default function mount(root, route, ctx) {
       h("div", { class: "page-actions" }, actions(task, detail)),
     ]);
     el.head.dataset.tone = meta.tone;
-    memo(el.flow, [task.phase, task.status, task.runtime.activity, task.iteration, task.max_iterations, task.environment, task.error_kind], () => workflowBar(task));
+    memo(el.flow, [task.phase, task.status, task.runtime.activity, task.iteration, task.max_iterations, task.environment, task.error_kind,
+      task.acceptance?.outcome], () => workflowBar(task));
     const message = taskMessage(task, detail?.state);
     const watch = task.runtime.active && tab !== "live";
     memo(el.note, [message, state.lastEventAt ? clock(state.lastEventAt) : "", watch], () => rondoNote(message.text, message.mood, [
       watch ? h("a", { class: "btn sm", href: href("tasks", projectId, taskId, "live") }, icon("bolt"), "Watch live") : null,
       h("span", { class: "faint num hide-sm", "data-tip": "When this page last received a change from the server" }, state.lastEventAt ? `live · ${clock(state.lastEventAt)}` : "")]));
-    const counts = { activity: task.events || null, review: task.issues || null, logs: detail?.logs.length || null };
+    const waiting = task.acceptance ? task.acceptance.required - task.acceptance.required_verified : 0;
+    const counts = { activity: task.events || null, review: task.issues || null, logs: detail?.logs.length || null, criteria: waiting || null };
     tabList.update(TABS.map(([key, label, iconName]) => ({ key, label, icon: iconName, count: counts[key],
-      alert: key === "review" && task.verdict && task.verdict !== "APPROVED" })), tab);
+      alert: (key === "review" && task.verdict && task.verdict !== "APPROVED") || (key === "criteria" && task.acceptance?.code === "APPROVED") })), tab);
     showPanel();
   }
 

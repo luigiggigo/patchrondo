@@ -48,7 +48,10 @@ it from a **local interface in your browser**: choose a project, describe what
 should be done, press **Start task** and follow the loop live. PatchRondo
 prepares the task's copy of the project, checks the agents and the review
 sandbox, repairs what it safely can and tells you in one sentence when it
-needs you. Every command-line command of 0.1 is still there.
+needs you. Each acceptance criterion is tracked on its own: what the agents
+can do goes through the loop, and what they cannot do waits for you, with its
+reason, instead of being sent back to them. Every command-line command of 0.1
+is still there.
 
 It uses the **official CLIs** and the logins already configured on your machine.
 It does not extract OAuth tokens, use unofficial endpoints, or promise unlimited
@@ -132,8 +135,8 @@ the interface, not the runs it started.
 | **Projects** | Add a local Git repository (with a folder picker and a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
 | **Agents** | One card for the developer and one for the reviewer: who plays the role, a preset, the model and the effort; under *Advanced*, every other option of that CLI. Global preferences, a project's own values or a single task's, with the origin of each value in effect. *Test configuration* checks a card without starting anything. See [Agents: models and options](#agents-models-and-options). |
 | **Tasks** | All tasks of the selected project, or of every project, with filters and search. |
-| **Task** | Header with status, roles and iteration; the workflow *Prepare → Develop → Test → Review → Repeat / Complete*; then Overview, Live Activity (what the agents are doing, while they do it), Timeline (the steps the engine recorded), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
-| **New task** | The longer form behind *More options*: project, title, description, acceptance criteria, developer and reviewer; under *Advanced*, limits for that task only. *Create and run* asks for confirmation before any agent is called. |
+| **Task** | Header with status, roles and iteration; the workflow *Prepare → Develop → Test → Review → Validate → Repeat / Complete*; then Overview, Criteria and checks (each criterion with who does it, who verifies it, why it is open and its evidence), Live Activity (what the agents are doing, while they do it), Timeline (the steps the engine recorded), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
+| **New task** | The longer form behind *More options*: project, title, description, acceptance criteria with a preflight of what each one will take, developer and reviewer; under *Advanced*, limits for that task only. *Create and run* asks for confirmation before any agent is called. |
 | **Settings** | Global preferences and, per project: default roles, workflow limits, tests, the Recovery Manager, local retrieval and the raw configuration. Every setting has a one-line explanation. |
 
 Things worth knowing:
@@ -163,6 +166,12 @@ Things worth knowing:
   containing spaces; single quotes are literal characters. On Linux and macOS,
   commands use POSIX quoting rules. Commands are saved as argument arrays and
   executed without a shell.
+- **Approved code is not a finished task.** A task is done when its code is
+  approved and every required criterion has evidence on record. A criterion
+  that needs a compiler nobody has, a download, a pull request or a check in
+  another program does not go back to the developer: the task waits at
+  *Validate* and says what each one needs. See
+  [Criteria and checks](#criteria-and-checks).
 - **Stopping.** *Stop* interrupts a run, or a process waiting for a retry, like
   Ctrl+C in its terminal. It is available on Linux, macOS and WSL2. On native
   Windows it is shown as unavailable: use Ctrl+C in the terminal of a run
@@ -227,6 +236,95 @@ Everything else is a stop with an explanation, never a workaround:
 The sandbox is never weakened, approvals are never bypassed and tests are
 never enabled to get a task through. `PATCHRONDO_PREFLIGHT=0` switches the
 whole check off and a run then starts as it did in 0.2.0.
+
+### Criteria and checks
+
+Every acceptance criterion of a task is tracked on its own. PatchRondo works
+out what each one needs, who in the task can do it and who can verify it, and
+keeps the proof.
+
+**Capabilities belong to whoever has them.** There are four executors: the
+developer agent, the reviewer agent, PatchRondo itself and you. The developer
+may have file tools and no shell; PatchRondo can still run the project's
+tests, because that is its own capability. *Who can do what in this task*, on
+the task page, lists them, each marked *Observed* (seen on this computer),
+*Configured* (follows from a setting PatchRondo passes or enforces), *Not
+available* or *Unknown*. Nothing is started to find out, and no model is
+asked.
+
+| A criterion about | Done by | Verified by |
+|---|---|---|
+| The code: logic, refactoring, documentation | The developer | The reviewer, reading the code |
+| Tests that pass | PatchRondo, with the commands you allowed | The result of those commands |
+| A build or a package | PatchRondo, when one of your commands does it; otherwise you | That command's result, or your check |
+| Another program, a real device, something only a person can judge | You | Your check, with its evidence |
+| A download, a commit, a pull request, a publication | You, after your explicit authorization | Your check, with its evidence |
+
+The kind of each criterion is read from its text by fixed rules, in English
+and Italian. When the rules cannot place one (a licence, the rules of a
+platform), it is shown as *Unclear what it needs* with the reason, never as
+done. You decide over the rules by starting a criterion with a tag:
+`[manual]`, `[build]`, `[external]`, `[publishing]`, `[integration]`,
+`[test]`, `[code]`, and `[optional]` for one the task may finish without. The
+*New task* form shows this preflight while you type; it never stops a task
+from being created.
+
+**What a criterion can be:**
+
+| Shown as | Meaning |
+|---|---|
+| *Not verified yet*, *In progress* | Waiting for the developer, the tests or the review |
+| *Verified* | Evidence is on record and still counts |
+| *Failed* | The reviewer asked for a change to the code, a command failed, or your check did not pass |
+| *Blocked · something is missing* | No program or command in this workflow can do it; the row says which |
+| *Needs your authorization* | An operation that is never done without your decision |
+| *Needs a check by you* | Only a person can verify it |
+| *Unclear what it needs* | It could not be classified; your evidence settles it |
+
+**Code and task are judged apart.** *Code: Approved* means the review approved
+it, the project's commands passed and there are changes. *Task as a whole*
+says whether every required criterion is verified. With the code approved and
+criteria open, the task pauses at *Validate*: it is not done, and it is not
+sent back to a developer who can do nothing about it. Resuming it calls no
+agent while nothing changed.
+
+**The reviewer answers per criterion.** Besides its verdict, which is about
+the code, it gives each criterion one outcome: satisfied, the code has to
+change, a check is missing, nobody here has the tools, an operation has to be
+authorized, a person has to act. PatchRondo validates that answer. A request
+for changes that names no change to the code asks nothing of the developer,
+so nothing goes back to the developer. What the reviewer says about a
+criterion it cannot verify is shown as its opinion and is not evidence. A real
+defect in the code still goes back, with the outside checks listed apart.
+
+**Evidence, not statements.** A criterion is verified only by records of the
+task's evidence ledger: a command PatchRondo ran (with its exit code, its log
+and the fingerprint of the files it ran on), a review PatchRondo validated,
+or a check you attached. What the developer writes in its handoff is never
+evidence. Records are never edited; when the files change after a check, the
+records about the earlier files stop counting and the criterion is open
+again.
+
+**What you can do on the page**, each without any agent being called:
+
+- **Attach evidence** to a criterion a person may verify: what you did and
+  saw, and where the proof is, or a file that PatchRondo fingerprints
+  (SHA-256) itself. A statement alone is refused. A check that did not pass
+  is sent to the developer at the next run.
+- **Authorize or decline** the operation of a criterion. PatchRondo and the
+  agents never download, commit or publish, with or without it: authorizing
+  means that you take the operation on yourself, and the criterion then waits
+  for its evidence.
+- **Check again** after installing a program or changing the project's
+  commands, and **Complete the task** when everything required is verified.
+
+To let PatchRondo verify a build or a package, add the command to the
+project's commands in *Settings → Tests*: it runs with the consent you already
+gave there, and its result is the evidence.
+
+A task created before criteria were tracked keeps working. If it ended, it is
+shown as it was, with nothing said about each criterion; if it runs again,
+its criteria are read from its description with nothing taken as verified.
 
 ### Agents: models and options
 
@@ -496,6 +594,9 @@ patchrondo new \
 
 You can reverse the roles with `--developer codex --reviewer claude`, or provide
 a longer specification with `--task-file ./requirements.md` instead of `--description`.
+An `--accept` criterion may start with a tag that says what it is, as in
+`--accept "[manual] Tried in the game"` or `--accept "[optional] ..."`; see
+[Criteria and checks](#criteria-and-checks).
 `--developer-model`, `--developer-effort`, `--reviewer-model` and
 `--reviewer-effort` set the model and effort of this task only; everything
 else comes from the [agent settings](#agents-models-and-options) of the
@@ -532,6 +633,19 @@ the problem, for example `sandbox_access_denied`, `git_dubious_ownership` or
 `cli_missing`, before any agent is called. `patchrondo status` shows the
 record of the check under `environment`; `resume` checks again.
 
+A task whose code is approved while required criteria are open pauses at the
+`validate` phase with `awaiting_validation` or `awaiting_authorization`. No
+agent is called there:
+
+```bash
+patchrondo criteria T-a1b2c3d4e5f6                       # each criterion, who verifies it, why it is open, its evidence
+patchrondo criteria T-a1b2c3d4e5f6 --check               # look at this computer and at the evidence again first
+patchrondo authorize T-a1b2c3d4e5f6 AC-04 --grant        # or --deny; nothing is run either way
+patchrondo evidence T-a1b2c3d4e5f6 AC-04 --summary "Opened the pull request" --reference https://example.com/pull/7
+patchrondo evidence T-a1b2c3d4e5f6 AC-03 --summary "Built the archive" --artifact dist/release.zip
+patchrondo resume T-a1b2c3d4e5f6                         # completes the task once every required criterion is verified
+```
+
 To let the same process wait for a usage limit to reset and retry by itself, see
 [Automatic quota recovery](#automatic-quota-recovery-opt-in). It is disabled by
 default.
@@ -543,7 +657,7 @@ runner, agent or test PID is still active. On native Windows, manual lock remova
 is required after a reboot.
 
 Statuses: `ready`, `running`, `paused`, `done`, `blocked`.
-Phases: `develop`, `test`, `review`, `complete`.
+Phases: `develop`, `test`, `review`, `validate`, `complete`.
 `blocked` means the review returned `BLOCKED` or the iteration limit was reached:
 human intervention and a new task, or a carefully controlled manual state edit,
 are required.
@@ -566,17 +680,22 @@ new -> [Git worktree + task.md + state.json]
        environment check again (reused while nothing it depends on changed)
            v
        reviewer CLI (read-only)
-           | structured review JSON
-           +-- APPROVED + passing tests + changes -> DONE
-           +-- CHANGES_REQUESTED / failing tests -> feedback.md -> developer (next iteration)
+           | structured review JSON: a verdict about the code, one outcome per criterion
+           +-- APPROVED + passing tests + changes = code approved
+           |       +-- every required criterion verified by evidence -> DONE
+           |       +-- otherwise -> PAUSED at validate (no agent is called there)
+           |               evidence attached, operation authorized -> resume -> DONE
+           |               a check of yours failed -> feedback.md -> developer (next iteration)
+           +-- a change to the code is asked / failing tests -> feedback.md -> developer (next iteration)
            +-- BLOCKED / too many iterations -> BLOCKED
            +-- quota / timeout / invalid output / Ctrl+C -> PAUSED -> resume
                (quota only, opt-in: wait for the reset or a backoff, then retry)
 ```
 
-AI review is one input: the orchestrator independently checks test results and
-whether changes exist. Review comments are feedback, not permission to bypass
-checks. State files are saved atomically after every phase. Following an abrupt
+AI review is one input: the orchestrator independently checks test results,
+whether changes exist and the evidence of every required criterion. Review
+comments are feedback, not permission to bypass checks. A request for changes
+that names no change to the code does not start another development step. State files are saved atomically after every phase. Following an abrupt
 interruption, `resume` **repeats only the unfinished phase**, although partially
 completed agent actions may require an additional check.
 
@@ -763,7 +882,9 @@ now without automatic recovery stays possible in both cases.
         T-.../
           task.md
           state.json            # also the last environment check ("environment"), the task's own agent
-                                # settings ("agent_settings") and what each step was started with ("agent_runs")
+                                # settings ("agent_settings"), what each step was started with ("agent_runs")
+                                # and the criteria with their plan, status and results ("acceptance")
+          evidence.jsonl        # evidence ledger: append-only, each record chained to the one before
           handoff.md
           feedback.md
           report.md
@@ -899,16 +1020,19 @@ python -m unittest discover -s tests -v
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-The latest recorded local validation, on October 12, 2026, of 0.2.1 with the
-unpublished correction of the activity journal reader, ran **444 tests**: on
-native Windows (Python 3.13 and Python 3.11) **433 passed and 11 were
-skipped**; on WSL2 (Python 3.12) **426 passed and 18 were skipped**, all with
-exit status 0. The skipped ones are tests that need
-POSIX, tests of real Windows access lists, and five opt-in tests that run the
-reviewer preflight in the real Codex sandbox; those five passed on native
-Windows with both Pythons when asked for. These local results are separate from
-GitHub CI; the [technical review](docs/REVIEW.md#current-source-and-ci-status-october-12-2026)
-records the current published commit and its CI status, and
+The latest recorded validation, on October 13, 2026, of 0.2.1 with the
+capability and acceptance engine, ran **577 tests**: on native Windows
+(Python 3.13 and Python 3.11) **566 passed and 11 were skipped**; on WSL2
+(Python 3.12) **559 passed and 18 were skipped**, all with exit status 0. The
+skipped ones are tests that need POSIX, tests of real Windows access lists,
+and five opt-in tests that run the reviewer preflight in the real Codex
+sandbox, which were not asked for in that round (the code they cover did not
+change; they last passed on native Windows with both Pythons earlier the same
+day). These results come from the computers named in the
+[technical review](docs/REVIEW.md#capability-and-acceptance-engine-october-13-2026)
+and are separate from GitHub CI; the review also records
+[the published commit and its CI status](docs/REVIEW.md#current-source-and-ci-status-october-12-2026)
+as checked on October 12, 2026, and
 [what was checked for 0.2.1](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026).
 Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
@@ -935,8 +1059,12 @@ The check starts the real server and drives a headless Chrome or Edge on your
 computer through the DevTools protocol, with the Python standard library only.
 Runs it starts are real `patchrondo run` processes whose provider commands
 reach a synthetic executable only; the runner refuses to start while a real
-`claude` or `codex` is reachable. Eleven scenarios compare the page with the
-files on disk: models and options chosen on the Agents page for both roles, at
+`claude` or `codex` is reachable. Twelve scenarios compare the page with the
+files on disk: the criteria of a task from the preflight of the form to their
+evidence, with approved code that waits instead of going back to the
+developer, an authorization declined and then granted, a statement refused as
+evidence and the task completed by the user's checks without another agent
+call; models and options chosen on the Agents page for both roles, at
 the global and the project level, and a task that is then started with exactly
 those arguments; a task started from the home page with one description and one
 press, the test consent and a guided repair of a preparation problem; first
@@ -960,7 +1088,8 @@ the same setup passed all 234 checks, and a message printed by the scripted
 CLI reached the page in about 0.2 seconds. With the `start` scenario of 0.2.1
 added, it passed all 268 checks; the `agents` scenario of October 12, 2026
 adds 48 more (see the [technical review](docs/REVIEW.md#agent-settings-october-12-2026)
-for the run on the final code). The check needs a local Chromium-based browser and
+for the run on the final code). With the `criteria` scenario of October 13,
+2026 it passed all 350 checks. The check needs a local Chromium-based browser and
 reports that it was skipped when there is none; it has not been run on Linux,
 macOS, Firefox or Safari, and it is not part of CI.
 
@@ -1005,7 +1134,8 @@ python tools/recovery_checks.py real-clock    # POSIX; use WSL2 on Windows
 
 `protections` removes one safeguard at a time (for example the due check under
 the lock, the retry limit, the explicit-offset requirement, the refusal of a
-second automatic run while a process waits, or the explicit consent for tests)
+second automatic run while a process waits, the explicit consent for tests, or
+the rule that a criterion is verified only by its evidence)
 from a temporary copy of the sources and expects the tests named for it to
 fail. It
 exits with status 1 if a removal goes unnoticed. `real-clock` lets a runner
@@ -1062,6 +1192,9 @@ resumption after an interruption have not been checked with real accounts. Detai
 - Process supervision on native Windows: tracking of the whole process tree of an agent, which stale-lock recovery and Stop need before they can be offered there. (0.2 verifies single processes on Windows for display only.)
 - Approval requests for risky tools and notifications.
 - Stall detection based on Git/test changes.
+- An executor of its own for builds, packaging and integration checks, with its own consent, so that criteria of those kinds can be verified without the user doing them by hand. Today the runtime runs only the project's configured commands, and an authorization is a recorded decision.
+- Confirm the review answer with an outcome per criterion with authorized real runs of both CLIs.
+- Changing the kind of a criterion after the task was created.
 - Confirm live activity with authorized real runs of both CLIs, and record the result per CLI version; consider word-by-word output for Claude Code, which today would also carry thinking deltas.
 - Confirm the agent settings with authorized real runs: each option against the CLI versions that accept it, and the wording of both providers when a model is not available to an account.
 - Continuing a CLI session across the steps of a task (`--resume`, `codex exec resume`), which PatchRondo does not do: every step is a new call that starts from the task's files.

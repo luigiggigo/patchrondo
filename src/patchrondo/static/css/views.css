@@ -231,6 +231,10 @@ details.advanced .card-body { border-top: 1px solid var(--border); }
   .facts { position: static; }
   .home-columns { grid-template-columns: minmax(0, 1fr); }
   .workflow-state { display: none; }
+  /* Six steps do not fit side by side with their labels: each label goes under its node. */
+  .workflow-steps { align-items: flex-start; }
+  .workflow-step { flex-direction: column; gap: var(--space-1); text-align: center; }
+  .workflow-link { margin: 16px var(--space-2) 0; min-width: var(--space-2); }
 }
 @media (max-width: 860px) {
   .hero { flex-wrap: wrap; }
@@ -252,7 +256,7 @@ details.advanced .card-body { border-top: 1px solid var(--border); }
 @media (max-width: 640px) {
   .workflow { padding: var(--space-3); }
   .workflow-text { display: none; }
-  .workflow-link { margin: 0 var(--space-2); }
+  .workflow-link { margin: 16px var(--space-2) 0; }
   .workflow-step[aria-current="step"] .workflow-text { display: flex; }
   .workflow-loop span:not(.workflow-iter) { display: none; }
   .event, .timeline.compact .event { grid-template-columns: 40px 24px minmax(0, 1fr); }
@@ -286,6 +290,31 @@ details.advanced .card-body { border-top: 1px solid var(--border); }
 @media (max-width: 720px) {
   .composer-foot .btn.lg { width: 100%; justify-content: center; }
 }
+
+/* Criteria and checks: results of the task, one expandable row per criterion, its evidence and who can do what. */
+.criteria-stat { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); background: var(--tone-soft, var(--surface-2)); }
+.criteria-progress { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; font-size: var(--text-sm); color: var(--text-2); }
+.criteria-bar { flex: 1; min-width: 120px; height: 6px; border-radius: 6px; background: var(--surface-3); overflow: hidden; }
+.criteria-fill { display: block; height: 100%; border-radius: 6px; background: var(--ok); transition: width var(--base) var(--ease); }
+.criteria-list { display: flex; flex-direction: column; gap: var(--space-2); }
+.criterion { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
+.criterion > summary { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--space-4); cursor: pointer; list-style: none; }
+.criterion > summary:hover { background: var(--surface-2); }
+.criterion-mark { width: 26px; height: 26px; flex: none; border-radius: 8px; display: grid; place-items: center; background: var(--tone-soft, var(--surface-3)); color: var(--tone, var(--text-2)); }
+.criterion-text { display: block; font-weight: 560; }
+.criterion-meta { margin-top: var(--space-1); }
+.criterion-chevron { margin-top: 5px; color: var(--text-3); transition: transform var(--fast) var(--ease); }
+.criterion[open] .criterion-chevron { transform: rotate(180deg); }
+.criterion-body { padding: var(--space-3) var(--space-4) var(--space-4); border-top: 1px solid var(--border); background: var(--bg-sunken); }
+.criterion-reason { margin: 0; color: var(--text); }
+.evidence-list { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-2); }
+.evidence-row { display: flex; flex-direction: column; gap: 4px; padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--surface); font-size: var(--text-sm); min-width: 0; }
+.evidence-row.counts { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+.evidence-row.stale { opacity: .72; }
+.capabilities { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: var(--space-5); }
+.preflight { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-md); background: var(--bg-sunken); border: 1px solid var(--border); font-size: var(--text-sm); }
+.preflight-row { display: flex; align-items: flex-start; gap: var(--space-2); min-width: 0; }
+.preflight-row .badge { flex: none; }
 
 /* Agents: one card per role, the basic choices first and every other option behind "Advanced". */
 .agents-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: var(--space-4); align-items: start; }

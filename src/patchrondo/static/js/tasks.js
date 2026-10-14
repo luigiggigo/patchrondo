@@ -69,6 +69,8 @@ export const ERRORS = {
   git_dubious_ownership: { title: "Git does not trust this project folder", help: "The folder belongs to another user of this computer, so Git refuses to work in it. If the project is yours, you can tell Git to trust this folder, and only this one." },
   cli_missing: { title: "An agent is not installed", help: "Install it as shown in Settings → Agents, then resume. No agent was called." },
   system_error: { title: "PatchRondo hit a system error", help: "A file or Git operation failed. Check the message, then resume." },
+  awaiting_validation: { title: "The code is approved; some criteria still need verification", help: "What is left cannot be done by the developer or checked by the reviewer, so the task was not sent back to them. “Criteria and checks” shows what each criterion needs." },
+  awaiting_authorization: { title: "The code is approved; some criteria need your authorization", help: "An operation such as a download or a publication is never done without your decision. Decide in “Criteria and checks”; nothing is run either way." },
   max_iterations_reached: { title: "Iteration limit reached", help: "The task used all its iterations without an approved review and passing tests. Review the feedback and create a follow-up task." },
   review_blocked: { title: "The reviewer blocked the task", help: "The reviewer judged that the task cannot proceed as specified. Read the review and create a new task." },
   review_not_approved: { title: "The review was not approved", help: "Read the review for what is missing." },
@@ -98,7 +100,7 @@ export const RECOVERY_STOPS = {
 };
 export const stopReason = (reason) => RECOVERY_STOPS[reason] || `${humanize(reason)} is never retried automatically`;
 
-export const PHASES = [["develop", "Develop"], ["test", "Test"], ["review", "Review"], ["complete", "Complete"]];
+export const PHASES = [["develop", "Develop"], ["test", "Test"], ["review", "Review"], ["validate", "Validate"], ["complete", "Complete"]];
 export const PREPARE_STAGES = {
   agents: "Checking the agents", project: "Preparing the project", sandbox: "Checking the safe environment",
   repair: "Fixing an access problem",
@@ -140,7 +142,9 @@ export function workflow(task) {
       else if (activity === "ready") step = first.step === "next" ? "pending" : "next";
       else step = "paused";
     }
-    return { key, label, step };
+    // At Validate nobody is working: the task waits for evidence only a person or the project's commands can give.
+    const detail = key === "validate" && step === "paused" && task.acceptance?.outcome !== "RELEASE_READY" ? "waiting for you" : undefined;
+    return { key, label, step, detail };
   })];
 }
 
@@ -163,6 +167,7 @@ const PAUSE_REASONS = {
   sandbox_not_read_only: "the review environment is not read-only", sandbox_unverified: "the review environment could not be confirmed",
   sandbox_unavailable: "Codex could not start its protected environment", sandbox_git_failed: "Git does not work in the review environment",
   git_dubious_ownership: "Git does not trust the project folder", cli_missing: "an agent is not installed",
+  awaiting_validation: "criteria wait for a verification", awaiting_authorization: "criteria wait for your authorization",
 };
 const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git trust for this project folder" };
 const REPAIR_OUTCOMES = { applied: ["Fixed", "ok"], unchanged: ["Already in place", "neutral"], rolled_back: ["Could not fix; put back as it was", "warn"],
@@ -193,8 +198,29 @@ export function describeEvent(event, task) {
     case "review_started": return { text: `${rev} started the review`, tone: "accent", icon: "eye", detail: configured(event) || null };
     case "review_completed": {
       const verdict = VERDICTS[event.verdict];
-      return { text: `${rev}: ${verdict ? verdict.label.toLowerCase() : event.verdict}`, tone: verdict?.tone || "neutral", icon: "eye" };
+      const reported = VERDICTS[event.reported];
+      return { text: `${rev}: ${verdict ? verdict.label.toLowerCase() : event.verdict}`, tone: verdict?.tone || "neutral", icon: "eye",
+               detail: event.reported ? `It answered “${reported ? reported.label.toLowerCase() : event.reported}”; settled from what it said about each criterion` : null };
     }
+    case "acceptance_planned":
+      return { text: `Criteria recorded for this task (${event.criteria ?? 0})`, tone: "neutral", icon: "tasks",
+               detail: event.source === "task.md" ? "Read back from the task description; nothing was taken as verified" : null };
+    case "code_approved":
+      return { text: "Code approved", tone: "ok", icon: "check", detail: event.open ? `${plural(event.open, "required criterion", "required criteria")} still to verify` : null };
+    case "evidence_recorded":
+      return { text: `You recorded a check for ${event.criterion}: ${event.result === "failed" ? "it did not pass" : "it passed"}`,
+               tone: event.result === "failed" ? "danger" : "ok", icon: "user", detail: event.evidence || null };
+    case "authorization_decided":
+      return { text: `${event.decision === "granted" ? "You authorized" : "You did not authorize"} the operation of ${event.criterion}`,
+               tone: event.decision === "granted" ? "ok" : "neutral", icon: "shield", detail: "Nothing was run" };
+    case "evidence_invalidated":
+      return { text: `${plural(event.records ?? 0, "evidence record")} no longer ${event.records === 1 ? "counts" : "count"}`, tone: "warn", icon: "repeat",
+               detail: "The files of the task, or a file the evidence named, changed after it was recorded" };
+    case "evidence_ledger_restarted":
+      return { text: "The evidence ledger failed its integrity check and was started again", tone: "danger", icon: "alert",
+               detail: "The old file is kept beside it; what it verified has to be verified again" };
+    case "validation_failed":
+      return { text: `A check by you did not pass (${(event.criteria || []).join(", ")}): sent to ${dev} as a change request`, tone: "warn", icon: "repeat" };
     case "task_completed": return { text: "Task completed", tone: "ok", icon: "check" };
     case "task_paused": return { text: `Paused: ${PAUSE_REASONS[event.reason] || humanize(event.reason).toLowerCase()}`, tone: "warn", icon: "pause" };
     case "task_blocked": return { text: `Blocked: ${(ERRORS[event.reason]?.title || humanize(event.reason)).toLowerCase()}`, tone: "danger", icon: "x" };
@@ -219,4 +245,55 @@ export function describeEvent(event, task) {
 
 export function eventTime(event) {
   return clock(event.at);
+}
+
+// --- Acceptance criteria -------------------------------------------------------------
+// Statuses, reasons and available actions come from the backend; this is only how they are worded.
+
+export const CRITERION_STATUS = {
+  PENDING: { label: "Not verified yet", tone: "neutral", icon: "clock" },
+  IN_PROGRESS: { label: "In progress", tone: "accent", icon: "code" },
+  VERIFIED: { label: "Verified", tone: "ok", icon: "check" },
+  FAILED: { label: "Failed", tone: "danger", icon: "x" },
+  BLOCKED_CAPABILITY: { label: "Blocked · something is missing", tone: "warn", icon: "lock" },
+  AWAITING_AUTHORIZATION: { label: "Needs your authorization", tone: "warn", icon: "shield" },
+  AWAITING_MANUAL_VALIDATION: { label: "Needs a check by you", tone: "warn", icon: "user" },
+  UNKNOWN: { label: "Unclear what it needs", tone: "neutral", icon: "info" },
+};
+export const CATEGORIES = { CODE: "Code", TEST: "Tests", BUILD: "Build", INTEGRATION: "Integration", EXTERNAL: "External", PUBLISHING: "Publishing", MANUAL: "Manual" };
+export const FEASIBILITY = {
+  automatable: { label: "Automatic", tone: "ok" }, needs_tools: { label: "A tool or a command is missing", tone: "warn" },
+  needs_authorization: { label: "Needs your authorization", tone: "warn" }, manual: { label: "Needs a check by you", tone: "accent" },
+  unknown: { label: "Unclear", tone: "neutral" },
+};
+export const CODE_STATUS = {
+  PENDING: { label: "Not approved yet", tone: "neutral" }, CHANGES_REQUIRED: { label: "Changes requested", tone: "warn" },
+  APPROVED: { label: "Approved", tone: "ok" },
+};
+export const OUTCOMES = {
+  IN_PROGRESS: { label: "In progress", tone: "neutral" }, AWAITING_VALIDATION: { label: "Waiting for verification", tone: "warn" },
+  AWAITING_AUTHORIZATION: { label: "Waiting for your authorization", tone: "warn" },
+  RELEASE_READY: { label: "Every required criterion is verified", tone: "ok" },
+};
+export const EVIDENCE_KINDS = {
+  command: "Command run by PatchRondo", review: "Review of the code", manual: "Check by you", authorization: "Your decision",
+  invalidation: "Earlier evidence stopped counting", restart: "Ledger started again",
+};
+export const EVIDENCE_RESULTS = {
+  passed: ["Passed", "ok"], failed: ["Failed", "danger"], timeout: ["Timed out", "warn"], approved: ["Approved", "ok"],
+  changes_requested: ["Changes requested", "warn"], blocked: ["Blocked", "danger"], granted: ["Authorized", "ok"],
+  denied: ["Not authorized", "neutral"], invalidated: ["Invalidated", "neutral"], restarted: ["Restarted", "warn"],
+};
+export const CAPABILITY_STATES = {
+  verified: ["Observed", "ok"], declared: ["Configured", "accent"], absent: ["Not available", "neutral"], unknown: ["Unknown", "warn"],
+};
+export const REVIEW_OUTCOMES = {
+  SATISFIED: "satisfied", CODE_CHANGES_REQUIRED: "the code has to change", VALIDATION_REQUIRED: "a check is missing",
+  CAPABILITY_BLOCKED: "nobody here has the tools to check it", APPROVAL_REQUIRED: "an operation has to be authorized",
+  MANUAL_ACTION_REQUIRED: "a person has to do something", NOT_ASSESSED: "not assessed",
+};
+
+export function executorName(name, task) {
+  return { developer: `${agentName(task?.developer)} · developer`, reviewer: `${agentName(task?.reviewer)} · reviewer`,
+           runtime: "PatchRondo", user: "You" }[name] || humanize(name);
 }

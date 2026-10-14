@@ -67,7 +67,9 @@ export function taskMessage(task, state) {
   const plan = state?.recovery;
   const lock = task.runtime?.lock;
   switch (task.runtime?.activity) {
-    case "done": return { mood: "done", text: `All patched up! ${rev} approved and the tests passed.` };
+    case "done": return { mood: "done", text: task.acceptance
+      ? `All patched up! ${rev} approved the code, the tests passed and every required criterion has its evidence.`
+      : `All patched up! ${rev} approved and the tests passed.` };
     case "blocked": return { mood: "error", text: "I'm stuck on this one. The review explains why; a new task is the way forward." };
     case "starting": return { mood: "working", text: "Starting the run…" };
     case "running": {
@@ -100,6 +102,15 @@ export function taskMessage(task, state) {
       if (error?.kind === "quota") return { mood: "waiting", text: `${agentName(error.provider)} reached a usage limit. I can only wait for it to reset; resume when it has.` };
       if (error?.kind === "tests_disabled")
         return { mood: "attention", text: "I can't finish without the project's tests, and I never run them without your say-so. Allow them below when you are ready." };
+      if (error?.kind === "awaiting_validation" || error?.kind === "awaiting_authorization") {
+        const counts = task.acceptance;
+        const left = counts ? counts.required - counts.required_verified : 0;
+        if (counts?.outcome === "RELEASE_READY")
+          return { mood: "done", text: "Every required criterion is verified. Press Complete in “Criteria and checks” and I'll close the task: no agent is called for that." };
+        if (counts?.outcome === "AWAITING_AUTHORIZATION")
+          return { mood: "attention", text: `The code is approved. ${plural(left, "criterion", "criteria")} can't be finished by ${dev}, and something in there needs your say-so first: I never download or publish anything by myself.` };
+        return { mood: "attention", text: `The code is approved, so I didn't send it back to ${dev} for things ${dev} can't do. ${plural(left, "required criterion", "required criteria")} still ${left === 1 ? "needs" : "need"} a check: “Criteria and checks” shows what and why.` };
+      }
       const prepare = preparation(task);
       if (prepare.state === "problem") {
         if (prepare.record.repair === "acl") return { mood: "attention", text: "A small fix is needed so that Codex can read the project. Press Repair automatically and I'll take care of it." };

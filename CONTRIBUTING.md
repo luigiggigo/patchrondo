@@ -70,7 +70,8 @@ wildcard to Git's `safe.directory`, or enables tests: when a problem cannot be
 solved without one of these, the task pauses and says why.
 
 After changing quota recovery, error classification, the environment check,
-locking, process verification or what the interface may start, also run
+locking, process verification, the acceptance criteria and their evidence, or
+what the interface may start, also run
 `python tools/recovery_checks.py`. `protections` removes one safeguard at a
 time from a temporary copy of the sources and expects the tests named for it to
 fail; your working tree is not modified. When you add a safeguard, add
@@ -97,6 +98,12 @@ have them re-read on every request while you work.
   which actions are possible.
 - New endpoints go through `app.py` and get the same checks as the others in
   `ui.py`; add them to the token test in `tests/test_ui.py`.
+- A criterion is verified only by records of the evidence ledger. Do not add
+  a path that marks one verified from what an agent says, do not let the
+  reviewer verify a criterion that is not its to verify, and do not add an
+  action to the page that the backend does not carry out. A new kind of
+  evidence is a new record kind in `evidence.py`, written under the task lock.
+  Capability detection reads and never starts anything; it never grants.
 - Live activity only observes. What `streams.py` emits must come from a line
   the CLI printed: add a line or item type from the CLI's documentation or
   source and name the version; never record internal reasoning; never take a
@@ -108,8 +115,9 @@ Check the result in a real browser with
 or Edge (or `PATCHRONDO_BROWSER`), uses scripted providers only and covers the
 setup wizard, a live run, the live activity of an agent while it runs, an
 interface restart during a run, reconnection, the
-recovery states, two projects, a 0.1 home, responsive layout, keyboard use and
-large logs. Without a browser it reports that it was skipped. It is a local
+recovery states, two projects, a 0.1 home, responsive layout, keyboard use,
+large logs, the one-press start, the agent settings and the criteria of a
+task with their evidence. Without a browser it reports that it was skipped. It is a local
 check and not part of CI.
 
 Contributions are distributed under the project's MIT license. Only submit code

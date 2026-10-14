@@ -10,7 +10,7 @@ import { agentChip } from "./ui.js";
 const STEP_TONE = { done: "ok", current: "accent", waiting: "wait", paused: "warn", error: "danger", next: "neutral", pending: "neutral" };
 const STEP_WORD = { done: "completed", current: "in progress", waiting: "waiting", paused: "paused here", error: "stopped here", next: "next", pending: "not started" };
 
-// Four small segments summarizing the workflow in a list row.
+// One small segment per step, summarizing the workflow in a list row.
 export function miniSteps(task) {
   const steps = workflow(task);
   const label = steps.map((step) => `${step.label}: ${STEP_WORD[step.step]}`).join(", ");
@@ -18,10 +18,10 @@ export function miniSteps(task) {
     steps.map((step) => h("span", { class: `step-seg ${step.step} tone-${STEP_TONE[step.step]}` })));
 }
 
-// The full workflow: Prepare -> Develop -> Test -> Review -> Complete, with the repeat loop.
+// The full workflow: Prepare -> Develop -> Test -> Review -> Validate -> Complete, with the repeat loop.
 export function workflowBar(task) {
   const steps = workflow(task);
-  const icons = { prepare: "shield", develop: "code", test: "flask", review: "eye", complete: "flag" };
+  const icons = { prepare: "shield", develop: "code", test: "flask", review: "eye", validate: "tasks", complete: "flag" };
   const max = task.max_iterations;
   return h("div", { class: "workflow card" },
     h("ol", { class: "workflow-steps", "aria-label": "Workflow" }, steps.map((step, index) => [
@@ -57,7 +57,7 @@ export function taskRow(task, { showProject = true } = {}) {
 export function taskSig(task, extra = "") {
   return [task.title, task.runtime?.activity, task.phase, task.status, task.iteration, task.max_iterations, task.developer,
     task.reviewer, ago(task.updated_at, true), state.projects.get(task.project)?.name, task.environment?.status,
-    task.environment?.stage, extra];
+    task.environment?.stage, task.acceptance?.outcome, extra];
 }
 
 export function eventRow(event, task, { showTask = false } = {}) {

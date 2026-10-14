@@ -24,10 +24,12 @@ import threading
 import time
 from typing import NamedTuple
 
-from . import __version__, activity, agents, doctor, environment, providers, rag, recovery, repair, runinfo, streams
+from . import __version__, acceptance as criteria, activity, agents, doctor, environment, evidence, providers, rag, recovery, repair
+from . import runinfo, streams
 from .commands import join_command, split_command
-from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, config, create_task, effective_config,
-                   record_environment, refresh_agent_settings, validate_config, validate_overrides)
+from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config, create_task,
+                   decide_authorization, effective_config, preflight, recheck_acceptance, record_environment,
+                   refresh_agent_settings, validate_config, validate_overrides)
 from .storage import FileMutex, LockBusy, TaskLock, now, private_dir, read_json, save_json
 from .workspace import NotFound, Project, Workspace
 
@@ -57,6 +59,8 @@ QUICK_TITLE = 80
 ENVIRONMENT_FIELDS = ("status", "stage", "error_kind", "cause", "message", "provider", "repair", "repair_available",
                       "repair_applied", "requires_user_action", "checked_at")
 CONFIRMABLE_REPAIRS = {"git_trust"}  # repairs that are a decision of the user and never run unattended
+ACCEPTANCE_FIELDS = ("total", "required", "verified", "required_verified", "failed", "blocked", "awaiting_authorization",
+                     "awaiting_manual", "unknown", "open")
 
 
 class RunsAtExit(NamedTuple):
@@ -869,7 +873,9 @@ class App:
     def _task_agents(self, state: dict, cfg: dict | None) -> dict:
         """For the task page: what the step in progress is frozen with, and what the settings of now would give."""
         runs = state.get("agent_runs") if isinstance(state.get("agent_runs"), dict) else {}
-        pending = None if state.get("status") in {"done", "blocked"} else "developer" if state.get("phase") == "develop" else "reviewer"
+        # At `validate` no agent is called: nothing is pending for either role.
+        pending = None if state.get("status") in {"done", "blocked"} or state.get("phase") == "validate" \
+            else "developer" if state.get("phase") == "develop" else "reviewer"
         try:
             layers, error = agents.layers(self.ws.root, cfg, state), None
         except (ValueError, OSError) as exc:
@@ -970,9 +976,21 @@ class App:
                 pass
         signature = _signature(path / RUN_LOG)
         item["log_size"] = signature[1] if signature else 0
+        item["acceptance"] = self._acceptance(state)
         item["agents"] = self._used(state)
         item["runtime"] = runinfo.runtime(path, state, self._owned((project.id, path.name)))
         return item
+
+    @staticmethod
+    def _acceptance(state: dict) -> dict | None:
+        """Results and counts of a task's criteria, as the engine last saved them; None for a task without a record."""
+        block = state.get("acceptance")
+        counts = block.get("summary") if isinstance(block, dict) else None
+        if not isinstance(counts, dict):
+            return None
+        code = block.get("code") if isinstance(block.get("code"), dict) else {}
+        return {"outcome": block.get("outcome"), "code": code.get("status"), "results": block.get("results") or [],
+                **{key: counts.get(key) for key in ACCEPTANCE_FIELDS}}
 
     def collect(self) -> dict:
         """Authoritative view of everything the interface lists: projects, task summaries, settings."""
@@ -1006,9 +1024,8 @@ class App:
             raise ValueError("title, description, developer and reviewer must be strings")
         if len(fields["title"]) > 200:
             raise ValueError("The title must have at most 200 characters")
-        acceptance = payload.get("acceptance", [])
-        if not isinstance(acceptance, list) or not all(isinstance(item, str) for item in acceptance):
-            raise ValueError("acceptance must be a list of strings")
+        # Each criterion is text, or text with what its author says about it: required, categories, depends_on.
+        acceptance = criteria.parse_items(payload.get("acceptance", []))
         overrides = validate_overrides(payload.get("overrides"))
         # The task's own level of the agent settings, checked like any other level before anything is created.
         chosen = agents.clean_layer(payload.get("agent_settings"))
@@ -1018,8 +1035,8 @@ class App:
                                      repository=project.repository and Path(project.repository))
 
         def create() -> dict:
-            task_id, _ = create_task(project.home, acceptance=[item.strip() for item in acceptance if item.strip()],
-                                     overrides=overrides or None, agent_settings=chosen or None, **fields)
+            task_id, _ = create_task(project.home, acceptance=acceptance, overrides=overrides or None,
+                                     agent_settings=chosen or None, **fields)
             with self._cache_lock:
                 self._repos.pop(project.id, None)
             self.changed.set()
@@ -1104,11 +1121,87 @@ class App:
                 config_error = str(exc)
         worktree = state.get("worktree")
         return {"project": project.id, "state": state, "agents": self._task_agents(state, cfg),
+                "acceptance": self._criteria(path, state),
                 "summary": self.task_summary(project, path, state, cfg),
                 "effective": effective, "config_error": config_error,
                 "worktree_exists": isinstance(worktree, str) and Path(worktree).is_dir(),
                 "documents": {key: _text(path / name) for key, name in DOCUMENTS.items()},
                 "logs": [{key: value for key, value in entry.items() if key != "file"} for entry in self._logs(path)]}
+
+    @staticmethod
+    def _criteria(path: Path, state: dict) -> dict:
+        """The criteria of a task with their evidence, read only: nothing is judged again and nothing is written."""
+        problems = []
+        try:
+            record = criteria.Acceptance.load(state)
+        except ValueError as exc:
+            record, problems = None, [str(exc)]
+        ledger = evidence.read(path)
+        if record is not None and not ledger.problems and not ledger.anchored(record.ledger.get("count"), record.ledger.get("head")):
+            problems.append("The evidence ledger no longer holds the records the task state had seen")
+        written = criteria.from_task_text(_text(path / DOCUMENTS["task"]) or "") if record is None else None
+        shown = criteria.view(record, ledger, pending=written)
+        shown["problems"] += problems
+        return shown
+
+    def criteria_preview(self, project: Project, payload: dict) -> dict:
+        """The preflight of a task that does not exist yet: how its criteria would be classified and planned."""
+        unknown = sorted(set(payload) - {"acceptance", "developer", "reviewer", "agent_settings"})
+        if unknown:
+            raise ValueError(f"Unknown field: {', '.join(unknown)}")
+        return preflight(project.home, acceptance=payload.get("acceptance", []), developer=payload.get("developer"),
+                         reviewer=payload.get("reviewer"), agent_settings=payload.get("agent_settings"), agents_root=self.ws.root)
+
+    def _on_criteria(self, project: Project, task_id, payload: dict, fields: set, action) -> dict:
+        """One action of the user on a task's criteria: under the run slot and the task lock, never beside a run.
+
+        With `resume`, a task that would now finish without calling an agent
+        is started, so that it completes. Anything else is left to Resume,
+        which says what it will call.
+        """
+        unknown = sorted(set(payload) - fields - {"resume"})
+        if unknown:
+            raise ValueError(f"Unknown field: {', '.join(unknown)}")
+        resume = payload.get("resume", False)
+        if type(resume) is not bool:
+            raise ValueError("resume must be a JSON boolean (true/false)")
+        self.task_path(project, task_id)
+        with self.run_slot((project.id, task_id)):  # no run of this task starts while its criteria are being judged
+            try:
+                result = action()
+            except LockBusy as exc:
+                raise Conflict("The task is running or its lock is present: its criteria are judged by that run") from exc
+            except AcceptanceRefused as exc:
+                raise Conflict(str(exc)) from exc
+            finally:
+                self.changed.set()
+        if resume and result["completes"]:
+            try:
+                result["run"] = self.start_run(project, task_id, {})
+            except (Conflict, RuntimeError, OSError) as exc:
+                result["run_error"] = str(exc)  # what was recorded is saved either way
+        return result
+
+    def criteria_check(self, project: Project, task_id, payload: dict) -> dict:
+        """Detect capabilities again and judge the criteria of a task from its evidence. No model, no command."""
+        return self._on_criteria(project, task_id, payload, set(),
+                                 lambda: recheck_acceptance(project.home, task_id, agents_root=self.ws.root))
+
+    def criteria_evidence(self, project: Project, task_id, criterion: str, payload: dict) -> dict:
+        """Record a check the user did by hand for one criterion, with where its proof can be found."""
+        return self._on_criteria(project, task_id, payload, {"summary", "reference", "artifact", "passed"}, lambda: attach_evidence(
+            project.home, task_id, criterion, summary=payload.get("summary"), reference=payload.get("reference"),
+            artifact=payload.get("artifact"), passed=payload.get("passed", True), agents_root=self.ws.root))
+
+    def criteria_authorize(self, project: Project, task_id, criterion: str, payload: dict) -> dict:
+        """Record the user's decision about the operation a criterion needs. Granting needs `confirm: true`; nothing is run."""
+        decision = payload.get("decision")
+        if decision not in ("granted", "denied"):
+            raise ValueError("decision must be granted or denied")
+        if decision == "granted" and payload.get("confirm") is not True:
+            raise ValueError("Authorizing an operation is your explicit decision: confirm must be true")
+        return self._on_criteria(project, task_id, payload, {"decision", "confirm"}, lambda: decide_authorization(
+            project.home, task_id, criterion, granted=decision == "granted", agents_root=self.ws.root))
 
     def log_chunk(self, project: Project, task_id, file_id, offset, limit) -> dict:
         """A bounded slice of one listed log file, by byte offset; a negative offset reads from the end."""

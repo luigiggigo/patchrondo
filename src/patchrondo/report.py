@@ -60,12 +60,17 @@ def render_report(state: dict) -> str:
     rows += ["", "## Review", ""]
     if review:
         rows += [f"Verdict: **{review['verdict']}**", "", review.get("summary", ""), ""]
+        if review.get("reported_verdict"):
+            # The verdict is about the code; the answer was settled from its structured parts, never from its prose.
+            rows += [f"The reviewer answered `{review['reported_verdict']}`; settled as `{review['verdict']}` "
+                     f"(`{review.get('normalized')}`).", ""]
         for issue in review.get("issues", []):
             rows.append(f"- **{issue['severity']}** `{issue.get('path', '')}`: {issue['description']}")
     else:
         rows.append("No review completed")
     if state.get("last_error"):
         rows += ["", "## Block/interruption", "", f"`{state['last_error']}`"]
+    rows += _acceptance_rows(state.get("acceptance"))
     rows += _agent_rows(state.get("agent_runs"))
     rows += _environment_rows(state.get("environment"))
     rows += _recovery_rows(state.get("recovery"))
@@ -80,6 +85,35 @@ def render_report(state: dict) -> str:
             row += f" ({', '.join(notes)})" if notes else ""
         rows.append(row)
     return "\n".join(rows) + "\n"
+
+
+def _acceptance_rows(block) -> list[str]:
+    """The criteria of the task as last judged: approval of the code, overall result, and each criterion with its evidence.
+
+    A task created before criteria were tracked, and never run since, has no
+    such record: nothing is said about its criteria.
+    """
+    if not isinstance(block, dict) or not isinstance(block.get("criteria"), list):
+        return []
+    code = block.get("code") if isinstance(block.get("code"), dict) else {}
+    counts = block.get("summary") if isinstance(block.get("summary"), dict) else {}
+    rows = ["", "## Acceptance criteria", "",
+            f"- **Code**: `{code.get('status')}` (the review approved it, the project's commands passed and there are changes)"
+            if code.get("status") == "APPROVED" else f"- **Code**: `{code.get('status')}`",
+            f"- **Overall**: `{block.get('outcome')}`",
+            f"- **Required criteria verified**: {counts.get('required_verified')} of {counts.get('required')}",
+            "", "A criterion is verified only by records of the evidence ledger (`evidence.jsonl`, next to this report).", ""]
+    for criterion in block["criteria"]:
+        if not isinstance(criterion, dict):
+            continue
+        kinds = ", ".join(criterion.get("categories") or []) or "unclassified"
+        records = ", ".join(f"`{name}`" for name in criterion.get("evidence") or []) or "none"
+        rows += [f"- `{criterion.get('id')}` **{criterion.get('status')}** · {'required' if criterion.get('required') else 'optional'}"
+                 f" · {kinds} · done by {criterion.get('executor')}, verified by {criterion.get('verifier')} · evidence: {records}",
+                 f"  {clip(redact(str(criterion.get('text'))), 300)}"]
+        if criterion.get("reason"):
+            rows.append(f"  {clip(redact(str(criterion['reason'])), 400)}")
+    return rows
 
 
 def _environment_rows(record) -> list[str]:

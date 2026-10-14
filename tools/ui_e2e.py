@@ -13,7 +13,10 @@ layout, keyboard and accessibility basics; large logs and many tasks; live
 activity of the agents while they run, across a disconnection and a reload;
 starting a task with one description and one press, the test consent and a
 guided repair of a preparation problem; choosing the model and the options of
-each role on the Agents page and starting a task that really runs with them.
+each role on the Agents page and starting a task that really runs with them;
+the criteria of a task from the preflight of the form to its evidence: a task
+whose code is approved waits instead of going back to the developer, and the
+user's decisions and checks complete it without another agent call.
 
     python tools/ui_e2e.py
     python tools/ui_e2e.py --only wizard --screenshots .test-tmp/shots
@@ -50,7 +53,7 @@ from patchrondo.process import Result as browser_result  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
 from patchrondo.ui import DashboardServer  # noqa: E402
 
-SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality", "start", "agents")
+SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality", "start", "agents", "criteria")
 TEST_CODE = "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"
 
 # Receives the provider name explicitly; it never searches PATH. Asked to stream, it prints its
@@ -922,7 +925,7 @@ def scenario_quality(env: Env) -> None:
     page.wait("Boolean(q('[role=tablist]'))", 8, "the task tabs")
     page.js("(q('[role=tab][aria-selected=true]').focus(), true)")
     page.press("ArrowRight")
-    env.expect("arrow keys move between tabs", "q('[role=tab][aria-selected=true]').textContent.includes('Live Activity') && document.activeElement === q('[role=tab][aria-selected=true]')")
+    env.expect("arrow keys move between tabs", "q('[role=tab][aria-selected=true]').textContent.includes('Criteria and checks') && document.activeElement === q('[role=tab][aria-selected=true]')")
 
     # Accessible names, landmarks, responsive layout and themes on every page.
     routes = ["", "tasks", f"tasks/{project_id}/T-000000000002", f"tasks/{project_id}/T-000000000002/activity",
@@ -1245,7 +1248,7 @@ def scenario_start(env: Env) -> None:
     task_id = page.js("location.hash.split('/')[3].split('?')[0]")
     path = home / "tasks" / task_id
     env.check("a double press created one task", [item.name for item in (home / "tasks").glob("T-*")] == [task_id])
-    env.expect("the workflow starts with the preparation PatchRondo does itself", "qa('.workflow-label')[0].textContent === 'Prepare' && qa('.workflow-label').length === 5")
+    env.expect("the workflow starts with the preparation PatchRondo does itself", "qa('.workflow-label')[0].textContent === 'Prepare' && qa('.workflow-label').length === 6")
     env.expect("the page shows the run without a reload", "q('.task-head').innerText.includes('Running') || q('.task-head').innerText.includes('Paused')", 15)
     paused = env.wait_state(path, lambda s: s["status"] == "paused", 60)
     env.check("the task was developed, then stopped at the test consent before any review",
@@ -1515,9 +1518,167 @@ def scenario_agents(env: Env) -> None:
         env.stop()
 
 
+def scenario_criteria(env: Env) -> None:
+    """Criteria from the preflight to their evidence: approved code waits for what agents cannot do, and a person completes it."""
+    page = env.page
+    repo = make_repo(env.root / "release")
+    env.start()
+    env.open()
+    page.take_problems()  # what the page of the previous, stopped server logged while it was being replaced
+    status, project = env.api("POST", "/api/projects", {"path": str(repo), "name": "release"})
+    env.api("PATCH", f"/api/projects/{project['id']}/config", {"tests": {
+        "enabled": True, "trust_acknowledged": True, "commands": [join_command([sys.executable, "-c", TEST_CODE])]}})
+    env.api("PATCH", "/api/settings", {"selected_project": project["id"], "onboarding_completed": True})
+    home = Path(project["home"])
+    hostile = "[manual] The <b>label</b> <img src=x onerror=alert(1)> reads well"
+    wanted = ["feature.txt contains the word good", "The test suite passes", "Verified inside Mod Organizer 2", "Open a pull request", hostile]
+
+    def card(number: int) -> str:
+        return f"qa('details.criterion')[{number - 1}]"
+
+    def press(number: int, label: str) -> None:
+        page.js(f"([...{card(number)}.querySelectorAll('button')].find((b) => b.textContent.includes({json.dumps(label)})).click(), true)")
+
+    # The form says, before the task exists, what each criterion will take and who can give it.
+    env.go(f"new?project={project['id']}")
+    page.wait("Boolean(q('form.form'))", 8, "the new task form")
+    page.fill("form.form input[type=text]", "Release 1.0")
+    page.fill("form.form textarea", "Create feature.txt containing the word good.")
+    for number, criterion in enumerate(wanted, 1):
+        if number > 1:
+            page.click(text="Add criterion")
+        page.fill(f".criteria .input-row:nth-child({number}) input", criterion)
+    env.expect("the form shows a preflight of the criteria as they are typed",
+               "Boolean(q('.preflight')) && q('.preflight').innerText.includes('Preflight · 5 criteria') && qa('.preflight-row').length === 5", 10)
+    shown = page.js("q('.preflight').innerText")
+    env.check("the preflight tells apart what is automatic, what needs the user and what needs a decision",
+              all(part in shown for part in ("2 · Automatic", "2 · Needs a check by you", "1 · Needs your authorization", "verified by PatchRondo",
+                                             "verified by You")), shown[:900])
+    env.check("it promises nothing it cannot do, and does not stop the task", "Nothing here stops the task from being created" in shown)
+    env.shot("new-task-preflight")
+    before = len(env.calls())
+    page.click(text="Create task")
+    page.wait("location.hash.startsWith('#/tasks/P-')", 15, "the task page")
+    task_id = page.js("location.hash.split('/')[3].split('?')[0]")
+    path = home / "tasks" / task_id
+    created = read_json(path / "state.json")
+    env.check("the task was created with its criteria classified and nothing verified",
+              [(item["id"], item["status"], item["verifier"]) for item in created["acceptance"]["criteria"]] == [
+                  ("AC-01", "PENDING", "reviewer"), ("AC-02", "PENDING", "runtime"), ("AC-03", "AWAITING_MANUAL_VALIDATION", "user"),
+                  ("AC-04", "AWAITING_AUTHORIZATION", "user"), ("AC-05", "AWAITING_MANUAL_VALIDATION", "user")] and len(env.calls()) == before,
+              str(created["acceptance"]["criteria"])[:600])
+    env.expect("the workflow has a Validate step before Complete", "qa('.workflow-label').map((e) => e.textContent).join() === 'Prepare,Develop,Test,Review,Validate,Complete'")
+    page.click(text="Criteria and checks", selector="[role=tab]")
+    env.expect("the task has a section for its criteria", "qa('details.criterion').length === 5 && q('.criteria-panel').innerText.includes('0 of 5 required criteria verified')", 8)
+    env.check("a criterion written by a person stays text", page.js("!q('.criteria-panel img') && !q('.criteria-panel b') && q('.criteria-panel').innerText.includes('<img src=x onerror=alert(1)>')"))
+    env.check("who can do what is one click away, closed until asked for",
+              page.js("Boolean(q('.criteria-panel details.advanced')) && q('.criteria-panel details.advanced').open === false"))
+    page.click(".criteria-panel details.advanced summary")
+    env.expect("it lists every executor of the task", "q('.criteria-panel details.advanced').open && qa('.capabilities > .stack').length === 4", 5)
+    able = page.js("q('.capabilities').innerText")
+    env.check("capabilities belong to each executor: the developer has no shell, PatchRondo runs the tests",
+              "Claude · developer" in able and "No tool that runs commands is among its tools" in able and "Run the project's test commands" in able
+              and "PatchRondo never downloads anything" in able, able[:900])
+
+    # The run: developed, tested by PatchRondo, reviewed once. Then it waits; nothing goes back to the developer.
+    env.control(mode="ok", develop_seconds=0.6, review_seconds=0.6)
+    page.click(text="Overview", selector="[role=tab]")
+    env.run_task()
+    paused = env.wait_state(path, lambda s: s["status"] == "paused", 90)
+    roles = [call["role"] for call in env.calls()[before:]]
+    env.check("the code was approved and the task waits at Validate after one developer and one reviewer call",
+              (paused["phase"], paused["iteration"], paused["last_error"]["kind"], roles) == ("validate", 1, "awaiting_authorization", ["developer", "reviewer"])
+              and paused["acceptance"]["results"] == ["CODE_APPROVED", "AWAITING_AUTHORIZATION"], f"{paused['phase']} {paused['last_error']} {roles}")
+    env.expect("the page says the code is approved and why the task waits", "q('.task-overview').innerText.includes('The code is approved; some criteria need your authorization')", 10)
+    env.expect("the workflow shows the task waiting at Validate, not sent back to Develop",
+               "qa('.workflow-step')[4].classList.contains('paused') && qa('.workflow-step')[4].innerText.includes('waiting for you') && qa('.workflow-step')[1].classList.contains('done')")
+    env.expect("Rondo says it in plain words", "q('.rondo-note').innerText.includes('The code is approved')")
+    env.shot("task-awaiting")
+    page.click(text="Open criteria and checks")
+    env.expect("code approval and the task as a whole are shown apart",
+               "qa('.criteria-stat')[0].innerText.includes('Approved') && qa('.criteria-stat')[1].innerText.includes('Waiting for your authorization')", 8)
+    env.expect("two of five criteria are verified, each by who can verify it",
+               f"q('.criteria-progress').innerText.includes('2 of 5 required criteria verified') && {card(1)}.innerText.includes('Verified') && {card(2)}.innerText.includes('Verified')")
+    page.js(f"({card(2)}.open = true, true)")
+    env.expect("the evidence of the tests is the command PatchRondo ran, with its exit code",
+               f"{card(2)}.innerText.includes('Command run by PatchRondo') && {card(2)}.innerText.includes('exit 0') && {card(2)}.innerText.includes('PatchRondo ·')")
+    env.check("the blocked criteria say why and what to do, opened without a click",
+              page.js(f"{card(3)}.open && {card(4)}.open && {card(3)}.innerText.includes('neither the agents nor PatchRondo can do') "
+                      f"&& {card(4)}.innerText.includes('never done by the agents or by PatchRondo')"), page.js(f"{card(4)}.innerText")[:500])
+    env.check("no action is offered that the backend would refuse",
+              page.js(f"![...{card(1)}.querySelectorAll('button')].length && ![...{card(4)}.querySelectorAll('button')].some((b) => b.textContent.includes('Attach'))"))
+    env.shot("task-criteria")
+
+    # Resume while nothing changed: no event, no provider.
+    env.api("POST", f"/api/projects/{project['id']}/tasks/{task_id}/run", {})
+    time.sleep(2.5)
+    again = read_json(path / "state.json")
+    env.check("resuming a task that waits calls nobody and changes nothing",
+              again["history"] == paused["history"] and len(env.calls()) == before + 2, str(again["history"][-2:]))
+
+    # A decision is the user's, explicit, and runs nothing either way.
+    press(4, "Authorize or decline")
+    env.expect("the authorization dialog says what authorizing means", "Boolean(q('.dialog')) && q('.dialog').innerText.includes('you take the operation on yourself')")
+    page.click(text="Do not authorize", selector=".dialog button")
+    env.expect("a refusal is recorded and shown, and the criterion stays open", f"!q('.dialog') && {card(4)}.innerText.includes('You did not authorize this operation')", 10)
+    press(4, "Change your decision")
+    page.click(text="I authorize it", selector=".dialog button")
+    env.expect("after the authorization the criterion waits for its evidence, not for an agent",
+               f"!q('.dialog') && {card(4)}.innerText.includes('Needs a check by you') && [...{card(4)}.querySelectorAll('button')].some((b) => b.textContent.includes('Attach evidence'))", 10)
+    decided = read_json(path / "state.json")
+    env.check("both decisions are on record, nothing was run for them and the pause says what is still open",
+              [entry["decision"] for entry in decided["history"] if entry["event"] == "authorization_decided"] == ["denied", "granted"]
+              and decided["last_error"]["kind"] == "awaiting_validation" and len(env.calls()) == before + 2, str(decided["last_error"]))
+
+    # Evidence: a statement alone is refused; with where the proof is, it is recorded as the user's.
+    press(4, "Attach evidence")
+    page.fill(".dialog textarea", "Opened the pull request from the task branch")
+    page.click(text="Attach evidence", selector=".dialog button")
+    env.expect("a statement alone is not accepted as evidence", "Boolean(q('.dialog .form-error')) && q('.dialog .form-error').innerText.includes('statement alone is not evidence')", 10)
+    page.fill(".dialog input[type=text]", "https://example.invalid/pull/7 <script>alert(1)</script>")
+    page.click(text="Attach evidence", selector=".dialog button")
+    env.expect("with a reference the check is recorded and the criterion verified", f"!q('.dialog') && {card(4)}.innerText.includes('Verified')", 10)
+    for number, words in ((3, "Loaded the mod in Mod Organizer 2 and played ten minutes"), (5, "Read every label on a phone")):
+        page.js(f"({card(number)}.open = true, true)")
+        press(number, "Attach evidence")
+        page.fill(".dialog textarea", words)
+        page.fill(".dialog input[type=text]", "session notes of October 13")
+        page.click(text="Attach evidence", selector=".dialog button")
+        page.wait("!q('.dialog')", 10, "the evidence to be recorded")
+    done = env.wait_state(path, lambda s: s["status"] == "done", 60)
+    env.check("the last evidence completed the task without another agent call",
+              done["phase"] == "complete" and done["acceptance"]["results"] == ["CODE_APPROVED", "RELEASE_READY"] and len(env.calls()) == before + 2,
+              f"{done['acceptance']['results']} {[call['role'] for call in env.calls()[before:]]}")
+    env.expect("the page follows to Done with every required criterion verified",
+               "q('.task-head').innerText.includes('Done') && q('.criteria-progress').innerText.includes('5 of 5 required criteria verified')", 10)
+    page.js(f"({card(4)}.open = true, true)")
+    env.check("text a person typed as evidence stays text", page.js("!q('.criteria-panel script') && q('.criteria-panel').innerText.includes('<script>alert(1)</script>')"))
+    ledger = [json.loads(line) for line in (path / "evidence.jsonl").read_text(encoding="utf-8").splitlines()]
+    env.check("the ledger holds the command, the review, the decisions and the checks, chained",
+              [entry["kind"] for entry in ledger] == ["command", "review", "authorization", "authorization", "manual", "manual", "manual"]
+              and all(entry["prev"] == (ledger[index - 1]["hash"] if index else "") for index, entry in enumerate(ledger)), str([entry["kind"] for entry in ledger]))
+    page.js(f"({card(2)}.open = true, true)")
+    press(2, "Open log")
+    env.expect("evidence opens the log it refers to", "q('[role=tab][aria-selected=true]').innerText.includes('Logs') && q('.log-select').value.endsWith('test-01.log')", 10)
+    env.shot("task-criteria-done")
+
+    # A task from before criteria were tracked: nothing is claimed about it.
+    status, old = env.api("POST", f"/api/projects/{project['id']}/tasks", {"title": "Older task", "description": "d", "developer": "claude",
+                                                                       "reviewer": "codex", "acceptance": ["It works"]})
+    legacy = home / "tasks" / old["id"]
+    state = read_json(legacy / "state.json")
+    del state["acceptance"]
+    save_json(legacy / "state.json", {**state, "status": "done", "phase": "complete", "review": {"verdict": "APPROVED", "summary": "ok", "issues": []}})
+    env.go(f"tasks/{project['id']}/{old['id']}/criteria")
+    env.expect("a task from before criteria were tracked is shown as such, with nothing verified in retrospect",
+               "q('.criteria-panel').innerText.includes('created before criteria were tracked') && q('.criteria-panel').innerText.includes('It works') && !q('details.criterion')", 10)
+    env.clean_console("criteria", allow=("status of 400",))  # the evidence the scenario has refused
+    env.stop()
+
+
 SCENARIO_FUNCTIONS = {"wizard": scenario_wizard, "run": scenario_run, "live": scenario_live, "restart": scenario_restart, "reconnect": scenario_reconnect,
                       "recovery": scenario_recovery, "projects": scenario_projects, "legacy": scenario_legacy, "quality": scenario_quality,
-                      "start": scenario_start, "agents": scenario_agents}
+                      "start": scenario_start, "agents": scenario_agents, "criteria": scenario_criteria}
 
 
 def main(argv: list[str] | None = None) -> int:
