@@ -13,7 +13,7 @@ October 9 and 10, 2026; the CI runs for those commits are recorded in
 **0.2.0** is published as source on `main`: the interface was pushed on
 October 10, 2026, live activity on October 11, 2026, in commit `c9f6e1e`, and
 the failure classification correction the same day in commit `6937d9f`.
-[REVIEW.md](REVIEW.md#current-source-and-ci-status-october-12-2026) records the
+[REVIEW.md](REVIEW.md#current-source-and-ci-status-october-14-2026) records the
 current commit's CI status and the dated local checks. The GitHub repository
 has no version tags or GitHub Releases as checked on October 12, 2026.
 Source publication, a versioned release and publishing to PyPI are separate
@@ -26,13 +26,17 @@ tagged or released. Its local validation is recorded in
 [REVIEW.md](REVIEW.md#zero-configuration-and-self-healing-october-11-2026).
 The CI run for that commit failed in one of six jobs; the correction of the
 fault it found, in the reader of the activity journal, is published in commit
-`a529273`, pushed on October 12, 2026 (20:43 +02:00) and the head of `main`
-as checked that day. Its CI run passed in all six jobs. See
+`a529273`, pushed on October 12, 2026 (20:43 +02:00). Its CI run passed in
+all six jobs. See
 [REVIEW.md](REVIEW.md#activity-journal-reader-october-12-2026).
 
-The agent settings (models and CLI options per role, the Agents page) of
-October 12, 2026 keep the same package version. Their validation is recorded
-in [REVIEW.md](REVIEW.md#agent-settings-october-12-2026).
+The agent settings (commit `77cdc14`, October 12, 2026), the test consent
+before the review (`b7347fe`, October 13) and the capability and acceptance
+engine (`303a8d3`, pushed on October 14, 2026 at 22:14 +02:00 and the head of
+`main` as checked that day) keep the same package version. Their validation
+is recorded in [REVIEW.md](REVIEW.md); the
+[current status](REVIEW.md#current-source-and-ci-status-october-14-2026)
+lists the CI runs of these commits.
 
 The repository is already initialized and has an `origin` remote. Future updates
 do not require `git init` or creating another GitHub repository.

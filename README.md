@@ -32,12 +32,13 @@
 **Version 0.2.1.** The source has been public on
 [GitHub](https://github.com/luigiggigo/patchrondo) since October 8, 2026
 (0.1.0). The 0.2.0 interface and live activity are published as source on
-`main`, and so is 0.2.1, the environment check with its repairs and the
-one-press start, in commit `624f60e`. One of the six CI jobs failed for that
-commit, on a timing fault in the reader of the activity journal; its
-correction is published in commit `a529273`, the head of `main`, whose CI run
-passed in all six jobs (checked October 12, 2026). The repository has no
-version tags or GitHub Releases; the
+`main`, and so is 0.2.1: the environment check with its repairs and the
+one-press start (commit `624f60e`), then the agent settings, the test consent
+before the review and the capability and acceptance engine, in commit
+`303a8d3`, the head of `main`. One of the six CI jobs failed for that commit
+(Python 3.13 on Windows), on a fault of the interface server that the
+changelog describes under October 14, 2026 (checked October 14, 2026). The
+repository has no version tags or GitHub Releases; the
 [changelog](CHANGELOG.md) says what each version contains and the
 [technical review](docs/REVIEW.md) what was checked, where and when.
 
@@ -1031,7 +1032,7 @@ change; they last passed on native Windows with both Pythons earlier the same
 day). These results come from the computers named in the
 [technical review](docs/REVIEW.md#capability-and-acceptance-engine-october-13-2026)
 and are separate from GitHub CI; the review also records
-[the published commit and its CI status](docs/REVIEW.md#current-source-and-ci-status-october-12-2026)
+[the published commit and its CI status](docs/REVIEW.md#current-source-and-ci-status-october-14-2026)
 as checked on October 12, 2026, and
 [what was checked for 0.2.1](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026).
 Tests use temporary Git

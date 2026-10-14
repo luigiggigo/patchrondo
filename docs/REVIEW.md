@@ -6,7 +6,8 @@ checks and the automatic quota recovery change: October 10, 2026. PatchRondo
 activity and publication-status update: October 11, 2026. Environment check,
 repairs and one-press start (0.2.1): October 11, 2026. Activity journal reader
 correction and agent settings: October 12, 2026. Test consent before the
-review, and the capability and acceptance engine: October 13, 2026.
+review, and the capability and acceptance engine: October 13, 2026. Refused
+writes answered on Windows and publication-status update: October 14, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -14,19 +15,36 @@ repository was present in those original directories. A local, ignored
 Each section below says which code it covers: a published commit or a local
 working tree at its date.
 
-## Current source and CI status (October 12, 2026)
+## Current source and CI status (October 14, 2026)
 
 The source on `main` is 0.2.1, at
-[`a529273`](https://github.com/luigiggigo/patchrondo/commit/a529273f68d773066463406d9404e7cba4e11f1a),
-pushed on October 12, 2026 (20:43 +02:00): 0.2.0 with the interface, live
+[`303a8d3`](https://github.com/luigiggigo/patchrondo/commit/303a8d3b33fe09e762ee5e1fa3ae4ebda99b59f1),
+pushed on October 14, 2026 (22:14 +02:00): 0.2.0 with the interface, live
 activity and the streaming failure correction, the environment check, repairs
 and one-press start of 0.2.1 (commit
 [`624f60e`](https://github.com/luigiggigo/patchrondo/commit/624f60e77ce4122473af472931371d2faf15167b)),
-and the correction of the activity journal reader. The remote commit (`git
+the correction of the activity journal reader (`a529273`), the agent settings
+(`77cdc14`), the test consent before the review (`b7347fe`) and the
+capability and acceptance engine (`303a8d3`). The remote commit (`git
 ls-remote`), the empty tag list and the empty GitHub Releases list were
-checked on October 12, 2026 (exit status 0). There is no tagged release.
+checked on October 14, 2026 (exit status 0). There is no tagged release.
 
-Checked with `gh run view` the same day:
+Checked with `gh run list` and `gh run view` the same day:
+
+- [CI run 38630375033](https://github.com/luigiggigo/patchrondo/actions/runs/38630375033)
+  for `303a8d3` **failed**. Five of its six jobs passed. The job for Python
+  3.13 on `windows-latest` ran 577 tests with one error and 11 skipped, and
+  its package check did not run. The error and its correction are described
+  under [Refused writes answered on Windows](#refused-writes-answered-on-windows-october-14-2026).
+- [CI run 38454139603](https://github.com/luigiggigo/patchrondo/actions/runs/38454139603)
+  for `b7347fe` **failed** without a failing test: the four Ubuntu and
+  Windows jobs passed, and both macOS jobs ended after 15 minutes because no
+  hosted runner picked them up ("The job was not acquired by Runner of type
+  hosted even after multiple attempts"). That commit was not tested on macOS
+  in CI.
+- [CI run 38311781412](https://github.com/luigiggigo/patchrondo/actions/runs/38311781412)
+  for `77cdc14` completed **successfully** in all six jobs.
+
 [CI run 38292863463](https://github.com/luigiggigo/patchrondo/actions/runs/38292863463)
 for `a529273` completed **successfully** in all six jobs (Python 3.11 and
 3.13 on Ubuntu, Windows and macOS).
@@ -55,6 +73,74 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Refused writes answered on Windows (October 14, 2026)
+
+This section covers a correction to `ui.py`, its regression test in
+`tests/test_ui.py` and its mutation protection, developed on top of
+`303a8d3`. The package version is unchanged, 0.2.1.
+
+**What CI found.** In run 38630375033 for `303a8d3`, the job for Python
+3.13.15 on `windows-latest` failed with one error out of 577 tests:
+`test_ui.ProtectionTests.test_every_api_route_requires_the_session_token`,
+for `POST /api/projects/P-00000000/tasks/T-000000000000/run` with the token
+`wrong`. Reading the status line of the answer raised `ConnectionAbortedError:
+[WinError 10053]`. The other five jobs ran the same test and passed, as did
+the native Windows runs recorded for the acceptance engine below.
+
+**Cause.** `http.client` writes the headers of a request and its body with
+two separate calls. The test server runs in a thread of the same process, so
+it can read the headers, refuse them with 401 and close the connection before
+the client writes the body. That body then meets a closed socket, the server's
+system answers with a reset, and Windows discards the answer the client has
+received but not read. Every write refused on its headers (token, Host,
+Origin, content type, size) was exposed; a browser would have shown a network
+error instead of the refusal. The server is the one of 0.2.0; the route that
+failed is not new.
+
+**Correction.** `DashboardServer.shutdown_request` closes only the sending
+side after the answer, then reads and discards what the client still sends,
+at most `MAX_BODY` (256 kB) and for at most `LINGER_SECONDS` (two seconds) in
+all, until the client closes; then the connection is closed. No check moved
+and no refused body is parsed. The handler threads are daemon threads, so the
+wait never delays the closing of the dashboard.
+
+**Regression test.**
+`test_a_refused_write_is_answered_when_its_body_arrives_after_the_answer`
+sends the headers with a wrong token, waits until the answer has arrived and
+the server has finished with the request, then sends the body. Against the
+previous `ui.py` it failed 5 times out of 5 on native Windows with Python
+3.13.3 and the same `ConnectionAbortedError` (WinError 10053). On WSL2 with
+Python 3.12.3 the previous server let the answer through but the reset stayed
+recorded on the socket: the test's check of `SO_ERROR` failed 5 times out of
+5 with 32 (`EPIPE`). With the correction it passed 5 times out of 5 on both.
+The first version of the test, which held the body in the server's buffer
+while the headers were checked, passed against the previous code and was
+replaced. The protection check removes the wait and expects
+`test_ui.ProtectionTests` to fail.
+
+Validation after the correction, on October 14, 2026:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 578 tests, 567 passed, 11 skipped, 361.402 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 578 tests, 567 passed, 11 skipped, 329.756 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 578 tests, 560 passed, 18 skipped, 159.303 s | 0 |
+| Protections | WSL2, Python 3.12.3: 142 of 142 removed safeguards detected, 0 missed (one of them new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (interruption and stale-lock scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Browser, all twelve scenarios | Native Windows, Python 3.13.3, Chrome 155.0.8059.79 headless: 350 passed, 0 failed | 0 |
+| Build and `twine check` | Native Windows: sdist and wheel of 0.2.1 built outside the repository; both passed | 0 / 0 |
+| Publication scanner | 115 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass. Every provider was scripted: no model was
+called. The opt-in tests in the real Codex sandbox were not run:
+`environment.py`, `preflight.py`, `winacl.py`, `repair.py` and
+`core._environment` did not change. Windows Server on GitHub's runners was
+not reproduced locally; the failure is a race, so a passing run does not
+show its absence. What shows that this cause is removed is the regression
+test, which forces the order in which the body arrives.
 
 ## Capability and acceptance engine (October 13, 2026)
 

@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
 import sqlite3
 import sys
 import time
@@ -33,6 +34,7 @@ from .live import Hub
 from .workspace import NotFound
 
 MAX_BODY = 256_000
+LINGER_SECONDS = 2  # how long a finished connection waits for the client to close its side
 HEARTBEAT_SECONDS = 10
 ACTIVITY_POLL_SECONDS = 0.2  # how often an open activity stream looks at its journal
 ASSET_TYPES = {".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -88,6 +90,28 @@ class DashboardServer(ThreadingHTTPServer):
         if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
             return  # the browser closed the connection or went silent: nothing to report
         super().handle_error(request, client_address)
+
+    def shutdown_request(self, request) -> None:
+        """Close a connection without losing the answer just written.
+
+        A write refused on its headers leaves its body unread, or still on its
+        way: a body that meets a closed socket resets the connection, and
+        Windows then drops the answer the client has not read yet. After the
+        answer, what the client still sends is read and discarded, within
+        MAX_BODY and LINGER_SECONDS, until it closes its side.
+        """
+        try:
+            request.shutdown(socket.SHUT_WR)
+            deadline, left = time.monotonic() + LINGER_SECONDS, MAX_BODY
+            while left > 0 and (wait := deadline - time.monotonic()) > 0:
+                request.settimeout(wait)
+                chunk = request.recv(min(left, 65536))
+                if not chunk:
+                    break
+                left -= len(chunk)
+        except OSError:
+            pass  # the client is gone, went silent or reset the connection itself
+        self.close_request(request)
 
 
 class DashboardHandler(BaseHTTPRequestHandler):

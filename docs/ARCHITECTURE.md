@@ -178,7 +178,12 @@ with a fresh nonce per response; scripts and style sheets carry that nonce and
 are served from a dictionary of package files built at startup, so a request
 can only name a file that was collected. Nothing is loaded from another origin.
 Errors have one shape, `{"error", "code"}`, with 400, 401, 403, 404, 409, 413,
-415 or 500.
+415 or 500. After an answer the server closes only its sending side, then
+reads and discards what the client still sends, at most 256 kB and for at
+most two seconds (`LINGER_SECONDS`), before it closes the connection. A write
+refused on its headers leaves its body unread or still on its way; closing
+over it would reset the connection, and Windows drops an answer the client
+has not read when that happens.
 
 | Route | Purpose |
 |---|---|

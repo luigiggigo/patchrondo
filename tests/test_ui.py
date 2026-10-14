@@ -172,6 +172,25 @@ class ProtectionTests(ServerCase):
                             f"Content-Type: application/json\r\nContent-Length: {length}\r\n\r\n").encode())
             return int(client.recv(64).split()[1])
 
+    def test_a_refused_write_is_answered_when_its_body_arrives_after_the_answer(self):
+        # http.client writes the headers and the body separately, and a server thread can refuse the headers and
+        # finish before the body is written. A body that reaches a closed socket resets the connection, and
+        # Windows then drops the answer the client has not read yet (CI run 38630375033).
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as client:
+            client.sendall((f"POST /api/projects HTTP/1.1\r\nHost: 127.0.0.1:{self.port}\r\nX-PatchRondo-Token: wrong\r\n"
+                            "Content-Type: application/json\r\nContent-Length: 2\r\n\r\n").encode())
+            client.recv(1, socket.MSG_PEEK)  # the answer has arrived
+            time.sleep(0.2)  # and the server has finished with the request
+            client.sendall(b"{}")
+            time.sleep(0.2)
+            received = b""
+            while chunk := client.recv(65536):
+                received += chunk
+            self.assertEqual(client.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR), 0)  # Linux delivers the answer and records the reset
+        self.assertTrue(received.startswith(b"HTTP/1.0 401 "), received[:40])
+        self.assertIn(b'"code": "unauthorized"', received)
+        self.assertFalse(self.home.exists())
+
     def test_an_unexpected_fault_is_answered_in_the_same_shape(self):
         with patch.object(self.app.ws, "settings", side_effect=TypeError("boom")), patch("sys.stderr", new_callable=io.StringIO) as err:
             response, data = self.get("/api/settings")

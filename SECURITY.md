@@ -257,7 +257,10 @@ is generated at start, printed once in the link, passed in the URL fragment
 (never in a query string, so it does not reach server logs or Referer
 headers), kept by the page for the browser tab and removed from the address
 bar. Writes must also be JSON, at most 256 kB, and are refused with a foreign
-Origin header. The page is served with a nonce-based Content-Security-Policy
+Origin header. The body of a refused write is never processed: after the
+answer it is read and discarded, at most 256 kB and for at most two seconds,
+so that closing the connection does not reset it before the refusal is read.
+The page is served with a nonce-based Content-Security-Policy
 (`default-src 'none'`, scripts and styles only with the nonce, images and
 requests only from the same origin, no framing) and loads nothing from
 another origin. Keep the printed link private: whoever has the token can do

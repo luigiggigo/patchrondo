@@ -9,7 +9,30 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Refused writes answered on Windows — October 14, 2026
+
+- The interface no longer loses its answer to a write it refuses on the
+  headers: a missing or wrong session token, a foreign Host or Origin, a
+  content type that is not JSON or a size out of bounds. A client may send the
+  headers and the body separately, as Python's `http.client` does. When the
+  server had answered and closed the connection before the body arrived, the
+  body met a closed socket and the connection was reset, and on Windows the
+  client lost the answer it had not read yet: it saw a network error instead
+  of the refusal. After an answer the server now closes only its sending
+  side, then reads and discards what the client still sends, at most 256 kB
+  and for at most two seconds, until the client closes. A refused body is
+  still never processed, and the checks keep their order.
+- The fault dates from the interface of 0.2.0. It was found by the CI run for
+  `303a8d3`: one of six jobs (Python 3.13 on `windows-latest`) failed in
+  `test_every_api_route_requires_the_session_token` with
+  `ConnectionAbortedError` (WinError 10053); the other five passed. A
+  regression test sends the body after the answer. Against the previous
+  server it fails on native Windows with the same error and on WSL2 with the
+  reset recorded on the socket. A mutation check protects the correction.
+
 ### Capability and acceptance engine — October 13, 2026
+
+Published on `main` in commit `303a8d3` on October 14, 2026 (22:14 +02:00).
 
 A release task had reached its sixth iteration with `CHANGES_REQUESTED` every
 time. Its developer had file tools only and was asked, again and again, for
@@ -88,6 +111,8 @@ loop had one verdict for everything and one place to send it.
 
 ### Test consent before the review — October 13, 2026
 
+Published on `main` in commit `b7347fe` on October 13, 2026 (21:20 +02:00).
+
 - **No review without the test consent.** With tests not enabled, a task
   pauses at the test checkpoint with `tests_disabled` after development and
   before the reviewer is called. Until this change it was reviewed once and
@@ -115,6 +140,8 @@ loop had one verdict for everything and one place to send it.
   `tools/recovery_checks.py`.
 
 ### Agent settings — October 12, 2026
+
+Published on `main` in commit `77cdc14` on October 12, 2026 (23:37 +02:00).
 
 - **Agents page.** A card for the developer and one for the reviewer: who
   plays the role, a preset (*CLI default*, *Fast*, *Balanced*, *Max quality*,

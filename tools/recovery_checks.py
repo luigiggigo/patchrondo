@@ -221,6 +221,10 @@ MUTATIONS = [
              "                idle = self.listeners == 0 and time.monotonic() - self.last_use > IDLE_SECONDS\n"
              "            if idle:\n                with self.cond:\n                    self.thread = None\n                return\n",
              ("test_ui.LiveIdleTests",)),
+    # A write refused on its headers is still answered when its body arrives afterwards (Windows dropped the answer).
+    Mutation("refused write answered with a reset when its body arrives late", "ui.py",
+             "            deadline, left = time.monotonic() + LINGER_SECONDS, MAX_BODY\n",
+             "            deadline, left = time.monotonic(), MAX_BODY\n", ("test_ui.ProtectionTests",)),
     # Live activity only observes: it decides nothing, hides internal reasoning and cannot fail a step.
     Mutation("activity reclassifies a reported CLI error", "providers.py",
              "                outputs = [\"\\n\".join(part for part in (reported, result.stderr.strip()) if part)]\n",
