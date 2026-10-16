@@ -1063,9 +1063,13 @@ checkpoint:
 
 Criteria are `acceptance.Criterion` dataclasses and the block an
 `acceptance.Acceptance`; `load` validates every field and refuses a block it
-does not know. IDs are `AC-01`, `AC-02`, … in the order the criteria were
-given, and never change. A task without criteria has one, about its
-description.
+does not know: another schema `version` (an integer, `acceptance.VERSION`),
+an unknown status or category, a repeated ID, or a criterion whose `evidence`
+names anything but IDs of ledger records (`E-0001`, `E2-0001`) or that is
+`VERIFIED` without naming any. `refresh` never carries a saved status over;
+the last rule keeps a status nobody judged from being shown either. IDs are
+`AC-01`, `AC-02`, … in the order the criteria were given, and never change.
+A task without criteria has one, about its description.
 
 Three questions are kept apart for each criterion:
 
@@ -1304,7 +1308,12 @@ so a review that was about to start waits for the tests to run again. Such a
 task keeps the answers from before outcomes (`explicit_outcomes` is false):
 an approval covers a criterion it did not list. The
 schema is versioned (`acceptance.VERSION`, `evidence.VERSION`); a block that
-cannot be read is rebuilt the same way.
+cannot be read, one written with a later schema version included, is rebuilt
+the same way. Before it is replaced it is kept aside unchanged, with the task,
+the time and the reason, in `acceptance.unread-<digest>.json` next to the
+state (October 16, 2026); `acceptance_planned` names the file. The name comes
+from the block, so a run that stopped before saving the replacement does not
+keep it twice. Nothing is deleted, and nothing reads the kept file again.
 
 ### Limits
 

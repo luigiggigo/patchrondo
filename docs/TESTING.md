@@ -17,12 +17,19 @@ The job is skipped before runner allocation when the repository is private.
 There are no artifact uploads, Actions caches, deployments or paid services.
 CI uses simulated providers without account credentials or real model calls.
 The publication scanner remains a local manual check because binary assets
-require human review. Run the suite locally with:
+require human review.
+
+The full suite and package build/metadata checks belong to CI; repeating them
+locally, including the Python/OS matrix, is not a routine requirement. Local
+validation covers the browser, reliability, recovery protections, real-clock
+and opt-in sandbox checks below, as applicable to the change, plus publication
+scanning. Focused tests remain useful to diagnose failures or verify regressions.
+For example, to check quota recovery while developing:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -p test_recovery.py -v
 # Or without installing the package:
-PYTHONPATH=src python -m unittest discover -s tests -v
+PYTHONPATH=src python -m unittest discover -s tests -p test_recovery.py -v
 ```
 
 Dated results and platform coverage are recorded in the
@@ -31,8 +38,8 @@ Dated results and platform coverage are recorded in the
 Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
-test with authenticated accounts. Full package checks are documented in
-[CONTRIBUTING.md](../CONTRIBUTING.md).
+test with authenticated accounts. Package checks run in CI; manual package
+inspection for a versioned release is described in [PUBLISHING.md](PUBLISHING.md).
 
 The preflight can be run in the real Codex sandbox on native Windows. It
 starts the installed CLI's sandbox self-check, sends no prompt and uses no

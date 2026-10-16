@@ -53,14 +53,15 @@ publish packages or source changes.
 
 ## Validate an update
 
+Leave the full unittest matrix, package build and metadata checks to the
+[CI workflow](../.github/workflows/ci.yml). They are not required locally before
+a push or after each edit. Run the applicable checks that CI does not perform
+as described in [TESTING.md](TESTING.md), and review publication findings.
 Run from the directory containing `pyproject.toml`:
 
 ```bash
 python -m pip install -e ".[dev]"
-python -m unittest discover -s tests -v
 python tools/check_publication.py
-python -m build
-python -m twine check dist/*
 ```
 
 For source-only tests, set `PYTHONPATH=src`. Automated checks use synthetic or
@@ -75,7 +76,9 @@ and local agent instructions. It does not inspect Git history or guarantee that
 every secret is absent. Resolve or review each finding, including expected binary
 assets, before publishing; a failed scan is not a clean result.
 
-Build the wheel and sdist from the intended release revision, inspect their file
+For a versioned release, build the wheel and sdist from the intended release
+revision for manual inspection; this is separate from routine source-update
+validation. Inspect their file
 lists and verify that the wheel includes the whole interface:
 `patchrondo/static/index.html`, `static/css/*.css`, `static/js/*.js`,
 `static/js/views/*.js` and the two `.webp` images. A wheel without them
@@ -111,8 +114,10 @@ Git. It is also excluded from public ZIP archives and package distributions.
 Keep it in your local checkout; it is not part of the published source.
 
 When the update is approved for publication, commit with a descriptive message
-and push through the repository's normal review process. Record the local test,
-publication, package and installed-wheel results for the revision being published.
+and push through the repository's normal review process. Record the applicable
+local check and publication-review results, and the CI result for that commit
+when it is available. For a versioned release, also record the manual package
+inspection and installed-wheel results.
 Include OS and Python versions; historical CI results do not validate newer revisions.
 
 ## Create a versioned release

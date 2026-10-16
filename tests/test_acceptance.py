@@ -201,16 +201,36 @@ class ClassificationTests(unittest.TestCase):
         block = json.loads(json.dumps(good.dump()))
         self.assertEqual([c.id for c in Acceptance.load({"acceptance": block}).criteria], ["AC-01", "AC-02"])
         self.assertIsNone(Acceptance.load({}))
-        for change in (lambda b: b.update(version=2), lambda b: b.update(criteria=[]), lambda b: b["criteria"][0].update(status="FINE"),
+        with self.assertRaisesRegex(ValueError, "has schema version 2; this version of PatchRondo reads version 1"):
+            Acceptance.load({"acceptance": {**block, "version": 2}})
+        for change in (lambda b: b.update(version=2), lambda b: b.update(version=True), lambda b: b.update(version="1"),
+                       lambda b: b.update(criteria=[]), lambda b: b["criteria"][0].update(status="FINE"),
                        lambda b: b["criteria"][0].update(id="first"), lambda b: b["criteria"][0].update(required="yes"),
                        lambda b: b["criteria"][0].update(categories=[["CODE"]]), lambda b: b["criteria"][1].update(id="AC-01"),
                        lambda b: b["criteria"][0].update(proof=["word"]), lambda b: b["criteria"][0].update(evidence="E-0001"),
                        lambda b: b["criteria"][0].update(depends_on=["AC-07"]),
-                       lambda b: (b["criteria"][0].update(depends_on=["AC-02"]), b["criteria"][1].update(depends_on=["AC-01"]))):
+                       lambda b: (b["criteria"][0].update(depends_on=["AC-02"]), b["criteria"][1].update(depends_on=["AC-01"])),
+                       lambda b: b["criteria"][0].update(status="VERIFIED", evidence=[]),
+                       lambda b: b["criteria"][0].update(evidence=["the tests passed"])):
             broken = json.loads(json.dumps(block))
             change(broken)
             with self.subTest(broken=broken["criteria"][:1]), self.assertRaises(ValueError):
                 Acceptance.load({"acceptance": broken})
+
+    def test_a_status_that_was_saved_verifies_nothing(self):
+        """Only the ledger verifies: a record that says VERIFIED, with references of the right shape, is judged again."""
+        record = Acceptance.create(acceptance.parse_items(["a", "Checked by hand on a phone"]))
+        record.refresh(evidence.Ledger())
+        block = json.loads(json.dumps(record.dump()))
+        for criterion in block["criteria"]:
+            criterion.update(status="VERIFIED", evidence=["E-0001"], missing=[])
+        block.update(code={"status": "APPROVED", "evidence": "E-0001", "iteration": 1}, outcome="RELEASE_READY")
+        claimed = Acceptance.load({"acceptance": block})
+        self.assertEqual([criterion.status for criterion in claimed.criteria], ["VERIFIED", "VERIFIED"])  # read as it was saved
+        claimed.refresh(evidence.Ledger())
+        self.assertEqual([(criterion.status, criterion.evidence) for criterion in claimed.criteria],
+                         [("PENDING", []), ("AWAITING_MANUAL_VALIDATION", [])])
+        self.assertEqual((claimed.code["status"], claimed.outcome, claimed.results()), ("PENDING", "IN_PROGRESS", []))
 
 
 class CapabilityTests(unittest.TestCase):
@@ -799,6 +819,10 @@ class EngineTests(Case):
         record = self.record(path)
         self.assertEqual([len(criterion.evidence) for criterion in record.criteria], [1, 1, 0])
         self.assertEqual(evidence.read(path).problems, [])
+        # Read back and written again, the record is the one saved, and each reference names a record of the ledger that counts.
+        self.assertEqual(json.loads(json.dumps(record.dump())), before["acceptance"])
+        records = evidence.read(path)
+        self.assertTrue(all(records.counts(records.get(name)) for criterion in record.criteria for name in criterion.evidence))
 
     def test_evidence_about_files_that_changed_no_longer_counts(self):
         """G: a relevant file changes after a check passed, and the evidence is invalidated."""
@@ -948,16 +972,30 @@ class EngineTests(Case):
         self.assertEqual(self.kinds(path), ["command", "review"])  # saved results were never turned into evidence
         self.assertEqual(self.statuses(path), {"AC-01": "VERIFIED", "AC-02": "VERIFIED"})
 
-    def test_a_record_that_cannot_be_read_is_rebuilt_with_nothing_verified(self):
+    def test_a_record_that_cannot_be_read_is_kept_aside_and_rebuilt_with_nothing_verified(self):
         task_id, path, _ = self.task(GOOD, MO2)
-        agents = Agents()
-        run_task(self.home, task_id, adapter=agents)
-        state = self.state(path)
-        state["acceptance"]["criteria"][1]["status"] = "VERIFIED_BY_HAND"
-        save_json(path / "state.json", state)
+        run_task(self.home, task_id, adapter=Agents())
         recheck_acceptance(self.home, task_id)
-        self.assertEqual((self.record(path).source, self.statuses(path)["AC-02"]), ("task.md", "AWAITING_MANUAL_VALIDATION"))
-        self.assertIn("could not be used", [e for e in self.state(path)["history"] if e["event"] == "acceptance_planned"][-1]["note"])
+        self.assertEqual(list(path.glob("acceptance.unread-*.json")), [])  # a record this version reads is never copied
+        saved = self.state(path)["acceptance"]
+        edited = json.loads(json.dumps(saved))
+        edited["criteria"][1]["status"] = "VERIFIED_BY_HAND"
+        later = {**saved, "version": 2, "owner": {"written by": "a later version"}}  # a schema this version does not know
+        for block, reason in ((edited, "unknown category, need, proof or status"), (later, "has schema version 2")):
+            with self.subTest(reason=reason):
+                for _ in range(2):  # the same record again, as after a run that stopped before it saved what replaced it
+                    state = self.state(path)
+                    state["acceptance"] = block
+                    save_json(path / "state.json", state)
+                    recheck_acceptance(self.home, task_id)
+                    self.assertEqual((self.record(path).source, self.statuses(path)["AC-02"]),
+                                     ("task.md", "AWAITING_MANUAL_VALIDATION"))
+                planned = [e for e in self.state(path)["history"] if e["event"] == "acceptance_planned"][-1]
+                kept = read_json(path / planned["kept"])
+                self.assertIn(reason, planned["note"])
+                self.assertIn(reason, kept["reason"])
+                self.assertEqual((kept["task"], kept["acceptance"]), (task_id, block))  # as it was, with what this version ignores
+        self.assertEqual(len(list(path.glob("acceptance.unread-*.json"))), 2)  # one file per record, kept once, none deleted
 
     def test_a_real_bug_goes_to_the_developer_and_the_external_check_stays_apart(self):
         """J: the bug returns to the developer; the external verification stays distinct; neither is lost or mixed."""

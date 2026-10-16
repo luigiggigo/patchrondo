@@ -269,17 +269,39 @@ def _acceptance(path: Path, state: dict) -> criteria.Acceptance:
     run, with nothing taken as verified: what its saved test results and its
     saved review say was never put on record as evidence. A review that was
     about to start therefore waits for the tests to run again.
+
+    A saved record this version cannot read, one written with a later schema
+    version included, is rebuilt the same way after it is kept aside
+    unchanged (`_keep_unread`): nothing of it is lost when it is replaced.
     """
+    kept = None
     try:
         record, why = criteria.Acceptance.load(state), "the task was created before criteria were tracked"
     except ValueError as exc:
         record, why = None, f"the saved record could not be used: {exc}"
+        kept = _keep_unread(path, state, why)
     if record is None:
         record = criteria.Acceptance.create(criteria.from_task_text(_read(path, "task.md", 400_000)), source="task.md")
-        _event(state, "acceptance_planned", source="task.md", note=why[:300], criteria=len(record.criteria))
+        _event(state, "acceptance_planned", source="task.md", note=why[:300], criteria=len(record.criteria),
+               **({"kept": kept} if kept else {}))
         if state.get("phase") == "review":
             state["phase"] = "test"
     return record
+
+
+def _keep_unread(path: Path, state: dict, why: str) -> str:
+    """Put the saved acceptance record of a task aside, unchanged, before a record this version reads replaces it.
+
+    Returns the name of the file, in the task directory. The name comes from
+    the record itself, so a record kept by a run that stopped before it saved
+    the replacement is not kept twice. Nothing is deleted. Under the task lock.
+    """
+    block = state.get("acceptance")
+    digest = hashlib.sha256(json.dumps(block, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    file = path / f"acceptance.unread-{digest}.json"
+    if not file.exists():
+        save_json(file, {"task": state.get("id"), "kept_at": now(), "reason": why, "acceptance": block})
+    return file.name
 
 
 def _ledger(path: Path, state: dict, record: criteria.Acceptance) -> evidence.Ledger:

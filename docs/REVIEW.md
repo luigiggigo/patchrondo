@@ -11,7 +11,8 @@ writes answered on Windows and publication-status update: October 14, 2026.
 The review settled by the kind of an issue, with an outcome for each
 criterion: October 14, 2026, validated on October 14 and 15, 2026. A change
 to the code only for what the code can satisfy, and publication-status
-update: October 16, 2026.
+update: October 16, 2026. Criteria records kept when they cannot be read:
+October 16, 2026, validated on October 16 and 17, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -92,6 +93,98 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Criteria records kept when they cannot be read (October 16, 2026)
+
+This section covers changes to `acceptance.py`, `core.py` (`_acceptance`,
+`_keep_unread`) and `evidence.py`, with their tests and four new mutation
+protections, developed on top of `d4c0ecd`. The package version is unchanged,
+0.2.1.
+
+**The request.** A task contract was asked for: a typed, versioned record of
+the criteria of a task, saved with it and read back, with IDs unique in the
+task, statuses that only evidence can make verified, references to real
+evidence, and older tasks that still load without one. The `acceptance`
+record of section 14 of the architecture is that record: `Acceptance` and
+`Criterion` dataclasses, `acceptance.VERSION`, saved in the atomic write of
+`state.json`, with `evidence` naming records of the hash-chained ledger and
+statuses judged only from it. Nothing parallel to it was added. The fields
+asked for map onto it: the task is the `state.json` that holds the record
+(`id`), the contract version is `version`, creation and update are
+`planned_at` and `updated_at`, a criterion's description is `text`, who
+verifies it is `verifier` (`reviewer`, `runtime`, `user`) with its
+`categories`, and its evidence references are `evidence`.
+
+**What was missing.** Two gaps were found by reading the code:
+
+- A record that `Acceptance.load` refuses, such as one written with a later
+  schema version, was replaced by one read back from `task.md` at the next
+  run or check (`core._acceptance`); only the first 300 characters of the
+  reason survived, in the `acceptance_planned` event. It is now kept aside
+  unchanged, with the task, the time and the reason, in
+  `acceptance.unread-<digest>.json` in the task folder, written atomically
+  before the state that replaces it. The name comes from the record, so a run
+  stopped before it saved the replacement does not keep it twice.
+- `load` accepted a criterion saved as `VERIFIED` that names no evidence, an
+  evidence reference that is not a ledger record ID, and `version: true`
+  (equal to 1 in Python). `refresh` never carried such a status into a
+  decision, but the command line, `report.md` and the task page show saved
+  statuses. All three are now refused. Every version of `acceptance.py` since
+  `303a8d3` reaches `VERIFIED` only when each kind of proof a criterion needs
+  has records, and every criterion needs at least one, so no record the
+  engine saved is affected.
+
+The decisions of the loop are unchanged: a record that cannot be read was
+rebuilt from `task.md` with nothing verified before this change, and still is.
+
+**Tests.** In `tests/test_acceptance.py` (585 tests in all), one test is new
+(`test_a_status_that_was_saved_verifies_nothing`) and one was extended and
+renamed
+(`test_a_record_that_cannot_be_read_is_kept_aside_and_rebuilt_with_nothing_verified`:
+an edited record and one of schema version 2 with a field this version does
+not know, each met twice and kept once). Two were extended: the refused shapes
+of `test_a_saved_record_that_is_not_one_is_refused`, and, in
+`test_criteria_and_evidence_survive_a_restart`, a JSON round trip of the saved
+record with every evidence reference found in the ledger and counting. Run on
+native Windows with Python 3.13.3 against the sources of `d4c0ecd`, the
+renamed test failed (1 failure, 2 errors: nothing was kept) and so did the
+refusal test (1 failure, at the message that names the version); the previous
+`load` accepted each of the three newly refused shapes. Each of the four new
+protections was run alone before the full set and detected.
+
+Validation on October 16 and 17, 2026, on the final code. In WSL2,
+`~/.local/bin` and `/usr/local/bin` were removed from `PATH`, and
+`shutil.which` found neither `claude` nor `codex`:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 585 tests, 574 passed, 11 skipped, 313.504 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 585 tests, 574 passed, 11 skipped, 274.267 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 585 tests, 567 passed, 18 skipped, 151.879 s | 0 |
+| Protections | WSL2, Python 3.12.3: 157 of 157 removed safeguards detected, 0 missed (four of them new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.11 s after the planned time | 0 |
+| Browser, all twelve scenarios, first run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 320 passed, 1 failed | 1 |
+| Browser, all twelve scenarios, second run | The same: 353 passed, 0 failed | 0 |
+| Publication scanner | 118 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+**The failure of the first browser run.** In the `criteria` scenario the task
+created from the form was saved in the project the previous scenario had
+registered (`tuned`), not in the project the form was opened for, so the tool
+did not find its `state.json` and the scenario stopped there. The form takes
+the project named in its address only once the page knows that project
+(`static/js/views/newtask.js`); that project had just been registered through
+the API, and otherwise the form falls back to the project of its draft or the
+selected one. Nothing in this change takes part in that choice. The second
+run passed every check. The race is not corrected here.
+
+The scanner is not a clean pass: `debug.log` is an ignored one-line message
+of Chrome's crash reporter from October 8, 2026, and the images need manual
+review as before. Every provider was scripted: no model was called. Under the
+rule of October 17, 2026 (changelog, "Validation responsibilities"), the
+package build and `twine check` were not run here. The opt-in tests in the
+real Codex sandbox were not run: the environment check did not change.
 
 ## A change to the code only for what the code can satisfy (October 16, 2026)
 

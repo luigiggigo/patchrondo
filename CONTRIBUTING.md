@@ -11,10 +11,7 @@ Use Python 3.11 or later and Git. Real Claude/Codex accounts are not needed for 
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
-python -m unittest discover -s tests -v
 python tools/check_publication.py
-python -m build
-python -m twine check dist/*
 ```
 
 In PowerShell activate with `.venv\Scripts\Activate.ps1`. Full orchestration on
@@ -24,9 +21,13 @@ Keep changes small and explain the behavior before and after. Add regression tes
 for changes to state transitions, consent, provider arguments and process handling.
 Test quota recovery with an injected clock and scripted providers, as
 `tests/test_recovery.py` does: no test may wait in real time or reach a provider CLI.
-Run validation locally with simulated providers. The [CI workflow](.github/workflows/ci.yml)
-also runs the suite on Python 3.11 and 3.13 across Linux, Windows and macOS, and
-checks packages on Linux. It runs only for public repositories on free standard
+The [CI workflow](.github/workflows/ci.yml) owns the full test suite on Python
+3.11 and 3.13 across Linux, Windows and macOS, and the package build and metadata
+checks on Linux. These checks are not required locally before a push or after
+each edit. Run focused tests locally when needed to diagnose a failure or
+verify a regression, using simulated providers. Keep the local checks below
+that CI does not perform, and rerun those applicable to a code change after
+follow-up edits. CI runs only for public repositories on free standard
 GitHub-hosted runners, without artifact uploads, Actions caches or real provider
 calls. Review publication scanner findings locally before publishing.
 Never commit credentials, prompts from private projects,

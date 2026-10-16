@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import time
 
 from .activity import clip, redact
@@ -41,6 +42,7 @@ from .storage import _unshared, now, private_dir
 LEDGER = "evidence.jsonl"
 VERSION = 1
 KINDS = ("command", "review", "manual", "authorization", "invalidation", "restart")
+RECORD_ID = re.compile(r"E\d*-\d{4,}")  # what `append` names a record: E-0001, or E2-0001 in a ledger started again
 MAX_RECORDS = 5000            # records read from one ledger; a task never comes near
 TEXT_LIMIT = 2000             # characters of a summary
 FIELD_LIMIT = 600             # characters of any other text

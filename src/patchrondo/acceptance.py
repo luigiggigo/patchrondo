@@ -1,7 +1,9 @@
 """Acceptance criteria of a task: what each one needs, who can do it, who can verify it, and whether it is.
 
 A task carries its criteria as structured records in `state.json`, under
-`acceptance`, saved in the same atomic write as every checkpoint. For each
+`acceptance`, saved in the same atomic write as every checkpoint. The record
+has a schema version (`VERSION`); one this version cannot read is kept aside
+unchanged before the engine rebuilds it (`core._acceptance`). For each
 criterion this module answers three separate questions:
 
     classification   what kind of work or check it is (`categories`, `needs`), from fixed rules
@@ -42,7 +44,7 @@ from enum import StrEnum
 import json
 import re
 
-from . import capabilities as caps
+from . import capabilities as caps, evidence
 from .activity import clip, redact
 from .storage import now
 
@@ -352,6 +354,12 @@ class Criterion:
                 or not _within(criterion.proof + criterion.missing, PROOF.values()) or not _within(criterion.needs, PROOF) \
                 or not _within([criterion.feasibility], Feasibility) or not _within(criterion.depends_on + criterion.evidence, None):
             raise ValueError(f"Criterion {raw['id']}: unknown category, need, proof or status")
+        # Evidence is named by the records of the ledger that count for a criterion. A status that names none was not
+        # judged from the ledger: `refresh` never carries a saved status over, and nothing that shows one may take it.
+        if not all(evidence.RECORD_ID.fullmatch(name) for name in criterion.evidence):
+            raise ValueError(f"Criterion {raw['id']}: its evidence names something that is not a record of the ledger")
+        if criterion.status == Status.VERIFIED and not criterion.evidence:
+            raise ValueError(f"Criterion {raw['id']}: saved as verified without the records that verify it")
         return criterion
 
 
@@ -536,8 +544,11 @@ class Acceptance:
         raw = state.get("acceptance")
         if raw is None:
             return None
-        if not isinstance(raw, dict) or raw.get("version") != VERSION or not isinstance(raw.get("criteria"), list) \
-                or not raw["criteria"]:
+        if isinstance(raw, dict) and (type(raw.get("version")) is not int or raw["version"] != VERSION):
+            # Written by another version of PatchRondo, or edited by hand: the engine keeps it aside before replacing it.
+            raise ValueError(f"The acceptance record of the task has schema version {raw.get('version')!r:.20}; this "
+                             f"version of PatchRondo reads version {VERSION}")
+        if not isinstance(raw, dict) or not isinstance(raw.get("criteria"), list) or not raw["criteria"]:
             raise ValueError("The acceptance record of the task is not one this version can read")
         criteria = [Criterion.from_dict(item) for item in raw["criteria"]]
         known = {criterion.id for criterion in criteria}

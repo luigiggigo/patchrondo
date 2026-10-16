@@ -9,6 +9,34 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Validation responsibilities — October 17, 2026
+
+- The full unittest matrix and package build/metadata checks belong to GitHub
+  CI, without requiring duplicate runs during development or before a push.
+  Local validation keeps the checks CI does not perform: browser, reliability,
+  recovery protections and real-clock checks, opt-in sandbox checks and
+  publication scanning, as applicable. Focused regression tests remain
+  available locally; manual package inspection belongs to versioned releases.
+
+### Criteria records kept when they cannot be read — October 16, 2026
+
+- **A saved record of the criteria that cannot be read is kept, not
+  overwritten.** A task's `acceptance` record that this version cannot read,
+  such as one written with a later schema version, was replaced at the next
+  run or check by one read back from `task.md`, and only a note in the event
+  history said so. Before it is replaced, it is now kept aside unchanged, with
+  the task, the time and the reason, in `acceptance.unread-<digest>.json` in
+  the task folder, and the `acceptance_planned` event names the file. What
+  the engine does with the task is unchanged: its criteria are read back from
+  `task.md` with nothing taken as verified, as before.
+- **The evidence of a saved criterion names records of the ledger.** `load`
+  refuses a criterion whose `evidence` holds anything but ledger record IDs,
+  a criterion saved as `VERIFIED` that names no record, and a schema
+  `version` that is not the integer 1 (`true` was read as 1). The engine never
+  writes any of these; a record that has one is handled as unreadable. The
+  error names the schema version it found.
+- Four protections were added to `tools/recovery_checks.py`.
+
 ### A change to the code only for what the code can satisfy — October 16, 2026
 
 - **A change to the code asked for a criterion that no change to the files

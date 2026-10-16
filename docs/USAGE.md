@@ -233,6 +233,10 @@ gave there, and its result is the evidence.
 A task created before criteria were tracked keeps working. If it ended, it is
 shown as it was, with nothing said about each criterion; if it runs again,
 its criteria are read from its description with nothing taken as verified.
+A saved record of the criteria that this version cannot read, such as one
+written by a later version, is read again from the description the same way;
+the record is first kept unchanged in `acceptance.unread-<digest>.json` in the
+task folder.
 
 ### Agents: models and options
 
@@ -793,6 +797,7 @@ now without automatic recovery stays possible in both cases.
                                 # settings ("agent_settings"), what each step was started with ("agent_runs")
                                 # and the criteria with their plan, status and results ("acceptance")
           evidence.jsonl        # evidence ledger: append-only, each record chained to the one before
+          acceptance.unread-<digest>.json  # only when a saved "acceptance" record could not be read: kept unchanged
           handoff.md
           feedback.md
           report.md
