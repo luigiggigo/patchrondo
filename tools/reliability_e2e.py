@@ -90,7 +90,7 @@ class GreetingTests(unittest.TestCase):
 '''
 
 # This executable receives the provider name explicitly. It does not search PATH.
-SYNTHETIC_CLI = r'''import json, os, pathlib, sys, time
+SYNTHETIC_CLI = r'''import json, os, pathlib, re, sys, time
 root = pathlib.Path(__file__).parent
 control = json.loads((root / 'control.json').read_text(encoding='utf-8'))
 provider, args = sys.argv[1], sys.argv[2:]
@@ -117,6 +117,10 @@ if reviewer:
     verdict = 'CHANGES_REQUESTED' if scenario == 'feedback' and missing_doc else 'APPROVED'
     issues = [{'severity': 'medium', 'path': 'names.py', 'description': control['feedback']}] if verdict != 'APPROVED' else []
     payload = {'verdict': verdict, 'summary': 'Synthetic acceptance review', 'issues': issues}
+    if verdict == 'APPROVED':
+        # As the review schema asks: an outcome for each criterion the prompt lists.
+        payload['criteria'] = [{'id': name, 'outcome': 'SATISFIED', 'note': ''}
+                               for name in dict.fromkeys(re.findall(r'"id": "(AC-\d{2,4})"', prompt))]
     text = json.dumps(payload)
 else:
     second = '## Current iteration\n2\n' in prompt

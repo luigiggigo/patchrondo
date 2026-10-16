@@ -436,8 +436,11 @@ def parse_review(text: str) -> dict:
 
     `issues[].kind` and `criteria` are what a reviewer adds since criteria
     are tracked; an answer without them is still a review, about the code as
-    a whole. Only an issue about the code can turn an approval into a request
-    for changes: what is missing outside the code is not the developer's.
+    a whole. An approval that names a change the code requires
+    (`acceptance.requires_change`) is a request for changes: a
+    CODE_CHANGES_REQUIRED issue of any severity, or, without a kind, a high
+    or critical one. An observation and what is missing outside the code
+    never are: they are not the developer's.
     """
     clean = text.strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean, flags=re.S | re.I)
@@ -461,10 +464,9 @@ def parse_review(text: str) -> dict:
             not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not isinstance(entry.get("outcome"), str)
             or entry["outcome"] not in set(criteria.ReviewOutcome) or not isinstance(entry.get("note", ""), str) for entry in listed):
         raise AgentFailure("Invalid review: malformed criterion outcome", "invalid_review")
-    code = criteria.ReviewOutcome.CODE_CHANGES_REQUIRED
-    if obj["verdict"] == "APPROVED" and any(x["severity"] in {"high", "critical"} and x.get("kind", code) == code for x in obj["issues"]):
-        obj["verdict"] = "CHANGES_REQUESTED"
-        obj["summary"] = "Inconsistent review: serious issues are present. " + obj["summary"]
+    if obj["verdict"] == "APPROVED" and any(criteria.requires_change(issue) for issue in obj["issues"]):
+        obj.update(verdict="CHANGES_REQUESTED", reported_verdict="APPROVED", normalized="code_change_named",
+                   summary="Inconsistent review: it approves, and names a change the code requires. " + obj["summary"])
     return obj
 
 
@@ -969,8 +971,12 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                                         _review_prompt(path, state, workspace, context, record.reviewer_brief(evidence.read(path))),
                                         workspace, run_dir, settings)
                         # The answer is validated against the plan: what the reviewer says about a criterion it
-                        # cannot verify is recorded and proves nothing.
-                        review = record.settle_review(parse_review(reply.text), iteration)
+                        # cannot verify is recorded and proves nothing. An approval that leaves one of its criteria
+                        # without an outcome is not a complete review: a Resume asks for it again.
+                        try:
+                            review = record.settle_review(parse_review(reply.text), iteration)
+                        except criteria.IncompleteReview as exc:
+                            raise AgentFailure(str(exc), "invalid_review") from exc
                         current = _check_test_context(state, cfg, workspace)
                         state["review"] = review
                         entry = _record_review(path, state, review, current, run_dir)

@@ -21,7 +21,9 @@ can only make a criterion ask for more than the rules did (a check by the
 user instead of a reading of the code); it never verifies a criterion that
 needs a command, an authorization or a person. This is what keeps a missing
 tool from sending the task back to a developer who cannot do anything about
-it.
+it. For a task whose criteria were given when it was created, an approval
+has to give every criterion of the reviewer an outcome of its own; only a
+task read back from its task.md lets an approval cover what it left out.
 
 Results kept apart from the workflow status (`ready`, `running`, `paused`,
 `done`, `blocked`):
@@ -106,9 +108,11 @@ class Outcome(StrEnum):
 # Outcomes that hand a criterion over to somebody else than the developer.
 DEFERRED = frozenset({ReviewOutcome.VALIDATION_REQUIRED, ReviewOutcome.CAPABILITY_BLOCKED, ReviewOutcome.APPROVAL_REQUIRED,
                       ReviewOutcome.MANUAL_ACTION_REQUIRED, ReviewOutcome.NOT_ASSESSED})
-# What an issue of a review can be about. Only the first kind is work for the developer.
+# What an issue of a review can be about. Only the first kind is work for the developer, and it is always a change the code
+# requires; an observation is a remark about the code that asks for nothing.
+OBSERVATION = "OBSERVATION"
 ISSUE_KINDS = (ReviewOutcome.CODE_CHANGES_REQUIRED, ReviewOutcome.VALIDATION_REQUIRED, ReviewOutcome.CAPABILITY_BLOCKED,
-               ReviewOutcome.APPROVAL_REQUIRED, ReviewOutcome.MANUAL_ACTION_REQUIRED)
+               ReviewOutcome.APPROVAL_REQUIRED, ReviewOutcome.MANUAL_ACTION_REQUIRED, OBSERVATION)
 # Pauses of a task whose code is approved while required criteria are not verified.
 PAUSES = {Outcome.AWAITING_VALIDATION: "awaiting_validation", Outcome.AWAITING_AUTHORIZATION: "awaiting_authorization"}
 
@@ -147,6 +151,23 @@ REVIEW_SCHEMA = {
         }},
     },
 }
+
+
+class IncompleteReview(ValueError):
+    """An approval that leaves a criterion of the reviewer without an outcome of its own, where every one needs one."""
+
+
+def requires_change(issue: dict) -> bool:
+    """Whether an issue of a review is a change the code needs before it can be approved.
+
+    Its kind decides, whatever its severity: a CODE_CHANGES_REQUIRED issue
+    always is one, an observation or what is missing outside the code never
+    is. An issue without a kind comes from an answer from before kinds
+    existed; only there does a high or critical severity say so.
+    """
+    if "kind" in issue:
+        return issue["kind"] == ReviewOutcome.CODE_CHANGES_REQUIRED
+    return issue.get("severity") in {"high", "critical"}
 
 # --- classification ---------------------------------------------------------------------
 #
@@ -421,10 +442,15 @@ def _ordered(criteria: list[Criterion]) -> list[Criterion]:
 # --- evidence as proof -------------------------------------------------------------------
 
 class _Proofs:
-    """What the ledger proves now. Only records that were read intact and not invalidated since count."""
+    """What the ledger proves now. Only records that were read intact and not invalidated since count.
 
-    def __init__(self, ledger):
+    `implicit` lets an approval of the code as a whole cover a criterion the
+    reviewer did not list: only for a task read back from its task.md.
+    """
+
+    def __init__(self, ledger, implicit: bool = False):
         self.ledger = ledger
+        self.implicit = implicit
         self.review = ledger.last("review")
         commands = [record for record in ledger.records if record.get("kind") == "command"]
         last = commands[-1].get("run") if commands else None
@@ -444,8 +470,9 @@ class _Proofs:
             if not self.ledger.counts(review):
                 return []
             outcomes = review.get("outcomes") or {}
-            # A criterion the reviewer did not list is covered by an approval of the code as a whole.
-            judged = outcomes.get(criterion, ReviewOutcome.SATISFIED if review.get("verdict") == "APPROVED" else None)
+            # A criterion the reviewer did not list is not judged, unless the task keeps the answers from before outcomes.
+            covered = self.implicit and review.get("verdict") == "APPROVED"
+            judged = outcomes.get(criterion, ReviewOutcome.SATISFIED if covered else None)
             return [review["id"]] if judged == ReviewOutcome.SATISFIED else []
         if proof == "test":
             whole = bool(self.run) and len(self.run) == self.run[0].get("of") and all(self._passed(record) for record in self.run)
@@ -541,6 +568,24 @@ class Acceptance:
 
     def toolchains(self) -> list[str]:
         return sorted({name for criterion in self.criteria for name in criterion.toolchains})
+
+    @property
+    def explicit_outcomes(self) -> bool:
+        """Whether an approval has to give every criterion of the reviewer an outcome of its own.
+
+        True for every task whose criteria were given when it was created. A
+        task read back from its task.md keeps the answers from before
+        outcomes existed: there an approval covers what it did not list.
+        """
+        return self.source != "task.md"
+
+    def for_reviewer(self) -> list[str]:
+        """IDs of the criteria the plan gives to the reviewer: those that need a reading of the code."""
+        return [criterion.id for criterion in self.criteria if "review" in {PROOF[need] for need in criterion.needs}]
+
+    def unjudged(self, listed) -> list[str]:
+        """Criteria of the reviewer that an approval listing `listed` left without an outcome of their own."""
+        return [name for name in self.for_reviewer() if name not in listed] if self.explicit_outcomes else []
 
     # --- planning ----------------------------------------------------------------------
 
@@ -675,7 +720,7 @@ class Acceptance:
         """Plan and judge every criterion again from the ledger; nothing is kept from the previous judgement."""
         if capabilities is not None:
             self.capabilities = capabilities
-        proofs = _Proofs(ledger)
+        proofs = _Proofs(ledger, implicit=not self.explicit_outcomes)
         statuses: dict[str, str] = {}
         for criterion in _ordered(self.criteria):
             criterion.authorization = proofs.decision(criterion.id)
@@ -683,9 +728,14 @@ class Acceptance:
             status, reason, found = self._judge(criterion, proofs, statuses, developing)
             criterion.status, criterion.reason, criterion.evidence = str(status), reason, list(dict.fromkeys(found))
             statuses[criterion.id] = status
+        approval = ledger.get(self.code.get("evidence")) if self.code.get("status") == Code.APPROVED else None
         if self.code.get("status") == Code.APPROVED and not ledger.counts(ledger.get(self.code.get("evidence"))):
             self.code = {"status": str(Code.PENDING), "reason": "The review that approved the code no longer counts: the files "
                                                                 "changed after it, or its record cannot be trusted"}
+        elif approval is not None and (unjudged := self.unjudged(approval.get("outcomes") or {})):
+            # An approval saved before every criterion needed its own outcome: the code is reviewed again.
+            self.code = {"status": str(Code.PENDING), "reason": "The review that approved the code gave no outcome of its own "
+                                                                f"to {', '.join(unjudged)}"}
         self.outcome = self._outcome()
         self.ledger = {"count": ledger.count, "head": ledger.head}
         self.updated_at = now()
@@ -715,17 +765,15 @@ class Acceptance:
         never from its prose: an approval that names a change to the code is
         not an approval, and a request for changes that names none, while
         every criterion of the developer is satisfied or handed over, asks
-        nothing of the developer.
+        nothing of the developer. An approval that leaves a criterion of the
+        reviewer without an outcome, where every one needs its own
+        (`explicit_outcomes`), raises `IncompleteReview` and records nothing.
         """
         known = {criterion.id for criterion in self.criteria}
         listed: dict[str, dict] = {}
         for entry in review.get("criteria") or []:
             if entry["id"] in known and entry["id"] not in listed:
                 listed[entry["id"]] = entry
-        for criterion in self.criteria:
-            entry = listed.get(criterion.id)
-            criterion.review = {"outcome": entry["outcome"], "note": clip(redact(entry.get("note") or ""), NOTE_LIMIT),
-                                "iteration": iteration} if entry else None
         settled = {**review, "criteria": list(listed.values())}
         ignored = len(review.get("criteria") or []) - len(listed)
         if ignored:
@@ -734,7 +782,7 @@ class Acceptance:
                        == ReviewOutcome.CODE_CHANGES_REQUIRED]
         changes = sorted(name for name, entry in listed.items() if entry["outcome"] == ReviewOutcome.CODE_CHANGES_REQUIRED)
         deferred = [name for name, entry in listed.items() if entry["outcome"] in DEFERRED]
-        mine = [criterion.id for criterion in self.criteria if "review" in {PROOF[need] for need in criterion.needs}]
+        mine = self.for_reviewer()
         if review["verdict"] == "APPROVED" and changes:
             settled.update(verdict="CHANGES_REQUESTED", reported_verdict="APPROVED", normalized="code_change_named",
                            summary=f"Inconsistent review: it approves, and asks for a change to the code for {', '.join(changes)}. "
@@ -744,6 +792,14 @@ class Acceptance:
             settled.update(verdict="APPROVED", reported_verdict="CHANGES_REQUESTED", normalized="no_code_change_requested",
                            summary="The review asked for no change to the code: what it found open is recorded with the "
                                    f"criteria ({', '.join(sorted(deferred))}). " + review["summary"])
+        unjudged = self.unjudged(listed) if settled["verdict"] == "APPROVED" else []
+        if unjudged:
+            raise IncompleteReview(f"Incomplete review: it approves the code and gives no outcome to {', '.join(unjudged)}. "
+                                   "Every criterion the reviewer verifies needs an outcome of its own")
+        for criterion in self.criteria:
+            entry = listed.get(criterion.id)
+            criterion.review = {"outcome": entry["outcome"], "note": clip(redact(entry.get("note") or ""), NOTE_LIMIT),
+                                "iteration": iteration} if entry else None
         return settled
 
     def developed(self) -> None:
@@ -887,7 +943,8 @@ class Acceptance:
             "", "## How to judge",
             "`verdict` is about the code only: APPROVED when the changes are correct and every criterion the developer can "
             "satisfy by changing files is satisfied.",
-            "Give every criterion one entry in `criteria`, with one outcome:",
+            "Give every criterion one entry in `criteria`, with one outcome" + (
+                ". An APPROVED verdict that leaves out a criterion you verify is not accepted:" if self.explicit_outcomes else ":"),
             "- SATISFIED: you checked it by reading the worktree and the evidence above.",
             "- CODE_CHANGES_REQUIRED: the developer has to change the code for it.",
             "- VALIDATION_REQUIRED: the code may be correct, but a check is missing.",
@@ -897,8 +954,9 @@ class Acceptance:
             "- NOT_ASSESSED: you could not judge it.",
             "A criterion the developer cannot satisfy with its tools is never a reason for CHANGES_REQUESTED or BLOCKED: give "
             "it its outcome and judge the code on its own. Never answer SATISFIED for something you could not check.",
-            "Every entry of `issues` has a `kind`. Only CODE_CHANGES_REQUIRED issues go back to the developer; use the other "
-            "kinds for what is missing outside the code.",
+            "Every entry of `issues` has a `kind`. A CODE_CHANGES_REQUIRED issue is a change the code needs, whatever its "
+            "severity: the code is not approved with one, and only these go back to the developer. Use OBSERVATION for a "
+            "remark about the code that asks for no change, and the other kinds for what is missing outside the code.",
         ]) + "\n"
 
 
@@ -913,7 +971,8 @@ def feedback_parts(acceptance: Acceptance | None, review: dict | None) -> tuple[
                           if entry["id"] in mine or entry["outcome"] == ReviewOutcome.CODE_CHANGES_REQUIRED]}
     apart = [f"- {criterion.id} {criterion.text} — {criterion.status}: {criterion.reason}"
              for criterion in acceptance.criteria if criterion.id not in mine and criterion.status != Status.VERIFIED]
-    apart += [f"- ({issue['kind']}) {issue['description']}" for issue in review.get("issues") or [] if not code(issue)]
+    apart += [f"- ({issue['kind']}) {issue['description']}" for issue in review.get("issues") or []
+              if not code(issue) and issue["kind"] != OBSERVATION]  # an observation asks for nothing, of anybody
     return shown, apart
 
 

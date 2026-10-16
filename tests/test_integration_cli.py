@@ -17,7 +17,7 @@ from patchrondo.process import execute as real_execute
 
 
 FAKE_CLI = '''#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, re, sys
 args = sys.argv[1:]
 prompt = sys.stdin.read()
 assert 'Authoritative task requirements' in prompt or 'INDEPENDENT CODE REVIEWER' in prompt
@@ -27,7 +27,9 @@ if is_claude:
 else:
     reviewer = args[args.index('--sandbox') + 1] == 'read-only'
 if reviewer:
-    payload = {'verdict':'APPROVED', 'summary':'Reviewed', 'issues':[]}
+    # As the review schema asks: an outcome for each criterion the prompt lists.
+    listed = [{'id': name, 'outcome': 'SATISFIED', 'note': ''} for name in dict.fromkeys(re.findall(r'"id": "(AC-[0-9]{2,4})"', prompt))]
+    payload = {'verdict':'APPROVED', 'summary':'Reviewed', 'issues':[], 'criteria': listed}
     if is_claude:
         print(json.dumps({'structured_output':payload}))
     else:

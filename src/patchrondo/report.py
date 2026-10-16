@@ -65,7 +65,8 @@ def render_report(state: dict) -> str:
             rows += [f"The reviewer answered `{review['reported_verdict']}`; settled as `{review['verdict']}` "
                      f"(`{review.get('normalized')}`).", ""]
         for issue in review.get("issues", []):
-            rows.append(f"- **{issue['severity']}** `{issue.get('path', '')}`: {issue['description']}")
+            kind = f" ({issue['kind']})" if issue.get("kind") else ""
+            rows.append(f"- **{issue['severity']}**{kind} `{issue.get('path', '')}`: {issue['description']}")
     else:
         rows.append("No review completed")
     if state.get("last_error"):

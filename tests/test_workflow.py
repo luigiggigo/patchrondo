@@ -10,6 +10,8 @@ from patchrondo.core import initialize, create_task, run_task, parse_review, con
 from patchrondo.providers import AgentReply, AgentFailure
 from patchrondo.storage import read_json, save_json
 
+from support import outcomes
+
 
 class FakeProvider:
     def __init__(self, *, fail_first=False, dev_replies=None, review_verdicts=None):
@@ -28,8 +30,9 @@ class FakeProvider:
             (workspace / "feature.txt").write_text(value, encoding="utf-8")
             return AgentReply(text=f"Changed feature.txt to {value}", provider=provider)
         verdict = self.review_verdicts.pop(0) if self.review_verdicts else "APPROVED"
-        return AgentReply(text=json.dumps({"verdict": verdict, "summary": "Checked worktree",
-                                           "issues": []}), provider=provider)
+        return AgentReply(text=json.dumps({"verdict": verdict, "summary": "Checked worktree", "issues": [],
+                                           "criteria": outcomes(prompt) if verdict == "APPROVED" else []}),
+                          provider=provider)
 
 
 class WorkflowTests(unittest.TestCase):

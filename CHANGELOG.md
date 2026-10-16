@@ -9,7 +9,37 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
-### Documentation structure ? October 14, 2026
+### The review settled by kind, and an outcome for each criterion — October 14, 2026
+
+- **The kind of an issue decides, not its severity.** An approval with an
+  issue of kind `CODE_CHANGES_REQUIRED` is a request for changes whatever the
+  severity of that issue. Before, only a `high` or `critical` one turned an
+  approval around, so the code could be approved with a change the reviewer
+  itself had marked as required. A new kind, `OBSERVATION`, is a remark about
+  the code that asks for no change: it never blocks an approval and is not
+  sent to the developer. An issue without a kind, from an answer in the
+  earlier shape, keeps the earlier rule. The settled answer keeps the
+  reviewer's verdict in `reported_verdict`, with `normalized:
+  "code_change_named"`.
+- **An outcome for each criterion of the reviewer.** For a task whose
+  criteria were given when it was created, an approval that gives no outcome
+  to a criterion the reviewer verifies is not a complete review: the task
+  pauses at the review with `invalid_review`, nothing of the answer is
+  recorded, and Resume asks for the review again. An approval no longer
+  verifies a criterion it did not list. An approval saved before this that
+  left such a criterion out stops approving the code when the criteria are
+  judged again, and the next run asks for a new review without a new
+  development step. Tasks created before criteria were tracked, whose
+  criteria are read back from their `task.md`, keep the earlier rule: there an
+  approval covers what it did not list.
+- The task page says when an issue is an observation, and `report.md` names
+  the kind of each issue. The scripted reviewers of the tests and tools now
+  answer as the schema given to the CLIs requires, with an outcome for each
+  criterion. Eight removed protections were added to
+  `tools/recovery_checks.py`. The review answer had still not been confirmed
+  with a call to an authenticated CLI on October 14, 2026.
+
+### Documentation structure — October 14, 2026
 
 - Shortened the README to the project overview, workflow, requirements, quick
   start and essential safety limits. Moved the operational reference to

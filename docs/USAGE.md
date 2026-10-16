@@ -196,6 +196,11 @@ for changes that names no change to the code asks nothing of the developer,
 so nothing goes back to the developer. What the reviewer says about a
 criterion it cannot verify is shown as its opinion and is not evidence. A real
 defect in the code still goes back, with the outside checks listed apart.
+An issue the reviewer marks as a change the code requires keeps the code from
+being approved, whatever its severity; an *observation* never does. For a task
+created with its criteria, an approval has to give each criterion it verifies
+an outcome of its own: one that leaves a criterion out is not accepted, the
+task pauses with *unreadable review*, and Resume asks for the review again.
 
 **Evidence, not statements.** A criterion is verified only by records of the
 task's evidence ledger: a command PatchRondo ran (with its exit code, its log

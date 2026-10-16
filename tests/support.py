@@ -2,6 +2,7 @@
 import http.client
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 import threading
@@ -15,6 +16,15 @@ PROVIDERS = {name: {"name": name, "label": spec["label"], "installed": True, "pa
                     "version": "0.0.0", "authenticated": True, "auth_method": "claude.ai" if name == "claude" else None,
                     "warning": None, "hint": None, "login_command": spec["login"], "docs": spec["docs"]}
              for name, spec in doctor.PROVIDERS.items()}
+
+
+# A criterion as the reviewer's prompt lists it: a row of the JSON in its brief (the answer template has no space after the colon).
+CRITERION_ROW = re.compile(r'"id": "(AC-\d{2,4})"')
+
+
+def outcomes(prompt: str, outcome: str = "SATISFIED") -> list[dict]:
+    """The `criteria` of an approval bound to the review schema: an outcome for each criterion the prompt lists."""
+    return [{"id": name, "outcome": outcome, "note": ""} for name in dict.fromkeys(CRITERION_ROW.findall(prompt))]
 
 
 def make_repo(path: Path) -> Path:
@@ -120,7 +130,7 @@ class ServerCase(unittest.TestCase):
 # A stand-in for both provider CLIs that behaves like them at the process boundary: it prints
 # its activity line by line while it works when asked to stream, and a single result otherwise.
 # What it does is scripted per role in control.json next to it; it never searches PATH.
-STREAMING_CLI = r'''import json, os, pathlib, sys, time
+STREAMING_CLI = r'''import json, os, pathlib, re, sys, time
 root = pathlib.Path(__file__).parent
 control = json.loads((root / "control.json").read_text(encoding="utf-8"))
 provider, args = sys.argv[1], sys.argv[2:]
@@ -186,6 +196,10 @@ if once("crash_once"):
     os._exit(9)
 if reviewer:
     payload = {"verdict": plan.get("verdict", "APPROVED"), "summary": "Synthetic review of the change.", "issues": []}
+    if payload["verdict"] == "APPROVED":
+        # As the review schema asks: an outcome for each criterion the prompt lists.
+        payload["criteria"] = [{"id": name, "outcome": "SATISFIED", "note": ""}
+                               for name in dict.fromkeys(re.findall(r'"id": "(AC-\d{2,4})"', prompt))]
     text = json.dumps(payload)
 else:
     target = str(pathlib.Path.cwd() / "feature.txt")

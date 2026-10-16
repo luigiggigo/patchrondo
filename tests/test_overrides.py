@@ -12,7 +12,7 @@ from patchrondo.core import (config, create_task, effective_config, initialize, 
 from patchrondo.providers import AgentFailure, AgentReply
 from patchrondo.storage import read_json, save_json
 
-from support import make_repo
+from support import make_repo, outcomes
 
 TEST_COMMAND = [sys.executable, "-c", "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"]
 
@@ -28,7 +28,9 @@ class Provider:
         if role == "developer":
             (workspace / "feature.txt").write_text("good", encoding="utf-8")
             return AgentReply(text="Changed feature.txt", provider=provider)
-        return AgentReply(text=json.dumps({"verdict": self.verdict, "summary": "s", "issues": []}), provider=provider)
+        criteria = outcomes(prompt) if self.verdict == "APPROVED" else []
+        return AgentReply(text=json.dumps({"verdict": self.verdict, "summary": "s", "issues": [], "criteria": criteria}),
+                          provider=provider)
 
 
 class OverrideTests(unittest.TestCase):

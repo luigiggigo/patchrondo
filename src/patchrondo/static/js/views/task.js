@@ -603,12 +603,13 @@ function reviewPanel() {
         issues.length ? h("div", { class: "card list" }, issues.map((issue) => h("div", { class: "issue-row" },
           badge(issue.severity, SEVERITY[issue.severity] || "neutral"),
           h("div", { class: "grow" }, h("div", { class: "break" }, issue.description), issue.path ? h("div", { class: "mono muted break" }, issue.path) : null,
-            issue.kind && issue.kind !== "CODE_CHANGES_REQUIRED" ? h("div", { class: "faint" }, "Not about the code: it is not sent to the developer.") : null))))
+            issue.kind === "OBSERVATION" ? h("div", { class: "faint" }, "An observation: it asks for no change and is not sent to the developer.")
+              : issue.kind && issue.kind !== "CODE_CHANGES_REQUIRED" ? h("div", { class: "faint" }, "Not about the code: it is not sent to the developer.") : null))))
           : h("p", { class: "muted" }, "The reviewer reported no issues."),
         review.reported_verdict ? callout({ tone: "accent", iconName: "info", title: `The reviewer answered “${(VERDICTS[review.reported_verdict]?.label || review.reported_verdict).toLowerCase()}”`,
           body: review.normalized === "no_code_change_requested"
             ? "It named no change to the code: what it found open is a verification outside the code, recorded with the criteria. So nothing was sent back to the developer."
-            : "It also asked for a change to the code for one of the criteria, so the code is not approved.",
+            : "It also named a change the code requires, in an issue or for a criterion, so the code is not approved.",
           actions: [h("a", { class: "link", href: href("tasks", task.project, task.id, "criteria") }, "Criteria and checks")] }) : null,
         h("p", { class: "faint" }, "An AI review is one input. PatchRondo also requires passing tests and recorded evidence for every required criterion, and you should review the changes before merging them."),
       ];

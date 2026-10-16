@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from support import PROVIDERS, SYSTEM, ServerCase, make_repo
+from support import PROVIDERS, SYSTEM, ServerCase, make_repo, outcomes
 
 from patchrondo import activity, environment, recovery, repair
 from patchrondo import core, gitops
@@ -111,7 +111,9 @@ class Provider:
             self.interrupt_review = False
             raise KeyboardInterrupt
         verdict = self.verdicts.pop(0) if len(self.verdicts) > 1 else self.verdicts[0]
-        return AgentReply(text=json.dumps({"verdict": verdict, "summary": "Read the worktree", "issues": []}), provider=provider)
+        criteria = outcomes(prompt) if verdict == "APPROVED" else []
+        return AgentReply(text=json.dumps({"verdict": verdict, "summary": "Read the worktree", "issues": [],
+                                           "criteria": criteria}), provider=provider)
 
 
 class Base(unittest.TestCase):

@@ -10,6 +10,8 @@ from patchrondo.core import initialize, create_task, run_task, config
 from patchrondo.providers import AgentReply
 from patchrondo.storage import read_json, save_json
 
+from support import outcomes
+
 
 class ChunkingTests(unittest.TestCase):
     def test_identifier_split_and_query_terms(self):
@@ -167,8 +169,8 @@ class WorkflowRetrievalTests(unittest.TestCase):
                     (workspace / "tokens.py").write_text("def check_jwt_expiration(claims):\n    return False\n",
                                                          encoding="utf-8")
                     return AgentReply(text="Changed tokens.py", provider=provider)
-                return AgentReply(text=json.dumps({"verdict": "APPROVED", "summary": "ok", "issues": []}),
-                                  provider=provider)
+                return AgentReply(text=json.dumps({"verdict": "APPROVED", "summary": "ok", "issues": [],
+                                                   "criteria": outcomes(prompt)}), provider=provider)
 
         task_id, _ = create_task(self.home, title="Reject expired JWT", description="Fix the jwt expiration check",
                                  acceptance=["Expired tokens fail"], developer="claude", reviewer="codex")

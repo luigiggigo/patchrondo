@@ -8,6 +8,8 @@ repairs and one-press start (0.2.1): October 11, 2026. Activity journal reader
 correction and agent settings: October 12, 2026. Test consent before the
 review, and the capability and acceptance engine: October 13, 2026. Refused
 writes answered on Windows and publication-status update: October 14, 2026.
+The review settled by the kind of an issue, with an outcome for each
+criterion: October 14, 2026, validated on October 14 and 15, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -73,6 +75,91 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## The review settled by kind, with an outcome for each criterion (October 14, 2026)
+
+This section covers changes to `acceptance.py`, `core.py`, `report.py` and
+`static/js/views/task.js`, with their tests, the scripted reviewers of the
+tests and tools, and eight mutation protections, developed on top of
+`b376702`. The package version is unchanged, 0.2.1.
+
+**Two gaps in the acceptance engine.** First, an approval was turned into a
+request for changes only by an issue of severity `high` or `critical`: a
+`low` or `medium` issue that the reviewer itself had marked
+`CODE_CHANGES_REQUIRED` left the code approved, and the schema offered no
+kind for a remark that asks for nothing. Second, a criterion the reviewer did
+not list was verified by any approval of the code as a whole
+(`_Proofs.proves`), for every task: an approval with an empty `criteria`
+list, which the schema allows, verified every criterion of the reviewer
+without a word about any of them.
+
+**Changes.** `acceptance.requires_change` decides from the kind of an issue
+when it has one, whatever its severity, and from `high` or `critical` only
+for an issue without a kind. A new kind, `OBSERVATION`, asks for no change,
+never blocks an approval and is sent to nobody. For a task whose criteria
+were given when it was created (`Acceptance.explicit_outcomes`), an approval
+that gives no outcome to a criterion of the reviewer raises
+`IncompleteReview` before anything of the answer is applied; the loop turns
+it into an `invalid_review` pause at the review checkpoint, and a Resume asks
+for the review again. Such a criterion is no longer proved by the approval,
+and `refresh` withdraws an approval of the code whose record leaves one out,
+so a task that was approved that way before the change has its code reviewed
+again, without a new development step. A task read back from its `task.md`
+keeps the earlier rule.
+
+**Effect on the existing tests.** With the runtime change alone, the Windows
+suite with Python 3.13.3 had 74 failures and 1 error out of 578 tests: the
+scripted reviewers approved without `criteria`, which the schema given to the
+CLIs requires, and those approvals now pause. The scripted reviewers in
+`tests/support.py`, nine test modules, `tools/reliability_e2e.py` and
+`tools/ui_e2e.py` now give an outcome to each criterion their prompt lists
+when they approve, as a reviewer bound to the schema does. In
+`tests/test_acceptance.py`, `test_a_review_without_outcomes_still_covers_the_code_as_a_whole`
+was replaced by
+`test_an_approval_that_leaves_a_criterion_without_its_outcome_is_asked_for_again`;
+the test of a task created before criteria were tracked now has its reviewer
+answer without outcomes; the test of an edited ledger now forges a record
+that differs from the real one (the real approval already lists both
+outcomes); the schema test lists `OBSERVATION`. The pattern of one existing
+protection follows the new indentation of `settle_review`'s call.
+
+**Regression tests.** Four were added (582 tests in all):
+`test_the_kind_of_an_issue_decides_over_its_severity`,
+`test_an_approval_gives_each_criterion_of_the_reviewer_an_outcome_of_its_own`,
+`test_only_a_task_read_back_from_its_task_md_lets_an_approval_cover_what_it_left_out`
+and
+`test_an_approval_saved_without_an_outcome_for_each_criterion_has_the_code_reviewed_again`.
+Run with the new tests against the previous `acceptance.py`, `core.py` and
+`report.py` on native Windows with Python 3.13.3, the five new and replaced
+tests failed: a `low` `CODE_CHANGES_REQUIRED` issue stayed `APPROVED`, an
+observation was listed to the developer as somebody else's work, the replaced
+engine test found the task done where it expects the pause, and the rest
+stopped on the API that did not exist (2 failures and 7 errors over their
+subtests). Each of the eight new protections was also run alone before the
+full set and detected.
+
+Validation on October 14 and 15, 2026:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 582 tests, 571 passed, 11 skipped, 292.827 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 582 tests, 571 passed, 11 skipped, 263.404 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 582 tests, 564 passed, 18 skipped, 161.942 s | 0 |
+| Protections | WSL2, Python 3.12.3: 150 of 150 removed safeguards detected, 0 missed (eight of them new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (interruption and stale-lock scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Browser, all twelve scenarios | Native Windows, Python 3.13.3, Chrome 155.0.8059.79 headless: 350 passed, 0 failed | 0 |
+| Build and `twine check` | Native Windows: sdist and wheel of 0.2.1 built outside the repository; both passed | 0 / 0 |
+| Publication scanner | 118 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass. Every provider was scripted: no model was
+called. The opt-in tests in the real Codex sandbox were not run:
+`environment.py`, `preflight.py`, `winacl.py`, `repair.py` and
+`core._environment` did not change. Whether a real reviewer gives every
+criterion an outcome, and how often an approval would now be asked for again,
+has not been checked with an authorized call: an incomplete approval costs a
+Resume and a new review, never a verified criterion.
 
 ## Refused writes answered on Windows (October 14, 2026)
 

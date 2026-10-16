@@ -22,7 +22,7 @@ from patchrondo.core import create_task, refresh_agent_settings, run_task
 from patchrondo.process import Result
 from patchrondo.providers import AgentFailure, AgentReply, OfficialCLI
 from patchrondo.storage import read_json, save_json
-from support import ServerCase
+from support import ServerCase, outcomes
 from test_live_activity import EngineCase
 
 W = Path("/work/task copy")
@@ -787,7 +787,8 @@ class EngineTests(EngineCase):
                 if role == "developer":
                     (workspace / "feature.txt").write_text("good", encoding="utf-8")
                     return AgentReply(text="done", provider=provider)
-                return AgentReply(text=json.dumps({"verdict": "APPROVED", "summary": "s", "issues": []}), provider=provider)
+                return AgentReply(text=json.dumps({"verdict": "APPROVED", "summary": "s", "issues": [],
+                                                   "criteria": outcomes(prompt)}), provider=provider)
         task_id, _ = self.task()
         state = run_task(self.home, task_id, adapter=Plain())
         self.assertEqual((state["status"], calls), ("done", ["developer", "reviewer"]))

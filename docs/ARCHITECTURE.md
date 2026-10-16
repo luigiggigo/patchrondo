@@ -84,19 +84,28 @@ The reviewer returns only an object:
 ```
 
 Allowed verdicts are `APPROVED`, `CHANGES_REQUESTED` and `BLOCKED`. The
-verdict is about the **code**. An approval containing `high` or `critical`
-issues about the code is automatically downgraded. The orchestrator always
+verdict is about the **code**. An approval that names a change the code
+requires is automatically downgraded (`acceptance.requires_change`): an issue
+of kind `CODE_CHANGES_REQUIRED`, whatever its severity, or an issue without a
+kind whose severity is `high` or `critical`. `reported_verdict` keeps the
+answer and `normalized` is `code_change_named`. The orchestrator always
 applies its own test gate, independently of the model's opinion.
 
-`issues[].kind` says what an issue is about: `CODE_CHANGES_REQUIRED` (the
-default, and the only kind that goes back to the developer),
+`issues[].kind` says what an issue is about: `CODE_CHANGES_REQUIRED` (a
+change the code requires; the default, and the only kind that goes back to
+the developer), `OBSERVATION` (a remark about the code that asks for no
+change: it never blocks an approval and is sent to nobody),
 `VALIDATION_REQUIRED`, `CAPABILITY_BLOCKED`, `APPROVAL_REQUIRED` or
 `MANUAL_ACTION_REQUIRED`. `criteria` gives each acceptance criterion one
-outcome: `SATISFIED`, one of those five, or `NOT_ASSESSED`. The schema passed
-to the CLIs (`acceptance.REVIEW_SCHEMA`) requires both; `parse_review` also
-accepts an answer without them, which is a review of the code as a whole, as
-before criteria were tracked. The backend validates the answer and settles it
-against the plan of the task; section 14 has the rules.
+outcome: `SATISFIED`, `CODE_CHANGES_REQUIRED`, one of the four that hand a
+criterion over, or `NOT_ASSESSED`. The schema passed to the CLIs
+(`acceptance.REVIEW_SCHEMA`) requires both. `parse_review` also accepts an
+answer without them, but for a task whose criteria were given when it was
+created such an answer cannot approve the code: an approval needs an outcome
+for each criterion the reviewer verifies. Only a task read back from its
+`task.md` takes an approval without outcomes as a review of the code as a
+whole, as before criteria were tracked. The backend validates the answer and
+settles it against the plan of the task; section 14 has the rules.
 
 The developer produces a Markdown handoff with *Changes*, *Decisions*, *Remaining
 concerns* and *Suggested tests*. `task.md`, `handoff.md`, `feedback.md` and test
@@ -1212,12 +1221,26 @@ unclassified criterion); the review or the commands that have not run yet
   way a model changes a plan, and it only asks for more.
 - `SATISFIED` for a criterion that the reviewer does not verify is kept with
   the criterion and proves nothing.
+- An approval, as answered or as settled, that gives no outcome to a
+  criterion the reviewer verifies (one that needs a reading of the code,
+  `Acceptance.for_reviewer`) raises `IncompleteReview` when the task needs an
+  outcome for each (`explicit_outcomes`: every task whose criteria were given
+  when it was created). Nothing of the answer is applied or recorded; the
+  loop pauses at the `review` checkpoint with `invalid_review`, and a Resume
+  asks for the review again. A request for changes and `BLOCKED` approve
+  nothing and are not held to it.
+
+A `review` record proves a criterion only through the outcome it gives that
+criterion. An approval covers a criterion it did not list only in a task read
+back from its `task.md`, and in every other task `refresh` withdraws the
+approval of the code whose record leaves a criterion of the reviewer without
+an outcome (an approval saved before each one needed its own).
 
 These decisions come from the structured answer, never from its prose.
 `feedback.md` then holds the issues about the code and the outcomes of the
 developer's criteria; what is open outside the code is listed apart, under
 "Not work for the developer", and the developer's prompt names the criteria
-that are its work and those that are not.
+that are its work and those that are not. An observation is in neither list.
 
 ### In the loop
 
@@ -1242,7 +1265,10 @@ Results kept apart from the five statuses of the workflow: `code`
 lists what holds, such as `["CODE_APPROVED", "AWAITING_VALIDATION"]`. A task
 that went back to `test` from `validate` with its files unchanged is not
 reviewed again: the review that approved these files still counts, and only
-the commands run. If they fail, the approval is withdrawn.
+the commands run. If they fail, the approval is withdrawn. An approval
+withdrawn because its review left a criterion without an outcome sends the
+run back to `test` too, and there the code is reviewed again, without a
+development step.
 
 ### What a person does
 
@@ -1266,7 +1292,9 @@ A task that ended is returned as it is by `run_task`; the interface lists its
 criteria as written and says nothing about them. A task that runs again gets
 its criteria from `task.md` (`acceptance_planned`, `source: "task.md"`), with
 nothing verified: saved test results and a saved review were never evidence,
-so a review that was about to start waits for the tests to run again. The
+so a review that was about to start waits for the tests to run again. Such a
+task keeps the answers from before outcomes (`explicit_outcomes` is false):
+an approval covers a criterion it did not list. The
 schema is versioned (`acceptance.VERSION`, `evidence.VERSION`); a block that
 cannot be read is rebuilt the same way.
 

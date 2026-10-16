@@ -11,6 +11,8 @@ from unittest.mock import patch
 from patchrondo.process import Result
 from patchrondo.storage import read_json
 
+from support import outcomes
+
 spec = importlib.util.spec_from_file_location(
     "provider_e2e", Path(__file__).resolve().parents[1] / "tools" / "provider_e2e.py")
 provider_e2e = importlib.util.module_from_spec(spec)
@@ -39,7 +41,7 @@ def simulated_cli(calls, *, reviewer_edits=False, developer_error="", silent=Fal
         if reviewer:
             if reviewer_edits:
                 (Path(cwd) / "greeting.py").write_text("tampered = True\n", encoding="utf-8")
-            text = APPROVAL
+            text = json.dumps({**json.loads(APPROVAL), "criteria": outcomes(kwargs.get("stdin") or "")})
         elif developer_error:
             return Result(1, "", developer_error)
         else:

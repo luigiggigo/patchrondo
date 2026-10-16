@@ -58,11 +58,11 @@ TEST_CODE = "from pathlib import Path; assert Path('feature.txt').read_text() ==
 
 # Receives the provider name explicitly; it never searches PATH. Asked to stream, it prints its
 # activity line by line while it "works", as the real CLIs do; otherwise one result at the end.
-SYNTHETIC_CLI = r'''import json, pathlib, sys, time
+SYNTHETIC_CLI = r'''import json, pathlib, re, sys, time
 root = pathlib.Path(__file__).parent
 control = json.loads((root / "control.json").read_text(encoding="utf-8"))
 provider, args = sys.argv[1], sys.argv[2:]
-sys.stdin.read()
+prompt = sys.stdin.read()
 reviewer = ("--json-schema" in args) if provider == "claude" else ("--output-schema" in args)
 role = "reviewer" if reviewer else "developer"
 live = ("stream-json" in args) if provider == "claude" else ("--json" in args)
@@ -111,7 +111,10 @@ if control.get("mode") == "quota" and reviewer:
         print(limit, file=sys.stderr)
     sys.exit(1)
 if reviewer:
-    payload = {"verdict": "APPROVED", "summary": "Synthetic review: the change matches the task.", "issues": []}
+    # As the review schema asks: an outcome for each criterion the prompt lists.
+    payload = {"verdict": "APPROVED", "summary": "Synthetic review: the change matches the task.", "issues": [],
+               "criteria": [{"id": name, "outcome": "SATISFIED", "note": ""}
+                            for name in dict.fromkeys(re.findall(r'"id": "(AC-\d{2,4})"', prompt))]}
     text = json.dumps(payload)
 else:
     target = str(pathlib.Path.cwd() / "feature.txt")

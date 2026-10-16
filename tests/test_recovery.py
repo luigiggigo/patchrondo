@@ -27,6 +27,8 @@ from patchrondo.providers import AgentFailure, AgentReply, OfficialCLI, classifi
 from patchrondo.storage import LockBusy, TaskLock, _alive, read_json, save_json
 from patchrondo.app import App
 
+from support import outcomes
+
 T0 = datetime(2026, 10, 10, 14, 0, tzinfo=timezone.utc)
 LIMITS = {**recovery.DEFAULTS, "enabled": True}
 DEAD_PID = 2 ** 22 + 12345  # above the default Linux pid_max; not a running process
@@ -73,7 +75,8 @@ class Script:
             value = self.dev_values.pop(0) if self.dev_values else "good"
             (workspace / "feature.txt").write_text(value, encoding="utf-8")
             return AgentReply(text=f"Changed feature.txt to {value}", provider=provider)
-        return AgentReply(text=json.dumps({"verdict": "APPROVED", "summary": "Checked", "issues": []}),
+        return AgentReply(text=json.dumps({"verdict": "APPROVED", "summary": "Checked", "issues": [],
+                                           "criteria": outcomes(prompt)}),
                           provider=provider)
 
     @property

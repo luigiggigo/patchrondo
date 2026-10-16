@@ -20,7 +20,9 @@ from patchrondo.core import (AcceptanceRefused, attach_evidence, create_task, de
 from patchrondo.providers import AgentFailure, AgentReply
 from patchrondo.storage import read_json, save_json
 
-MO2 = "Verified inside Mod Organizer 2"
+from support import outcomes
+
+MO2 ="Verified inside Mod Organizer 2"
 GOOD = "feature.txt contains good"
 
 
@@ -38,7 +40,11 @@ def issue(description, kind="CODE_CHANGES_REQUIRED", severity="medium", path="fe
 
 
 class Agents:
-    """A scripted developer and reviewer. The developer always claims that everything is done."""
+    """A scripted developer and reviewer. The developer always claims that everything is done.
+
+    Without a scripted answer the reviewer approves and, as the review schema asks, gives every criterion its
+    prompt lists an outcome: SATISFIED.
+    """
 
     def __init__(self, reviews=None, writes=None):
         self.roles, self.prompts = [], []
@@ -52,7 +58,8 @@ class Agents:
             (workspace / "feature.txt").write_text(self.writes.pop(0) if self.writes else "good", encoding="utf-8")
             return AgentReply(text="## Changes\nEverything is done: built, packaged, tried in the game, released and all "
                                    "acceptance criteria are verified.", provider=provider)
-        answer = self.reviews.pop(0) if self.reviews else {"verdict": "APPROVED", "summary": "Checked worktree", "issues": []}
+        answer = self.reviews.pop(0) if self.reviews else {"verdict": "APPROVED", "summary": "Checked worktree", "issues": [],
+                                                           "criteria": outcomes(prompt)}
         return AgentReply(text=json.dumps(answer), provider=provider)
 
 
@@ -401,7 +408,8 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(schema["required"], ["verdict", "summary", "issues", "criteria"])
         self.assertEqual(schema["properties"]["criteria"]["items"]["properties"]["outcome"]["enum"], list(acceptance.ReviewOutcome))
         self.assertEqual(schema["properties"]["issues"]["items"]["properties"]["kind"]["enum"], [
-            "CODE_CHANGES_REQUIRED", "VALIDATION_REQUIRED", "CAPABILITY_BLOCKED", "APPROVAL_REQUIRED", "MANUAL_ACTION_REQUIRED"])
+            "CODE_CHANGES_REQUIRED", "VALIDATION_REQUIRED", "CAPABILITY_BLOCKED", "APPROVAL_REQUIRED", "MANUAL_ACTION_REQUIRED",
+            "OBSERVATION"])
         json.dumps(schema)
 
     def test_an_approval_that_names_a_code_change_is_not_one(self):
@@ -461,6 +469,60 @@ class ReviewTests(unittest.TestCase):
         record.refresh(evidence.Ledger())
         self.assertEqual((record.get("AC-01").proof, record.get("AC-01").verifier), (["review"], "reviewer"))
 
+    def test_the_kind_of_an_issue_decides_over_its_severity(self):
+        """A change the code requires turns an approval around at any severity; an observation never does."""
+        for issues, verdict in (([issue("rename the helper", severity="low")], "CHANGES_REQUESTED"),
+                                ([issue("a docstring would help", "OBSERVATION", "critical")], "APPROVED"),
+                                ([issue("needs the game", "MANUAL_ACTION_REQUIRED", "critical")], "APPROVED"),
+                                ([{"severity": "low", "path": "", "description": "nit"}], "APPROVED"),  # no kind: severity decides
+                                ([{"severity": "high", "path": "", "description": "bug"}], "CHANGES_REQUESTED")):
+            with self.subTest(issues=issues):
+                parsed = parse_review(json.dumps(review(issues=issues, AC01="SATISFIED")))
+                self.assertEqual(parsed["verdict"], verdict)
+                if verdict == "CHANGES_REQUESTED":
+                    self.assertEqual((parsed["reported_verdict"], parsed["normalized"]), ("APPROVED", "code_change_named"))
+        # An observation is nobody's work: the developer is not sent it, not even as something to leave alone.
+        record = self.record(GOOD)
+        answer = review("CHANGES_REQUESTED", [issue("wrong content"), issue("a clearer name would help", "OBSERVATION", "low")],
+                        AC01="CODE_CHANGES_REQUIRED")
+        record.settle_review(answer, 1)
+        record.refresh(evidence.Ledger())
+        shown, apart = acceptance.feedback_parts(record, answer)
+        self.assertEqual(([entry["description"] for entry in shown["issues"]], apart), (["wrong content"], []))
+        self.assertIn("Use OBSERVATION for a remark about the code that asks for no change", record.reviewer_brief(evidence.Ledger()))
+
+    def test_an_approval_gives_each_criterion_of_the_reviewer_an_outcome_of_its_own(self):
+        record = self.record(GOOD, "README.md mentions the feature", MO2, "The test suite passes")
+        self.assertEqual((record.source, record.for_reviewer()), ("task", ["AC-01", "AC-02"]))
+        for answer, missing in ((review(), "AC-01, AC-02"), (review(AC01="SATISFIED", AC03="SATISFIED", AC04="SATISFIED"), "AC-02")):
+            with self.subTest(answer=answer):
+                with self.assertRaises(acceptance.IncompleteReview) as caught:
+                    record.settle_review(answer, 1)
+                self.assertIn(f"gives no outcome to {missing}.", str(caught.exception))
+                self.assertEqual([criterion.review for criterion in record.criteria], [None] * 4)  # nothing of it was kept
+        self.assertIn("An APPROVED verdict that leaves out a criterion you verify is not accepted", record.reviewer_brief(evidence.Ledger()))
+        # What the reviewer does not verify needs no outcome, and an answer that approves nothing is not held to it.
+        self.assertEqual(record.settle_review(review(AC01="SATISFIED", AC02="SATISFIED"), 1)["verdict"], "APPROVED")
+        for answer in (review("CHANGES_REQUESTED"), review("BLOCKED"), review(AC01="CODE_CHANGES_REQUIRED")):
+            with self.subTest(answer=answer):
+                settled = self.record(GOOD, "README.md mentions the feature").settle_review(answer, 1)
+                self.assertNotEqual(settled["verdict"], "APPROVED")
+
+    def test_only_a_task_read_back_from_its_task_md_lets_an_approval_cover_what_it_left_out(self):
+        with tempfile.TemporaryDirectory() as folder:
+            evidence.append(Path(folder), "review", executor="reviewer", result="approved", verdict="APPROVED", criteria=[],
+                            outcomes={}, scope="code")
+            ledger = evidence.read(Path(folder))
+        for source, status in (("task", Status.PENDING), ("task.md", Status.VERIFIED)):
+            with self.subTest(source=source):
+                record = Acceptance.create(acceptance.parse_items([GOOD]), source=source)
+                record.refresh(ledger)
+                self.assertEqual((record.explicit_outcomes, record.get("AC-01").status), (source == "task", status))
+                record.approve_code(ledger.records[0]["id"], 1)
+                record.refresh(ledger)  # an approval saved without the outcome stops approving the code only where one is needed
+                self.assertEqual(record.code["status"], "PENDING" if source == "task" else "APPROVED")
+        self.assertEqual(Acceptance.create([], source="task.md").settle_review(review(), 1)["verdict"], "APPROVED")
+
 
 class EngineTests(Case):
     def test_a_python_task_is_done_when_every_criterion_has_its_evidence(self):
@@ -485,10 +547,33 @@ class EngineTests(Case):
         self.assertIn("## Acceptance criteria", report)
         self.assertIn("`AC-02` **VERIFIED**", report)
 
-    def test_a_review_without_outcomes_still_covers_the_code_as_a_whole(self):
-        task_id, path, _ = self.task(GOOD, "The test suite passes")
-        state = run_task(self.home, task_id, adapter=Agents())
-        self.assertEqual((state["status"], self.statuses(path)), ("done", {"AC-01": "VERIFIED", "AC-02": "VERIFIED"}))
+    def test_an_approval_that_leaves_a_criterion_without_its_outcome_is_asked_for_again(self):
+        task_id, path, _ = self.task(GOOD, "README.md mentions the feature", "The test suite passes")
+        agents = Agents([{"verdict": "APPROVED", "summary": "Checked the worktree", "issues": []},  # an answer from before outcomes
+                         review(AC01="SATISFIED", AC03="SATISFIED")])
+        for missing in ("AC-01, AC-02", "AC-02"):
+            state = run_task(self.home, task_id, adapter=agents)
+            self.assertEqual((state["status"], state["phase"], state["last_error"]["kind"]), ("paused", "review", "invalid_review"))
+            self.assertIn(f"gives no outcome to {missing}.", state["last_error"]["message"])
+            self.assertEqual(self.statuses(path), {"AC-01": "PENDING", "AC-02": "PENDING", "AC-03": "VERIFIED"})
+            self.assertEqual((self.kinds(path), self.record(path).code["status"]), (["command"], "PENDING"))  # nothing of it counts
+        state = run_task(self.home, task_id, adapter=agents)  # a Resume asks for the review again, and only for it
+        self.assertEqual((state["status"], agents.roles), ("done", ["developer", "reviewer", "reviewer", "reviewer"]))
+        self.assertEqual(self.statuses(path), {"AC-01": "VERIFIED", "AC-02": "VERIFIED", "AC-03": "VERIFIED"})
+
+    def test_an_approval_saved_without_an_outcome_for_each_criterion_has_the_code_reviewed_again(self):
+        task_id, path, _ = self.task(GOOD, MO2)
+        with patch.object(Acceptance, "explicit_outcomes", False):  # as every task was before each criterion needed its own
+            state = run_task(self.home, task_id, adapter=Agents([{"verdict": "APPROVED", "summary": "Checked", "issues": []}]))
+        self.assertEqual((state["phase"], self.record(path).code["status"], self.statuses(path)["AC-01"]), ("validate", "APPROVED", "VERIFIED"))
+        recheck_acceptance(self.home, task_id)
+        record = self.record(path)
+        self.assertEqual((record.code["status"], self.statuses(path)["AC-01"]), ("PENDING", "PENDING"))
+        self.assertIn("gave no outcome of its own to AC-01", record.code["reason"])
+        agents = Agents()
+        state = run_task(self.home, task_id, adapter=agents)  # nothing is developed again: the code is reviewed again
+        self.assertEqual((state["phase"], agents.roles, self.record(path).code["status"]), ("validate", ["reviewer"], "APPROVED"))
+        self.assertEqual(self.statuses(path), {"AC-01": "VERIFIED", "AC-02": "AWAITING_MANUAL_VALIDATION"})
 
     def test_the_word_of_the_developer_verifies_nothing(self):
         self.configure(max_iterations=1)
@@ -758,7 +843,7 @@ class EngineTests(Case):
         del old["acceptance"]
         save_json(path / "state.json", old)
         self.assertIsNone(Acceptance.load(self.state(path)))
-        agents = Agents()
+        agents = Agents([{"verdict": "APPROVED", "summary": "Checked", "issues": []}])  # its reviewer answers as before outcomes
         state = run_task(self.home, task_id, adapter=agents)
         self.assertEqual((state["status"], state["phase"], self.record(path).source), ("paused", "validate", "task.md"))
         self.assertEqual(self.statuses(path), {"AC-01": "VERIFIED", "AC-02": "AWAITING_MANUAL_VALIDATION"})
@@ -873,7 +958,7 @@ class EngineTests(Case):
 
     def test_a_ledger_that_was_edited_proves_nothing_any_more(self):
         task_id, path, _ = self.task(GOOD, MO2)
-        agents = Agents()
+        agents = Agents([review(AC01="SATISFIED", AC02=("MANUAL_ACTION_REQUIRED", "needs the game"))])
         run_task(self.home, task_id, adapter=agents)
         file = path / evidence.LEDGER
         forged = evidence.read(path).records[1] | {"outcomes": {"AC-01": "SATISFIED", "AC-02": "SATISFIED"}}
