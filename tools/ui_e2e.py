@@ -111,10 +111,11 @@ if control.get("mode") == "quota" and reviewer:
         print(limit, file=sys.stderr)
     sys.exit(1)
 if reviewer:
-    # As the review schema asks: an outcome for each criterion the prompt lists.
-    payload = {"verdict": "APPROVED", "summary": "Synthetic review: the change matches the task.", "issues": [],
-               "criteria": [{"id": name, "outcome": "SATISFIED", "note": ""}
-                            for name in dict.fromkeys(re.findall(r'"id": "(AC-\d{2,4})"', prompt))]}
+    # As the review schema asks: an outcome for each criterion the prompt lists. A scenario may set the verdict and outcomes.
+    chosen = control.get("outcomes") or {}
+    payload = {"verdict": control.get("verdict") or "APPROVED", "summary": "Synthetic review: the change matches the task.",
+               "issues": [], "criteria": [{"id": name, "outcome": chosen.get(name, "SATISFIED"), "note": ""}
+                                          for name in dict.fromkeys(re.findall(r'"id": "(AC-\d{2,4})"', prompt))]}
     text = json.dumps(payload)
 else:
     target = str(pathlib.Path.cwd() / "feature.txt")
@@ -1583,8 +1584,9 @@ def scenario_criteria(env: Env) -> None:
               "Claude · developer" in able and "No tool that runs commands is among its tools" in able and "Run the project's test commands" in able
               and "PatchRondo never downloads anything" in able, able[:900])
 
-    # The run: developed, tested by PatchRondo, reviewed once. Then it waits; nothing goes back to the developer.
-    env.control(mode="ok", develop_seconds=0.6, review_seconds=0.6)
+    # The run: developed, tested by PatchRondo, reviewed once. Then it waits; nothing goes back to the developer, not even
+    # the change to the code the reviewer asks for the check inside Mod Organizer 2, which no change to the files can satisfy.
+    env.control(mode="ok", develop_seconds=0.6, review_seconds=0.6, verdict="CHANGES_REQUESTED", outcomes={"AC-03": "CODE_CHANGES_REQUIRED"})
     page.click(text="Overview", selector="[role=tab]")
     env.run_task()
     paused = env.wait_state(path, lambda s: s["status"] == "paused", 90)
@@ -1597,6 +1599,17 @@ def scenario_criteria(env: Env) -> None:
                "qa('.workflow-step')[4].classList.contains('paused') && qa('.workflow-step')[4].innerText.includes('waiting for you') && qa('.workflow-step')[1].classList.contains('done')")
     env.expect("Rondo says it in plain words", "q('.rondo-note').innerText.includes('The code is approved')")
     env.shot("task-awaiting")
+    env.control(verdict="APPROVED", outcomes={})
+    review = paused["review"]
+    env.check("the change asked for a check only a person can do is recorded, refused and settled as an approval",
+              (review.get("reported_verdict"), review["verdict"], review.get("refused_changes")) == ("CHANGES_REQUESTED", "APPROVED", ["AC-03"]),
+              str({key: review.get(key) for key in ("verdict", "reported_verdict", "refused_changes")}))
+    page.click(text="Review", selector="[role=tab]")
+    env.expect("the Review tab says that change was not sent to the developer",
+               "q('.tab-panel').innerText.includes('The reviewer answered “changes requested”') "
+               "&& q('.tab-panel').innerText.includes('It asked for a change to the code for AC-03, which no change to the files can satisfy')", 8)
+    page.click(text="Overview", selector="[role=tab]")
+    env.expect("the overview is back", "Boolean(byText('Open criteria and checks'))", 8)
     page.click(text="Open criteria and checks")
     env.expect("code approval and the task as a whole are shown apart",
                "qa('.criteria-stat')[0].innerText.includes('Approved') && qa('.criteria-stat')[1].innerText.includes('Waiting for your authorization')", 8)

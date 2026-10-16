@@ -9,7 +9,35 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### A change to the code only for what the code can satisfy — October 16, 2026
+
+- **A change to the code asked for a criterion that no change to the files
+  can satisfy no longer goes back to the developer.** The reviewer could mark
+  `CODE_CHANGES_REQUIRED` a criterion the plan gives to the user or to the
+  project's commands, such as "Verificare la mod dentro Mod Organizer 2".
+  `settle_review` took it as a change to the code: an approval became a
+  request for changes, a request for changes was not settled, and
+  `feedback.md` listed the criterion as the developer's work, so every
+  iteration asked the developer again for what it could not do, until the
+  iteration limit blocked the task. That outcome now counts only for a
+  criterion a change to the files can satisfy (`Acceptance.for_reviewer`, a
+  criterion about the code, also after a review handed it over). For any
+  other it is kept with the criterion as the reviewer's opinion, listed in
+  `refused_changes`, and decides nothing. A request for changes whose only
+  change is of this sort is settled as an approval (`normalized:
+  "no_code_change_requested"`), and the criterion waits for the user. An
+  issue of kind `CODE_CHANGES_REQUIRED` names no criterion and still keeps the
+  code from being approved.
+- The reviewer's instructions say which criteria take
+  `CODE_CHANGES_REQUIRED`. The task page and `report.md` say when a change
+  was asked for a criterion no change to the files can satisfy. Three removed
+  protections were added to `tools/recovery_checks.py`, and the pattern of
+  one follows the new condition. The review answer had still not been
+  confirmed with a call to an authenticated CLI on October 16, 2026.
+
 ### The review settled by kind, and an outcome for each criterion — October 14, 2026
+
+Published on `main` in commit `b9e5283` on October 16, 2026 (22:33 +02:00).
 
 - **The kind of an issue decides, not its severity.** An approval with an
   issue of kind `CODE_CHANGES_REQUIRED` is a request for changes whatever the
@@ -41,6 +69,8 @@ before each review.
 
 ### Documentation structure — October 14, 2026
 
+Published on `main` in commit `b376702` on October 14, 2026 (22:54 +02:00).
+
 - Shortened the README to the project overview, workflow, requirements, quick
   start and essential safety limits. Moved the operational reference to
   `docs/USAGE.md`, validation instructions to `docs/TESTING.md` and future
@@ -48,6 +78,8 @@ before each review.
   `docs/REVIEW.md`.
 
 ### Refused writes answered on Windows — October 14, 2026
+
+Published on `main` in commit `8fe1f47` on October 14, 2026 (22:49 +02:00).
 
 - The interface no longer loses its answer to a write it refuses on the
   headers: a missing or wrong session token, a foreign Host or Origin, a

@@ -13,9 +13,9 @@ October 9 and 10, 2026; the CI runs for those commits are recorded in
 **0.2.0** is published as source on `main`: the interface was pushed on
 October 10, 2026, live activity on October 11, 2026, in commit `c9f6e1e`, and
 the failure classification correction the same day in commit `6937d9f`.
-[REVIEW.md](REVIEW.md#current-source-and-ci-status-october-14-2026) records the
+[REVIEW.md](REVIEW.md#current-source-and-ci-status-october-16-2026) records the
 current commit's CI status and the dated local checks. The GitHub repository
-has no version tags or GitHub Releases as checked on October 12, 2026.
+has no version tags or GitHub Releases as checked on October 16, 2026.
 Source publication, a versioned release and publishing to PyPI are separate
 steps.
 
@@ -31,11 +31,13 @@ all six jobs. See
 [REVIEW.md](REVIEW.md#activity-journal-reader-october-12-2026).
 
 The agent settings (commit `77cdc14`, October 12, 2026), the test consent
-before the review (`b7347fe`, October 13) and the capability and acceptance
-engine (`303a8d3`, pushed on October 14, 2026 at 22:14 +02:00 and the head of
-`main` as checked that day) keep the same package version. Their validation
-is recorded in [REVIEW.md](REVIEW.md); the
-[current status](REVIEW.md#current-source-and-ci-status-october-14-2026)
+before the review (`b7347fe`, October 13), the capability and acceptance
+engine (`303a8d3`, October 14), refused writes answered on Windows
+(`8fe1f47`, October 14), the documentation structure (`b376702`, October 14)
+and the review settled by kind (`b9e5283`, pushed on October 16, 2026 at
+22:33 +02:00 and the head of `main` as checked that day) keep the same
+package version. Their validation is recorded in [REVIEW.md](REVIEW.md); the
+[current status](REVIEW.md#current-source-and-ci-status-october-16-2026)
 lists the CI runs of these commits.
 
 The repository is already initialized and has an `origin` remote. Future updates

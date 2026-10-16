@@ -608,9 +608,11 @@ function reviewPanel() {
           : h("p", { class: "muted" }, "The reviewer reported no issues."),
         review.reported_verdict ? callout({ tone: "accent", iconName: "info", title: `The reviewer answered “${(VERDICTS[review.reported_verdict]?.label || review.reported_verdict).toLowerCase()}”`,
           body: review.normalized === "no_code_change_requested"
-            ? "It named no change to the code: what it found open is a verification outside the code, recorded with the criteria. So nothing was sent back to the developer."
+            ? "It named no change to the code that the developer can make: what it found open is recorded with the criteria. So nothing was sent back to the developer."
             : "It also named a change the code requires, in an issue or for a criterion, so the code is not approved.",
           actions: [h("a", { class: "link", href: href("tasks", task.project, task.id, "criteria") }, "Criteria and checks")] }) : null,
+        review.refused_changes?.length ? h("p", { class: "muted break" }, `It asked for a change to the code for ${review.refused_changes.join(", ")}, which no change to the files can satisfy. `
+          + "That is recorded with the criteria and was not sent to the developer.") : null,
         h("p", { class: "faint" }, "An AI review is one input. PatchRondo also requires passing tests and recorded evidence for every required criterion, and you should review the changes before merging them."),
       ];
     });

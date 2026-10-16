@@ -64,6 +64,9 @@ def render_report(state: dict) -> str:
             # The verdict is about the code; the answer was settled from its structured parts, never from its prose.
             rows += [f"The reviewer answered `{review['reported_verdict']}`; settled as `{review['verdict']}` "
                      f"(`{review.get('normalized')}`).", ""]
+        if review.get("refused_changes"):
+            rows += [f"A change to the code asked for {', '.join(review['refused_changes'])}, which no change to the files can "
+                     "satisfy, is recorded and was not sent to the developer.", ""]
         for issue in review.get("issues", []):
             kind = f" ({issue['kind']})" if issue.get("kind") else ""
             rows.append(f"- **{issue['severity']}**{kind} `{issue.get('path', '')}`: {issue['description']}")

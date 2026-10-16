@@ -761,13 +761,17 @@ class Acceptance:
         """Validate a parsed review against the plan and return it with its verdict about the code settled.
 
         The outcome the reviewer gave to each criterion is recorded with the
-        criterion. Two contradictions are resolved from the structured answer,
+        criterion. A change to the code is asked for a criterion only where a
+        change to the files can satisfy it (`for_reviewer`): asked for any
+        other, it is listed in `refused_changes` and sends nothing to the
+        developer. Two contradictions are resolved from the structured answer,
         never from its prose: an approval that names a change to the code is
-        not an approval, and a request for changes that names none, while
-        every criterion of the developer is satisfied or handed over, asks
-        nothing of the developer. An approval that leaves a criterion of the
-        reviewer without an outcome, where every one needs its own
-        (`explicit_outcomes`), raises `IncompleteReview` and records nothing.
+        not an approval, and a request for changes that names none the
+        developer can make, while every criterion of the developer is
+        satisfied or handed over, asks nothing of the developer. An approval
+        that leaves a criterion of the reviewer without an outcome, where
+        every one needs its own (`explicit_outcomes`), raises
+        `IncompleteReview` and records nothing.
         """
         known = {criterion.id for criterion in self.criteria}
         listed: dict[str, dict] = {}
@@ -780,18 +784,24 @@ class Acceptance:
             settled["ignored_criteria"] = ignored  # unknown or repeated IDs: recorded, never applied
         code_issues = [issue for issue in review["issues"] if issue.get("kind", ReviewOutcome.CODE_CHANGES_REQUIRED)
                        == ReviewOutcome.CODE_CHANGES_REQUIRED]
-        changes = sorted(name for name, entry in listed.items() if entry["outcome"] == ReviewOutcome.CODE_CHANGES_REQUIRED)
-        deferred = [name for name, entry in listed.items() if entry["outcome"] in DEFERRED]
         mine = self.for_reviewer()
+        named = sorted(name for name, entry in listed.items() if entry["outcome"] == ReviewOutcome.CODE_CHANGES_REQUIRED)
+        changes = [name for name in named if name in mine]
+        refused = [name for name in named if name not in mine]
+        if refused:
+            settled["refused_changes"] = refused  # no change to the files can satisfy them: recorded, never sent back
+        deferred = [name for name, entry in listed.items() if entry["outcome"] in DEFERRED]
         if review["verdict"] == "APPROVED" and changes:
             settled.update(verdict="CHANGES_REQUESTED", reported_verdict="APPROVED", normalized="code_change_named",
                            summary=f"Inconsistent review: it approves, and asks for a change to the code for {', '.join(changes)}. "
                                    + review["summary"])
-        elif review["verdict"] == "CHANGES_REQUESTED" and not code_issues and not changes and deferred \
+        elif review["verdict"] == "CHANGES_REQUESTED" and not code_issues and not changes and (deferred or refused) \
                 and all(name in listed and (listed[name]["outcome"] == ReviewOutcome.SATISFIED or name in deferred) for name in mine):
+            found = [f"what it found open is recorded with the criteria ({', '.join(sorted(deferred))})"] if deferred else []
+            found += [f"the change it asked for {', '.join(refused)} is not one a change to the files can make"] if refused else []
             settled.update(verdict="APPROVED", reported_verdict="CHANGES_REQUESTED", normalized="no_code_change_requested",
-                           summary="The review asked for no change to the code: what it found open is recorded with the "
-                                   f"criteria ({', '.join(sorted(deferred))}). " + review["summary"])
+                           summary="The review asked for no change to the code that the developer can make: "
+                                   + "; ".join(found) + ". " + review["summary"])
         unjudged = self.unjudged(listed) if settled["verdict"] == "APPROVED" else []
         if unjudged:
             raise IncompleteReview(f"Incomplete review: it approves the code and gives no outcome to {', '.join(unjudged)}. "
@@ -946,7 +956,8 @@ class Acceptance:
             "Give every criterion one entry in `criteria`, with one outcome" + (
                 ". An APPROVED verdict that leaves out a criterion you verify is not accepted:" if self.explicit_outcomes else ":"),
             "- SATISFIED: you checked it by reading the worktree and the evidence above.",
-            "- CODE_CHANGES_REQUIRED: the developer has to change the code for it.",
+            "- CODE_CHANGES_REQUIRED: the developer has to change the code for it. Only for a criterion a change to the files "
+            "can satisfy (category CODE); for any other it is recorded and asks nothing of the developer.",
             "- VALIDATION_REQUIRED: the code may be correct, but a check is missing.",
             "- CAPABILITY_BLOCKED: checking it needs tools that nobody in this workflow has.",
             "- APPROVAL_REQUIRED: an operation has to be authorized by the user first.",
@@ -965,10 +976,11 @@ def feedback_parts(acceptance: Acceptance | None, review: dict | None) -> tuple[
     if not isinstance(review, dict) or acceptance is None:
         return review, []
     mine = {criterion.id for criterion in acceptance.criteria if "review" in criterion.missing}
+    changeable = set(acceptance.for_reviewer())  # a change asked for any other criterion is not the developer's work
     code = lambda issue: issue.get("kind", ReviewOutcome.CODE_CHANGES_REQUIRED) == ReviewOutcome.CODE_CHANGES_REQUIRED  # noqa: E731
     shown = {**review, "issues": [issue for issue in review.get("issues") or [] if code(issue)],
-             "criteria": [entry for entry in review.get("criteria") or []
-                          if entry["id"] in mine or entry["outcome"] == ReviewOutcome.CODE_CHANGES_REQUIRED]}
+             "criteria": [entry for entry in review.get("criteria") or [] if entry["id"] in mine
+                          or (entry["outcome"] == ReviewOutcome.CODE_CHANGES_REQUIRED and entry["id"] in changeable)]}
     apart = [f"- {criterion.id} {criterion.text} — {criterion.status}: {criterion.reason}"
              for criterion in acceptance.criteria if criterion.id not in mine and criterion.status != Status.VERIFIED]
     apart += [f"- ({issue['kind']}) {issue['description']}" for issue in review.get("issues") or []

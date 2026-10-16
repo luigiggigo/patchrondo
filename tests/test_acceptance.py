@@ -23,6 +23,7 @@ from patchrondo.storage import read_json, save_json
 from support import outcomes
 
 MO2 ="Verified inside Mod Organizer 2"
+MO2_IT = "Verificare la mod dentro Mod Organizer 2"  # as written in the task that was sent back to the developer
 GOOD = "feature.txt contains good"
 
 
@@ -446,6 +447,44 @@ class ReviewTests(unittest.TestCase):
                          (["AC-01"], 2, "APPROVED"))
         self.assertEqual(record.get("AC-01").review["outcome"], "SATISFIED")
 
+    def test_a_change_to_the_code_counts_only_for_a_criterion_a_change_to_the_files_can_satisfy(self):
+        """A change asked for a check by a person or for the project's commands is recorded and sends nothing back."""
+        for verdict, normalized in (("APPROVED", None), ("CHANGES_REQUESTED", "no_code_change_requested")):
+            with self.subTest(verdict=verdict):
+                record = self.record(GOOD, MO2_IT, "The test suite passes")
+                answer = review(verdict, AC01="SATISFIED", AC02=("CODE_CHANGES_REQUIRED", "Va provata in Mod Organizer 2"),
+                                AC03="CODE_CHANGES_REQUIRED")
+                settled = record.settle_review(answer, 1)
+                self.assertEqual((settled["verdict"], settled.get("normalized"), settled["refused_changes"]),
+                                 ("APPROVED", normalized, ["AC-02", "AC-03"]))
+                record.refresh(evidence.Ledger())
+                external = record.get("AC-02")
+                self.assertEqual((external.review["outcome"], external.executor, external.status),
+                                 ("CODE_CHANGES_REQUIRED", "user", Status.AWAITING_MANUAL_VALIDATION))
+                shown, apart = acceptance.feedback_parts(record, settled)
+                self.assertEqual([entry["id"] for entry in shown["criteria"]], ["AC-01"])
+                self.assertEqual([line.split()[1] for line in apart], ["AC-02", "AC-03"])
+        self.assertNotIn("refused_changes", self.record(GOOD).settle_review(review(AC01="SATISFIED"), 1))
+        # A change to the code still goes back for the criterion the code can satisfy, and only for it.
+        record = self.record(GOOD, MO2_IT)
+        settled = record.settle_review(review(AC01="CODE_CHANGES_REQUIRED", AC02="CODE_CHANGES_REQUIRED"), 1)
+        self.assertEqual((settled["verdict"], settled["normalized"], settled["refused_changes"]),
+                         ("CHANGES_REQUESTED", "code_change_named", ["AC-02"]))
+        self.assertIn("for AC-01. ", settled["summary"])
+        record.refresh(evidence.Ledger())
+        shown, _ = acceptance.feedback_parts(record, settled)
+        self.assertEqual([entry["id"] for entry in shown["criteria"]], ["AC-01"])
+        # A criterion about the code that was handed over is still the developer's when the code has to change for it.
+        record = self.record(GOOD, MO2_IT)
+        record.settle_review(review(AC01="VALIDATION_REQUIRED", AC02="SATISFIED"), 1)
+        record.refresh(evidence.Ledger())
+        self.assertEqual(record.get("AC-01").executor, "user")
+        settled = record.settle_review(review("CHANGES_REQUESTED", AC01="CODE_CHANGES_REQUIRED"), 2)
+        self.assertEqual((settled["verdict"], "refused_changes" in settled), ("CHANGES_REQUESTED", False))
+        record.refresh(evidence.Ledger())
+        self.assertEqual((record.get("AC-01").executor, record.get("AC-01").status), ("developer", Status.FAILED))
+        self.assertIn("Only for a criterion a change to the files can satisfy", record.reviewer_brief(evidence.Ledger()))
+
     def test_a_reviewer_can_only_make_a_criterion_ask_for_more(self):
         record = self.record(GOOD, MO2)
         record.settle_review(review(AC01=("MANUAL_ACTION_REQUIRED", "only visible on screen"), AC02="SATISFIED"), 1)
@@ -664,6 +703,23 @@ class EngineTests(Case):
             again = run_task(self.home, task_id, adapter=agents)
             self.assertEqual((again["history"], again["last_error"], agents.roles), (state["history"], state["last_error"], ["developer", "reviewer"]))
         self.assertFalse((path / "feedback.md").exists())
+
+    def test_a_change_asked_for_a_check_only_a_person_can_do_does_not_go_back_to_the_developer(self):
+        """The reviewer marks the user's criterion CODE_CHANGES_REQUIRED: no new iteration, the criterion waits for the user."""
+        task_id, path, _ = self.task(GOOD, MO2_IT)
+        asked = review("CHANGES_REQUESTED", AC01="SATISFIED", AC02=("CODE_CHANGES_REQUIRED", "Va provata in Mod Organizer 2"))
+        agents = Agents([asked] * 6)
+        state = run_task(self.home, task_id, adapter=agents)
+        self.assertEqual((state["status"], state["phase"], state["iteration"], agents.roles),
+                         ("paused", "validate", 1, ["developer", "reviewer"]))
+        self.assertEqual((state["review"]["verdict"], state["review"]["reported_verdict"], state["review"]["refused_changes"]),
+                         ("APPROVED", "CHANGES_REQUESTED", ["AC-02"]))
+        self.assertEqual(self.statuses(path), {"AC-01": "VERIFIED", "AC-02": "AWAITING_MANUAL_VALIDATION"})
+        self.assertFalse((path / "feedback.md").exists())
+        self.assertIn("A change to the code asked for AC-02, which no change to the files can satisfy, is recorded",
+                      (path / "report.md").read_text(encoding="utf-8"))
+        again = run_task(self.home, task_id, adapter=agents)
+        self.assertEqual((again["history"], agents.roles), (state["history"], ["developer", "reviewer"]))
 
     def test_the_user_attaches_the_evidence_and_the_task_completes_without_an_agent(self):
         task_id, path, _ = self.task(GOOD, MO2)

@@ -9,7 +9,9 @@ correction and agent settings: October 12, 2026. Test consent before the
 review, and the capability and acceptance engine: October 13, 2026. Refused
 writes answered on Windows and publication-status update: October 14, 2026.
 The review settled by the kind of an issue, with an outcome for each
-criterion: October 14, 2026, validated on October 14 and 15, 2026.
+criterion: October 14, 2026, validated on October 14 and 15, 2026. A change
+to the code only for what the code can satisfy, and publication-status
+update: October 16, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -17,21 +19,36 @@ repository was present in those original directories. A local, ignored
 Each section below says which code it covers: a published commit or a local
 working tree at its date.
 
-## Current source and CI status (October 14, 2026)
+## Current source and CI status (October 16, 2026)
 
 The source on `main` is 0.2.1, at
-[`303a8d3`](https://github.com/luigiggigo/patchrondo/commit/303a8d3b33fe09e762ee5e1fa3ae4ebda99b59f1),
-pushed on October 14, 2026 (22:14 +02:00): 0.2.0 with the interface, live
+[`b9e5283`](https://github.com/luigiggigo/patchrondo/commit/b9e528324f7e38f2e5776ad8d76c54d419e12a85),
+pushed on October 16, 2026 (22:33 +02:00): 0.2.0 with the interface, live
 activity and the streaming failure correction, the environment check, repairs
 and one-press start of 0.2.1 (commit
 [`624f60e`](https://github.com/luigiggigo/patchrondo/commit/624f60e77ce4122473af472931371d2faf15167b)),
 the correction of the activity journal reader (`a529273`), the agent settings
-(`77cdc14`), the test consent before the review (`b7347fe`) and the
-capability and acceptance engine (`303a8d3`). The remote commit (`git
-ls-remote`), the empty tag list and the empty GitHub Releases list were
-checked on October 14, 2026 (exit status 0). There is no tagged release.
+(`77cdc14`), the test consent before the review (`b7347fe`), the capability
+and acceptance engine (`303a8d3`), refused writes answered on Windows
+(`8fe1f47`), the documentation structure (`b376702`) and the review settled
+by kind (`b9e5283`). The remote commit (`git ls-remote`), the empty tag list
+and the empty GitHub Releases list were checked on October 16, 2026 (exit
+status 0). There is no tagged release.
 
-Checked with `gh run list` and `gh run view` the same day:
+Checked with `gh run list` and `gh run view` on October 16, 2026:
+
+- [CI run 38963145556](https://github.com/luigiggigo/patchrondo/actions/runs/38963145556)
+  for `b9e5283` completed **successfully** in all six jobs (Python 3.11 and
+  3.13 on Ubuntu, Windows and macOS).
+- [CI run 38635937887](https://github.com/luigiggigo/patchrondo/actions/runs/38635937887)
+  for `b376702` completed **successfully** in all six jobs.
+- [CI run 38635373547](https://github.com/luigiggigo/patchrondo/actions/runs/38635373547)
+  for `8fe1f47` was **cancelled**: its two Ubuntu jobs passed, and its four
+  Windows and macOS jobs were cancelled when the push of `b376702`, four
+  minutes later, superseded the run. `b376702` changes documentation only, so
+  its run covers the code of `8fe1f47` on all three systems.
+
+Checked on October 14, 2026:
 
 - [CI run 38630375033](https://github.com/luigiggigo/patchrondo/actions/runs/38630375033)
   for `303a8d3` **failed**. Five of its six jobs passed. The job for Python
@@ -75,6 +92,83 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## A change to the code only for what the code can satisfy (October 16, 2026)
+
+This section covers changes to `acceptance.py`, `report.py` and
+`static/js/views/task.js`, with their tests, the synthetic reviewer of
+`tools/ui_e2e.py` and three new mutation protections, developed on top of
+`b9e5283`. The package version is unchanged, 0.2.1.
+
+**The defect.** A review of `b9e5283` found that the reviewer could still send
+the developer criteria it cannot satisfy. `settle_review` counted a
+`CODE_CHANGES_REQUIRED` outcome for any criterion, also one the plan gives to
+the user, such as "Verificare la mod dentro Mod Organizer 2" (classified as
+integration with an external application, verified by the user). An approval
+with that outcome became a request for changes, and a request for changes
+whose only reason it was stayed one: only an outcome that hands a criterion
+over allowed the settlement. `feedback_parts` then showed the entry to the
+developer as its work, while the same criterion was listed under "Not work for
+the developer". Each iteration asked again for the same thing, until
+`max_iterations_reached`.
+
+**Changes.** `CODE_CHANGES_REQUIRED` now counts only for a criterion a change
+to the files can satisfy (`Acceptance.for_reviewer`, a criterion that needs
+`edit`, also after a review handed it over). For any other it is kept with
+the criterion as the reviewer's opinion, listed in the settled answer's
+`refused_changes`, and changes neither the verdict nor the plan. A request for
+changes with nothing else in it is settled as an approval
+(`no_code_change_requested`); `feedback_parts` sends the developer such an
+outcome only for a criterion of the reviewer. The reviewer's instructions say
+which criteria take that outcome, and the task page and `report.md` name the
+refused changes. An issue of kind `CODE_CHANGES_REQUIRED` names no criterion
+and still sends the code back: that is unchanged.
+
+**Regression tests.** Two were added to `tests/test_acceptance.py` (584 tests
+in all):
+`test_a_change_to_the_code_counts_only_for_a_criterion_a_change_to_the_files_can_satisfy`
+and
+`test_a_change_asked_for_a_check_only_a_person_can_do_does_not_go_back_to_the_developer`.
+Run against the previous `acceptance.py` and `report.py` on native Windows
+with Python 3.13.3, both failed: the engine test found the task `blocked` at
+the review after six iterations instead of paused at `validate` after one
+developer and one reviewer call (1 failure), and the unit test failed in its
+two subtests and in the rest of its body, where the settled answer had no
+`refused_changes` (3 errors). In `tools/ui_e2e.py` the synthetic reviewer
+can now be given a verdict and outcomes, and the `criteria` scenario has it
+answer `CHANGES_REQUESTED` with `CODE_CHANGES_REQUIRED` for its Mod Organizer
+2 criterion. Its existing checks (one developer call, one reviewer call, the
+pause at Validate) and three new ones cover the defect through the
+interface. Run from a copy of the repository with the previous
+`acceptance.py` and `report.py`, the task ended blocked and the scenario
+failed (10 passed, 1 failed, exit status 1). Each of the three new
+protections, and the one whose pattern changed, was also run alone before the
+full set and detected.
+
+Validation on October 16, 2026, on the final code. In WSL2, `~/.local/bin`
+and `/usr/local/bin` were removed from `PATH`, and `shutil.which` found
+neither `claude` nor `codex`:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Full unittest suite | Native Windows, Python 3.13.3: 584 tests, 573 passed, 11 skipped, 303.700 s | 0 |
+| Full unittest suite | Native Windows, Python 3.11.3: 584 tests, 573 passed, 11 skipped, 276.934 s | 0 |
+| Full unittest suite | WSL2 kernel 6.6.87.2, Python 3.12.3: 584 tests, 566 passed, 18 skipped, 152.175 s | 0 |
+| Protections | WSL2, Python 3.12.3: 153 of 153 removed safeguards detected, 0 missed (three of them new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (interruption and stale-lock scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.12 s after the planned time | 0 |
+| Browser, all twelve scenarios | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed | 0 |
+| Build and `twine check` | Native Windows: sdist and wheel of 0.2.1 built outside the repository; both passed | 0 / 0 |
+| Publication scanner | 118 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass. Every provider was scripted: no model was
+called. The opt-in tests in the real Codex sandbox were not run:
+`environment.py`, `preflight.py`, `winacl.py`, `repair.py` and
+`core._environment` did not change. Whether a real reviewer still marks such
+a criterion `CODE_CHANGES_REQUIRED` after the new instruction has not been
+checked with an authorized call; when it does, the outcome is recorded and
+refused, and nothing goes back to the developer.
 
 ## The review settled by kind, with an outcome for each criterion (October 14, 2026)
 

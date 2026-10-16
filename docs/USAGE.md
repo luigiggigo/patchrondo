@@ -193,9 +193,12 @@ the code, it gives each criterion one outcome: satisfied, the code has to
 change, a check is missing, nobody here has the tools, an operation has to be
 authorized, a person has to act. PatchRondo validates that answer. A request
 for changes that names no change to the code asks nothing of the developer,
-so nothing goes back to the developer. What the reviewer says about a
-criterion it cannot verify is shown as its opinion and is not evidence. A real
-defect in the code still goes back, with the outside checks listed apart.
+so nothing goes back to the developer. Neither does a change to the code that
+the reviewer asks for a criterion no change to the files can satisfy, such as
+a check inside another program: that criterion waits for you. What the
+reviewer says about a criterion it cannot verify is shown as its opinion and
+is not evidence. A real defect in the code still goes back, with the outside
+checks listed apart.
 An issue the reviewer marks as a change the code requires keeps the code from
 being approved, whatever its severity; an *observation* never does. For a task
 created with its criteria, an approval has to give each criterion it verifies

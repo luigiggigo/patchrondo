@@ -1206,14 +1206,21 @@ unclassified criterion); the review or the commands that have not run yet
 
 - An outcome for an unknown or repeated criterion is counted in
   `ignored_criteria` and not applied.
-- `APPROVED` with a criterion marked `CODE_CHANGES_REQUIRED` becomes
-  `CHANGES_REQUESTED` (`normalized: "code_change_named"`).
+- `CODE_CHANGES_REQUIRED` counts only for a criterion that a change to the
+  files can satisfy (`Acceptance.for_reviewer`: one that needs `edit`, also
+  after a review handed it over). For a criterion the plan gives to the user
+  or to the project's commands it is kept with the criterion as the
+  reviewer's opinion, listed in `refused_changes`, and changes neither the
+  verdict nor the plan.
+- `APPROVED` with a criterion of the reviewer marked `CODE_CHANGES_REQUIRED`
+  becomes `CHANGES_REQUESTED` (`normalized: "code_change_named"`).
 - `CHANGES_REQUESTED` with no issue about the code and no
-  `CODE_CHANGES_REQUIRED` outcome, while at least one criterion was handed
-  over and every criterion of the developer is `SATISFIED` or handed over,
-  becomes `APPROVED` (`normalized: "no_code_change_requested"`,
-  `reported_verdict` keeps the answer). It asked nothing of the developer, so
-  nothing is sent to the developer. `BLOCKED` is never changed.
+  `CODE_CHANGES_REQUIRED` outcome that counts, while at least one criterion
+  was handed over or had its change refused, and every criterion of the
+  developer is `SATISFIED` or handed over, becomes `APPROVED` (`normalized:
+  "no_code_change_requested"`, `reported_verdict` keeps the answer). It asked
+  nothing the developer can do, so nothing is sent to the developer. `BLOCKED`
+  is never changed.
 - An outcome that hands a criterion over (`VALIDATION_REQUIRED`,
   `CAPABILITY_BLOCKED`, `APPROVAL_REQUIRED`, `MANUAL_ACTION_REQUIRED`,
   `NOT_ASSESSED`) replaces the review of the code by a check of the user as
@@ -1240,7 +1247,8 @@ These decisions come from the structured answer, never from its prose.
 `feedback.md` then holds the issues about the code and the outcomes of the
 developer's criteria; what is open outside the code is listed apart, under
 "Not work for the developer", and the developer's prompt names the criteria
-that are its work and those that are not. An observation is in neither list.
+that are its work and those that are not. A criterion whose change was
+refused is listed apart; an observation is in neither list.
 
 ### In the loop
 
