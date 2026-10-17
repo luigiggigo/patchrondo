@@ -16,7 +16,8 @@ October 16, 2026, validated on October 16 and 17, 2026. Saved criteria that
 cannot be read pause the task, and statuses shown as the ledger has them:
 October 17, 2026. Findings of a review keep their identity: October 17, 2026.
 Findings with a criterion the task does not have, and IDs kept from the
-findings field only: October 17, 2026.
+findings field only: October 17, 2026. Versioned workflow events: October
+17, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -97,6 +98,119 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Versioned workflow events (October 17, 2026)
+
+This section covers changes on top of `bd6536b`: the new module
+`history.py`; `core._event`, `_reviewed` and the events of the review, of
+the approval, of an invalidation and of a ledger started again in
+`core.py`; `recovery._audit`; `tests/test_history.py`; seven new mutation
+protections and the pattern of one existing protection. The package version
+is unchanged, 0.2.1. The request was the third step of the user's plan for
+0.3, "Structured Workflow Events".
+
+**What existed.** `state["history"]` was written by `core._event` and
+`recovery._audit`, each appending `{"at", "event", "iteration", **details}`
+under the task lock, and saved by `_save` or, in the interface's operations
+and in a waiting supervisor, by `save_json`: the atomic write of
+`state.json`. A detail could replace `at`, `event` or `iteration`. Events had
+no ID; `review_completed` carried the verdict and, when it was settled,
+`reported`; `code_approved` named its review record. The readers
+(`report.py`, the task timeline, the last three events of the task list,
+`tools/`) read `at`, `event`, `iteration` and named details, and the engine
+never read the history. The activity journal, the ledger and the findings
+already had IDs of their own. The change extends `_event` instead of adding
+an event bus, a database or a second journal.
+
+**Changes.** Every event written has `version`, `id` (`WE-0001`), `task_id`
+and `phase` beside the fields it had, set by `history.append` and never by a
+detail; text is cut and redacted, lists and objects bounded. A new number is
+past every ID of the history and past its length. `review_completed` names
+its ledger record, counts the issues and the issues recorded under no
+finding, lists the findings recorded, new and linked, and gives
+`normalized` when the backend settled the verdict. `code_approved`, or
+`task_completed` when the same run completes the task, names the findings
+the approval made `PENDING_VERIFICATION`. `evidence_invalidated` and
+`evidence_ledger_restarted` name the records they wrote. Older events are
+never rewritten. `docs/ARCHITECTURE.md`, section 15, has the schema and the
+limits of crash consistency.
+
+**Where this differs from the request, and why.**
+
+- Field names follow the records of the repository: `version`, as the
+  `acceptance` and `findings` records, the ledger and the environment check
+  have it, and `id` for the event's own identity, as records, findings and
+  criteria have it. `task_id` is kept: a reference, as `finding_id` and
+  `criterion_id` are. The ledger record of a review is `evidence`, the name
+  `code_approved`, `evidence_recorded` and `authorization_decided` already
+  used, not `review_evidence_id`.
+- IDs have at least four digits (`WE-0012`), as ledger records (`E-0012`);
+  a number past 9999 keeps all its digits.
+- Scenario D asked for a review that "creates RF-001 and recognizes
+  RF-002". A new finding is numbered past every ID in use, so RF-002 cannot
+  exist before RF-001. The test has a second review recognize RF-002 by its
+  ID and create RF-003, and a third recognize RF-001 by the same words.
+- `code_approved` is still written only when the task does not complete at
+  once: writing it there too would change the events of the loop. When the
+  run that approves the code completes the task, `pending_verification` is
+  on `task_completed`.
+- A detail named like a field raises `ValueError` instead of being dropped:
+  it is a mistake of the code that calls `_event`, and the tests exercise
+  every call.
+- `phase` is the phase at the moment the event is recorded: `task_completed`
+  has `complete`, and the `evidence_invalidated` that follows a development
+  step has `test`, as `state.json` has at that moment.
+
+**Tests.** `tests/test_history.py`, 15 tests: the schema and the next ID, a
+detail that names a field (through `history.append`, `core._event` and
+`recovery._audit`), the bounds and the redaction, the numbering past older
+events, past an ID beyond the length and past values that are not IDs; and,
+with scripted providers, a run whose every event is numbered and saved (A,
+B), an older history run on (C), a review with new and linked findings and a
+settled verdict, and issues recorded under no finding (D), findings left out
+and made to wait by an approval, with no event saying `RESOLVED` (E), the
+three pauses a Resume leaves unchanged byte for byte and a Resume that has
+something to do (F), an interruption, a process that ends after the review
+record and before the checkpoint, and quota recovery (G), a review record
+invalidated and then a ledger started again, and the activity journal and
+events added to the history by hand verifying nothing (H). Run on native
+Windows with Python 3.13.3 against the `core.py` and `recovery.py` of
+`bd6536b`, with the new module present so that it imports, 12 of the 15
+failed (10 failures, subtests counted, and 5 errors); the three that passed
+test the new module alone (two) or a property that already held (H). Each of
+the seven new protections was run alone on native Windows before the full
+set and detected. The decisions of the scenario recorded before findings
+(`DECIDED`) are unchanged.
+
+Validation on October 17, 2026, of these changes. In WSL2, `~/.local/bin`
+and `/usr/local/bin` were removed from `PATH`; on native Windows,
+`.local\bin`, the WinGet links and the folders of the VS Code extension.
+`shutil.which` found neither `claude` nor `codex` in either, and no new file
+appeared under `~/.claude/projects` or `~/.codex/sessions` after the WSL2
+runs:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Unittest modules `test_history`, `test_findings`, `test_acceptance`, `test_criteria_ui`, `test_workflow`, `test_recovery`, `test_recovery_checks`, `test_cli`, `test_ui`, `test_frontend`, `test_integration_cli`, `test_environment`, `test_agents`, `test_live_activity`, `test_storage`, `test_provider_e2e`, `test_reliability_e2e` | Native Windows, the system Python 3.13.3: 438 tests, 434 passed, 4 skipped, 470 s | 0 |
+| Unittest modules `test_history`, `test_findings`, `test_acceptance`, `test_criteria_ui`, `test_workflow`, `test_recovery`, `test_recovery_checks` | Native Windows, Python 3.11.3: 207 tests, 206 passed, 1 skipped, 208 s | 0 |
+| Protections | WSL2, Python 3.12.3: 213 of 213 removed safeguards detected, 0 missed (seven of them new), 435 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.07 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed, 130 s | 0 |
+| Publication scanner | 122 files checked; the same five findings as in the next section | 1 |
+
+The scanner is not a clean pass: its five findings are those recorded
+before. Every provider was scripted: no model was called. Under the rule of
+October 17, 2026, the full unittest matrix, the package build and `twine
+check` were not run here. The opt-in tests in the real Codex sandbox were
+not run: the environment check did not change. `tests/test_browser_tools.py`
+was not run: `tools/ui_e2e.py` did not change.
+
+**Not verified.** The events do not depend on a provider, and none was
+called. What the sections below say under "Not verified" about the fields of
+the review schema holds here too: whether Claude Code and Codex give finding
+IDs back as asked decides how many findings `linked_findings` lists.
 
 ## Findings with a criterion the task does not have, and IDs kept from the findings field only (October 17, 2026)
 

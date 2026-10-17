@@ -386,8 +386,10 @@ MUTATIONS = [
     # --- acceptance criteria, capabilities and evidence -------------------------------------------
     Mutation("approved code completes a task whose criteria are not verified", "core.py",
              "                        if record.outcome == criteria.Outcome.RELEASE_READY:\n"
-             "                            return _complete(path, state)\n",
-             "                        if True:\n                            return _complete(path, state)\n", ("test_acceptance",)),
+             "                            return _complete(path, state, **({\"pending_verification\": waiting} if waiting else {}))\n",
+             "                        if True:\n"
+             "                            return _complete(path, state, **({\"pending_verification\": waiting} if waiting else {}))\n",
+             ("test_acceptance",)),
     Mutation("a task that waits for a person is run again while nothing changed", "core.py",
              "            # Idempotent Resume: while nothing was attached, decided or changed, a run has nothing to do.\n"
              "            return state\n",
@@ -641,6 +643,29 @@ MUTATIONS = [
              ("test_findings",)),
     Mutation("the review record does not name the findings of its issues", "core.py",
              "findings=named or None,", "findings=None,", ("test_findings",)),
+    # --- workflow history ---------------------------------------------------------------------------
+    Mutation("a detail sets a field of an event", "history.py",
+             "    if taken:\n        raise ValueError(f\"Details cannot set the fields of an event: {', '.join(taken)}\")\n", "",
+             ("test_history",)),
+    Mutation("a new event takes the number of an event in the history", "history.py",
+             "    number = max([len(events), *(_number(entry) for entry in events)]) + 1\n",
+             "    number = len(events) + 1\n", ("test_history",)),
+    Mutation("the first new event of an older history is numbered as if the history were empty", "history.py",
+             "    number = max([len(events), *(_number(entry) for entry in events)]) + 1\n",
+             "    number = max([0, *(_number(entry) for entry in events)]) + 1\n", ("test_history",)),
+    Mutation("the text of an event is not redacted", "history.py",
+             "        return clip(redact(value), TEXT_LIMIT)\n", "        return clip(value, TEXT_LIMIT)\n", ("test_history",)),
+    Mutation("the lists of an event are not bounded", "history.py",
+             "        return [_bounded(item, depth + 1) for item in value[:LIST_LIMIT]]\n",
+             "        return [_bounded(item, depth + 1) for item in value]\n", ("test_history",)),
+    Mutation("the events of quota recovery are written without the fields of the schema", "recovery.py",
+             "    history.append(state, name, **details)  # numbered with the events of the engine, in the same history\n",
+             "    state[\"history\"].append({\"at\": now(), \"event\": name, \"iteration\": state[\"iteration\"], **details})\n",
+             ("test_history",)),
+    Mutation("the reviewer's words go into the history", "core.py",
+             "            **({\"normalized\": review[\"normalized\"]} if review.get(\"normalized\") else {})}\n",
+             "            **({\"normalized\": review[\"normalized\"]} if review.get(\"normalized\") else {}), \"summary\": review[\"summary\"]}\n",
+             ("test_history",)),
 ]
 
 

@@ -41,6 +41,14 @@ failure kind, the provider name, a reset time and the stated wait in seconds.
 The complete captured output is in the run logs of the task directory. None of
 it is filtered for secrets, so treat task state as private project data.
 
+The history of a task, in the same `state.json`, records what PatchRondo did:
+names of events, their IDs, references to ledger records, findings and
+criteria, counts and fixed words. It takes no text from an agent. What text
+it holds, such as the message of a retrieval failure, is cut at 600
+characters and passed through the best-effort filter for credentials of the
+activity journal. Its IDs order the events; they do not protect them from
+an edit of the file.
+
 Captured process output is bounded in memory; temporary capture files can grow on
 disk until the timeout. Apply disk quotas in isolated runners. On native Windows,
 process cleanup terminates the direct child only, and stale-lock recovery is

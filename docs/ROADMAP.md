@@ -8,7 +8,7 @@ Areas for future development; these are not commitments to a release schedule.
 - Confirm quota classification and reset parsing against usage-limit failures observed with real CLI versions, including the reset format of Claude Code; consider named time zones and an optional supervisor service that keeps a retry plan attended without a foreground process (not part of 0.2: a saved plan still needs a live `run` or `resume`).
 - Process supervision on native Windows: tracking of the whole process tree of an agent, which stale-lock recovery and Stop need before they can be offered there. (0.2 verifies single processes on Windows for display only.)
 - Approval requests for risky tools and notifications.
-- Progress and stall detection from Git and test changes and from the findings of the reviews, which keep their IDs across iterations; a record that verifies that one finding is resolved.
+- Progress and stall detection from Git and test changes, from the findings of the reviews, which keep their IDs across iterations, and from the workflow history, whose events carry IDs and name the ledger records and findings of each review; a record that verifies that one finding is resolved.
 - An executor of its own for builds, packaging and integration checks, with its own consent, so that criteria of those kinds can be verified without the user doing them by hand. Today the runtime runs only the project's configured commands, and an authorization is a recorded decision.
 - Confirm the review answer with an outcome per criterion, and with links to earlier findings, with authorized real runs of both CLIs.
 - Changing the kind of a criterion after the task was created.

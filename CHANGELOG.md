@@ -9,6 +9,47 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Workflow events are versioned and identified — October 17, 2026
+
+- **Every event written to a task's history has an identity.** Besides
+  `at`, `event`, `iteration` and its details, an event now carries `version`
+  (1), `id` (`WE-0001`, `WE-0002`, …), `task_id` and `phase`, set by
+  `history.py` from the state and PatchRondo's clock. A new number is past
+  every ID of the history and past its length, so an ID that was saved is
+  never given again. A detail can no longer set one of these fields: a call
+  that tries raises an error and records nothing. Text in an event is cut and
+  filtered for credentials, and lists and objects are bounded. The events of
+  quota recovery are numbered with those of the engine.
+- **A review is tied to its ledger record and to its findings.**
+  `review_completed` names the `review` record of the ledger (`evidence`),
+  counts the issues, lists the findings they were recorded under, new
+  (`new_findings`) or linked to an earlier one (`linked_findings`), counts
+  the issues recorded under none, and says how the backend settled the
+  verdict when it did (`normalized`). `code_approved`, or `task_completed`
+  when the same run completes the task, names the findings the approval made
+  wait for a verification (`pending_verification`); none is resolved by it.
+  `evidence_invalidated` names its `invalidation` records and
+  `evidence_ledger_restarted` the `restart` record of the new ledger.
+- **References, not proof.** No event takes words from an agent. An event
+  says what PatchRondo did; whether a record it names counts is the ledger's
+  to say, and nothing reads the history to decide. Events are saved with the
+  checkpoints, as before: those of a checkpoint that was never saved are not
+  written afterwards.
+- **Older histories are read as they are.** Events without an ID are never
+  rewritten; the first new event of such a task is numbered past them.
+- **The loop decides as before.** The same events are written in the same
+  order, the decisions recorded before findings (`DECIDED` in
+  `tests/test_findings.py`) are unchanged, and a Resume with nothing to do
+  still adds no event.
+- `tests/test_history.py` has 15 tests: the schema, the numbering, the
+  bounds, an older history, a review with new and linked findings, findings
+  left out, the three idempotent pauses, an interruption, a process that
+  ends before its checkpoint, a reference to a record invalidated and then a
+  ledger started again, what the activity journal and an event added by hand
+  do not verify, and quota recovery. Seven new mutation protections in
+  `tools/recovery_checks.py` remove one safeguard each, and the pattern of
+  one existing protection follows the changed line.
+
 ### Findings: a criterion the task does not have links nothing, and free text takes no ID — October 17, 2026
 
 - **A `criterion_id` the task does not have is no longer taken for none.**

@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 import time
 
+from . import history
 from .storage import LockBusy, TaskLock, now, read_json, save_json
 
 DEFAULTS = {"enabled": False, "quota_only": True, "max_consecutive_retries": 3,
@@ -140,7 +141,7 @@ def plan(*, failures: int, first_failure_at: datetime, failure_at: datetime,
 
 
 def _audit(state: dict, name: str, **details) -> None:
-    state["history"].append({"at": now(), "event": name, "iteration": state["iteration"], **details})
+    history.append(state, name, **details)  # numbered with the events of the engine, in the same history
 
 
 def _section(state: dict) -> dict | None:

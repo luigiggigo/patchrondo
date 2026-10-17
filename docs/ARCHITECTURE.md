@@ -10,6 +10,7 @@
 | `capabilities.py` | What each executor of a task can do (developer, reviewer, PatchRondo itself, the user), read from settings and from the computer; nothing is started |
 | `evidence.py` | The evidence ledger of a task: append-only, hash-chained records of commands, reviews, checks by the user and decisions; invalidation and integrity |
 | `findings.py` | The findings of a task's reviews: an ID for each problem that it keeps across iterations, links by fixed rules only, and its history; it decides nothing |
+| `history.py` | The workflow history of a task: versioned events with an ID each, saved with the checkpoints, naming ledger records, findings and criteria; it proves and decides nothing |
 | `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse; starts each step with its agent settings |
 | `agents.py` | Agent settings: the typed table of what each CLI can be started with, validation, the three levels and their resolution, the frozen record of a step, the command of a step, presets, model lists and the checks of *Test configuration* |
 | `streams.py` | Parsers of the two CLIs' activity streams into provider-independent events; drop internal reasoning; keep a bounded transcript |
@@ -60,6 +61,7 @@ interface cannot bypass the lock, the checkpoints or the consent rules.
 - What the interface says about a process comes from a check of that process, never from `status` alone, and a failed check is reported as unknown (section 10).
 - Live activity is an observation. The engine never reads the journal, what an agent says while it works is never its answer, and failing to observe or to record never fails a step (section 11).
 - The findings of the reviews are a record. They decide nothing, an ID is never given to a second problem, a link is checked and never guessed, and a finding a review leaves out is not resolved (section 14, "Findings of the reviews").
+- The history of a task records what the orchestration did. Its events are written by the backend, numbered once, saved with the checkpoints and never rewritten; they prove nothing, and the engine never reads them to decide (section 15).
 - A project is trusted for tests only by explicit consent given for that project; registering or importing one never enables tests.
 
 ## 3. Review contract
@@ -128,7 +130,9 @@ are not concatenated. Each iteration keeps prompts, logs and replies for auditin
 A phase is complete only when `state.json` records the next `phase`. After an
 abrupt termination, unfinished actions may be **repeated**: the model sees the
 worktree with partial changes. Exactly-once execution is not guaranteed within a
-phase, so work should be idempotent with respect to file contents.
+phase, so work should be idempotent with respect to file contents. Events of
+the history recorded since the last saved checkpoint are lost with it and are
+not written afterwards (section 15).
 
 If the runner dies with `SIGKILL`, child processes may continue working. `TaskLock`
 and `*.active-process.json` prevent forced unlocking while recorded PIDs are
@@ -1505,3 +1509,120 @@ stopped.
   reported, and nothing reads it to decide. A finding saved before its
   definition was corrected on October 17, 2026 keeps the value it was saved
   with until it is reported again.
+
+## 15. Workflow history
+
+Since October 17, 2026 every event the engine writes to `state["history"]`
+is versioned and identified (`history.py`). Four records are kept apart:
+
+| Record | What it holds |
+|---|---|
+| The history, in `state.json` | What the orchestration decided or did: a run started, a step started or ended, a review was settled, the code was approved, the task paused |
+| The activity journal, `activity.jsonl` | What the agents and the test runner showed while they worked (section 11): an observation, never an answer and never evidence |
+| The evidence ledger, `evidence.jsonl` | What was verified, by whom and on which files, and what stopped counting (section 14) |
+| The findings, `state["findings"]` | The identity and the history of each problem the reviews reported (section 14) |
+
+The history proves nothing, and the engine never reads it to decide. A later
+detection of progress can read it beside the other three.
+
+```json
+{
+  "version": 1, "id": "WE-0014", "task_id": "T-bcf343d027e6", "event": "review_completed",
+  "at": "2026-10-17T13:59:14+00:00", "iteration": 2, "phase": "review",
+  "verdict": "CHANGES_REQUESTED", "evidence": "E-0005", "issues": 2,
+  "finding_ids": ["RF-002", "RF-003"], "new_findings": ["RF-003"], "linked_findings": ["RF-002"],
+  "unrecorded_issues": 0
+}
+```
+
+| Field | What it holds |
+|---|---|
+| `version` | The schema of the event: 1 |
+| `id` | `WE-` and a number of at least four digits: unique in the task, in the order of the list, never given twice once saved |
+| `task_id` | The task the event belongs to (`state["id"]`) |
+| `event` | What happened, as before |
+| `at` | When it was recorded: UTC, PatchRondo's clock, to the second, as before |
+| `iteration` | The iteration of the task, as before |
+| `phase` | The phase the task was at when the event was recorded (`complete` for `task_completed`) |
+
+`history.append` sets these seven from the state and the clock. A detail
+named like one of them raises `ValueError` and appends nothing: a mistake of
+the code that calls it. The details of each kind of event are those it had,
+with the references below. Text is cut at 600 characters and passed through
+`redact`; a list or an object keeps 100 entries over three levels; a value
+JSON cannot hold is written as text, and a number that is not finite as
+null. Both writers of the history call it, `core._event` and
+`recovery._audit`, so the events of quota recovery, `recovery_wait_started`
+of a waiting supervisor included, are numbered with those of the engine.
+
+### References
+
+| Event | What it names since October 17, 2026 |
+|---|---|
+| `review_completed` | `evidence`: the `review` record of the ledger. `issues`. `finding_ids`: the findings its issues were recorded under (`Findings.observe`), split by the `finding_link` of the issues into `new_findings` (`new`) and `linked_findings` (`explicit` or `identical`). `unrecorded_issues`: issues recorded under no finding, because the findings could not be read or no ID was left. `normalized` when the backend settled the verdict (`code_change_named`, `no_code_change_requested`), beside `reported`, the verdict as answered |
+| `code_approved` | `pending_verification`: the developer's findings this approval made `PENDING_VERIFICATION`, an empty list when none |
+| `task_completed` | `pending_verification`, when the run that completed the task approved the code and that approval made findings wait for a verification: `code_approved` is not written then |
+| `evidence_invalidated` | `invalidations`: the `invalidation` records written, which name what stopped counting |
+| `evidence_ledger_restarted` | `evidence`: the `restart` record of the new ledger |
+
+`code_approved`, `evidence_recorded` and `authorization_decided` already
+named their record in `evidence`; `task_paused`, `task_blocked` and the
+other events are unchanged. No event takes words from an agent: not the
+summary of a review, not the description of an issue, not a handoff. A
+verdict is the one `parse_review` and `settle_review` validated, finding IDs
+are those PatchRondo gave and `observe` recorded, criterion IDs come from
+the task's record. Lists hold IDs, never copies of findings, criteria or
+records.
+
+A reference is only a reference. `review_completed` says that a review was
+settled with that verdict, not that the code is right; `development_completed`
+says that a step ended, not that a problem is gone; a finding a review does
+not list is not resolved, and no event says `RESOLVED`. Whether the record
+an event names still counts is the ledger's to say: after an invalidation
+the event names it as before, and after a restart the new ledger numbers its
+records apart (`E2-0001`), so an ID an event names never comes to mean
+another record.
+
+### IDs, checkpoints and Resume
+
+An event is appended to the state in memory and saved with the checkpoint
+that follows it (`_save`, or `save_json` in the interface's operations and
+in a waiting supervisor), in the same atomic write as the rest of
+`state.json`. Only `state.json` holds event IDs: the ledger, the journal and
+the findings do not. The number of a new event is past every ID of the
+history and past its length, so an ID that was saved is never given again;
+an event lost with a checkpoint that was never saved leaves its number free,
+since nobody saw it.
+
+- A Resume with nothing to do (sections 2 and 4: `tests_disabled`,
+  `awaiting_validation` or `awaiting_authorization`, `acceptance_unreadable`)
+  returns the saved state before any event, and uses no ID.
+- A run that pauses saves the events it had, and the next run numbers on
+  after them.
+- A process that ends between two checkpoints loses the events since the
+  last one. The next run does not write them afterwards: an event describes
+  what was recorded when it was written, and nothing is reconstructed.
+- `state.json` and `evidence.jsonl` are two files written one after the
+  other, with no transaction across them. A ledger record whose checkpoint
+  was never saved, such as a review recorded just before the process ended,
+  is named by no event; an `invalidation` record can exist without its
+  `evidence_invalidated`. The ledger stays the authority for evidence, and
+  the next run judges from it.
+
+### Older histories
+
+Events written before have `at`, `event`, `iteration` and their details.
+They are read as they are and never rewritten or given IDs; the report, the
+interface and the tools read the same fields from both. The first new event
+of such a task is numbered after the length of its history: `WE-0011` in a
+task with ten older events.
+
+### Limits
+
+- The IDs order the events of one task; they are not a signature. Somebody
+  who edits `state.json` can change or remove events, as any other part of
+  the state, and nothing notices it.
+- `at` has a resolution of one second; the order of the list is the order of
+  the events.
+- A list in an event stops at 100 entries; the counts beside it (`issues`,
+  `unrecorded_issues`, `records`) are complete.

@@ -18,7 +18,7 @@ from .gitops import repo_root, create_worktree, changes, stat, fingerprint
 from .process import execute, short_log
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
-from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, providers, rag, recovery, winacl
+from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -224,8 +224,9 @@ def create_task(home: Path, *, title: str, description: str, acceptance: list,
     return task_id, worktree
 
 
-def _event(state: dict, name: str, **details) -> None:
-    state["history"].append({"at": now(), "event": name, "iteration": state["iteration"], **details})
+def _event(state: dict, name: str, **details) -> dict:
+    """Record what the orchestration did in the task's history (`history.append`), saved with the next checkpoint."""
+    return history.append(state, name, **details)
 
 
 def _save(path: Path, state: dict) -> None:
@@ -313,8 +314,8 @@ def _ledger(path: Path, state: dict, record: criteria.Acceptance) -> evidence.Le
         problems.append(evidence.UNANCHORED)
     if problems:
         # Its records prove nothing any more: the file is kept aside, and what it verified has to be verified again.
-        evidence.restart(path, problems)
-        _event(state, "evidence_ledger_restarted", problems=len(problems))
+        started = evidence.restart(path, problems)
+        _event(state, "evidence_ledger_restarted", problems=len(problems), evidence=started["id"])
         record.ledger = {"count": 0, "head": ""}
         record.code = {"status": str(criteria.Code.PENDING), "reason": "The evidence ledger was started again"}
         ledger = evidence.read(path)
@@ -333,11 +334,10 @@ def _sync(root: Path, cfg: dict, path: Path, state: dict, *, current: str | None
     record = _acceptance(path, state)
     ledger = _ledger(path, state, record)
     stale = evidence.outdated(ledger, current)
-    for reason, records in stale.items():
-        evidence.append(path, "invalidation", executor="runtime", result="invalidated", of=records, reason=reason,
-                        iteration=state["iteration"])
+    written = [evidence.append(path, "invalidation", executor="runtime", result="invalidated", of=records, reason=reason,
+                               iteration=state["iteration"])["id"] for reason, records in stale.items()]
     if stale:
-        _event(state, "evidence_invalidated", records=sum(len(records) for records in stale.values()))
+        _event(state, "evidence_invalidated", records=sum(len(records) for records in stale.values()), invalidations=written)
         ledger = evidence.read(path)
     record.refresh(ledger, capabilities=_capabilities(root, cfg, state, record), developing=developing)
     state["acceptance"] = record.dump()
@@ -397,6 +397,21 @@ def _keep_findings(state: dict, registry: findings.Findings | None) -> None:
     """Put the findings in the state, saved with the next checkpoint. A task no review reported an issue for gets no record."""
     if registry is not None and (registry.items or "findings" in state):
         state["findings"] = registry.dump()
+
+
+def _reviewed(review: dict, entry: dict, recorded: list[str]) -> dict:
+    """What `review_completed` says about a settled review, beside its verdict: references and counts, no text.
+
+    `entry` is its record in the ledger and `recorded` the findings its issues
+    were recorded under (`Findings.observe`), new or linked to an earlier one
+    as `finding_link` says. An issue recorded under none is counted.
+    """
+    links = {issue.get("finding_id"): issue.get("finding_link") for issue in review["issues"]}
+    return {"evidence": entry["id"], "issues": len(review["issues"]), "finding_ids": recorded,
+            "new_findings": [name for name in recorded if links.get(name) == "new"],
+            "linked_findings": [name for name in recorded if links.get(name) in {"explicit", "identical"}],
+            "unrecorded_issues": len(review["issues"]) - len(recorded),
+            **({"normalized": review["normalized"]} if review.get("normalized") else {})}
 
 
 def _context(home: Path, cfg: dict, path: Path, state: dict, workspace: Path, role: str) -> str:
@@ -815,10 +830,10 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
     return error
 
 
-def _complete(path: Path, state: dict) -> dict:
+def _complete(path: Path, state: dict, **details) -> dict:
     state["status"] = "done"
     state["phase"] = "complete"
-    _event(state, "task_completed")
+    _event(state, "task_completed", **details)
     _save(path, state)
     _report(path, state)
     return state
@@ -1048,25 +1063,27 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                         review = registry.settle(review, record) if registry is not None else findings.unlinked(review)
                         state["review"] = review
                         entry = _record_review(path, state, review, current, run_dir)
-                        if registry is not None:
-                            registry.observe(review, entry["id"], iteration, record)
+                        recorded = registry.observe(review, entry["id"], iteration, record) if registry is not None else []
                         _keep_findings(state, registry)
                         _event(state, "review_completed", verdict=review["verdict"],
-                               **({"reported": review["reported_verdict"]} if review.get("reported_verdict") else {}))
+                               **({"reported": review["reported_verdict"]} if review.get("reported_verdict") else {}),
+                               **_reviewed(review, entry, recorded))
                     changed = bool(changes(workspace))
                     if review["verdict"] == "APPROVED" and _tests_green(state) and (changed or cfg["workflow"]["allow_no_changes"]):
+                        waiting = []  # the findings this approval made wait for a verification: none is resolved by it
                         if not reused:
                             record.approve_code(entry["id"], iteration)
                             if registry is not None:
-                                registry.approved(entry["id"], iteration)  # pending a verification, never resolved
+                                waiting = registry.approved(entry["id"], iteration)  # pending a verification, never resolved
                             _keep_findings(state, registry)
                         state["acceptance"] = record.dump()
                         record, _ = sync(current=current)
                         # Approved code is not a finished task: every required criterion needs its own evidence.
                         if record.outcome == criteria.Outcome.RELEASE_READY:
-                            return _complete(path, state)
+                            return _complete(path, state, **({"pending_verification": waiting} if waiting else {}))
                         if not reused:
-                            _event(state, "code_approved", evidence=entry["id"], open=len(record.open_required()))
+                            _event(state, "code_approved", evidence=entry["id"], open=len(record.open_required()),
+                                   pending_verification=waiting)
                         state["phase"] = "validate"
                         _save(path, state)
                         raise ValidationPending(record.pending_message(), criteria.PAUSES.get(record.outcome, "awaiting_validation"))
