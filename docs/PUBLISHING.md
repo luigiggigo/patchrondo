@@ -21,8 +21,9 @@ steps.
 
 **0.2.1** (the environment check, its repairs and the one-press start) is
 published as source on `main` in commit `624f60e`, pushed on October 12, 2026
-(00:30 +02:00). The package metadata and changelog use 0.2.1. It is not
-tagged or released. Its local validation is recorded in
+(00:30 +02:00). The package metadata remains 0.2.1; its dated publication
+history is preserved in the changelog. It is not tagged or released. Its
+local validation is recorded in
 [REVIEW.md](REVIEW.md#zero-configuration-and-self-healing-october-11-2026).
 The CI run for that commit failed in one of six jobs; the correction of the
 fault it found, in the reader of the activity journal, is published in commit
@@ -36,10 +37,23 @@ engine (`303a8d3`, October 14), refused writes answered on Windows
 (`8fe1f47`, October 14), the documentation structure (`b376702`, October 14)
 the review settled by kind (`b9e5283`, October 16), and the criteria
 records, review findings and workflow events of October 16 and 17 (`d4c0ecd`
-to `15750e6`, pushed on October 17, 2026 at 19:00 +02:00 and the head of
-`main` as checked that day) keep the same package version. Their validation is recorded in [REVIEW.md](REVIEW.md); the
+to `15750e6`, pushed on October 17, 2026 at 19:00 +02:00) keep the same
+package version. Their validation is recorded in [REVIEW.md](REVIEW.md); the
 [current status](REVIEW.md#current-source-and-ci-status-october-17-2026)
 lists the CI runs of these commits.
+
+The remote `main` was checked again on October 17, 2026 at `753d957`, which
+adds the verification runner; tags and GitHub Releases were still empty.
+Its CI run 39060579672 was in progress: four Ubuntu/macOS jobs succeeded
+and the two Windows jobs were running. The failed run 39051863842 belongs
+to the previous commit `15750e6`, whose import error is corrected in
+`753d957`; do not carry that failed result forward to the newer commit.
+The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
+Workflow Events and their integration under **0.3.0 — Unreleased**, preserving
+all dated entries. This names a development series, not a new published
+package. The [roadmap](ROADMAP.md) keeps the separate 0.35 proposal distinct.
+See [REVIEW.md](REVIEW.md#current-source-and-ci-status-october-17-2026) for
+the CI result of that exact commit.
 
 The repository is already initialized and has an `origin` remote. Future updates
 do not require `git init` or creating another GitHub repository.

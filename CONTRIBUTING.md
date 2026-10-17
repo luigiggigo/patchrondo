@@ -126,12 +126,15 @@ you are entitled to contribute. Report security issues through `SECURITY.md`.
 
 ## Documentation and version history
 
-The 0.2.0 source, including the interface and live activity, is public on
-`main`, and so is 0.2.1 since October 12, 2026. Record changes in dated
-entries under their existing version in
-`CHANGELOG.md`; update that entry when source is pushed. Verify the remote
-commit, tags and GitHub Releases before describing publication status, and
-keep source publication distinct from a tagged release.
-Keep the README, architecture and security notes consistent with the code, and
-label validation results with their date and scope. Historical CI results do not
-verify newer local changes. Follow `docs/PUBLISHING.md` for subsequent updates.
+Keep package metadata, published source and development milestones distinct.
+Metadata remains 0.2.1; Phase 1 belongs to the 0.3.0 development section of
+[CHANGELOG.md](CHANGELOG.md#030--unreleased). Preserve dates, commit references
+and validation results when grouping entries; do not rewrite the published
+0.2.1 history. The [roadmap](docs/ROADMAP.md) separates the planned 0.3 Progress
+& Stagnation Detection phase from the 0.35 Evidence Engine proposal.
+
+Verify the remote commit, tags, GitHub Releases and CI before describing
+publication status. Keep source publication distinct from a tagged release.
+Keep README, architecture and security notes consistent with the code; date
+validation results and name their platform and scope. Historical CI results
+verify only their commit. Follow [publishing guidance](docs/PUBLISHING.md).

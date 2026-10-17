@@ -48,6 +48,24 @@ result in the task's evidence ledger before any agent sees it. A developer's
 "all tests pass" is never one of them
 ([checks with a report](docs/USAGE.md#checks-with-a-report)).
 
+## Development toward 0.3
+
+Phase 1 of the [0.3 roadmap](docs/ROADMAP.md) is functionally implemented:
+the **Task Contract** keeps versioned acceptance criteria; **Review Findings**
+keep RF identities across iterations; **Workflow History** records WE events
+and their references; the **Evidence Ledger** determines which intact records
+verify criteria. Code approval and completion of every required criterion are
+separate. Findings and history do not themselves prove success.
+
+The package metadata remains **0.2.1**. **0.3.0 is in development**; this is
+experimental software, with no stable release established. The planned next
+phase is Progress & Stagnation Detection. The separate 0.35 Evidence Engine
+proposal already has a verification runner in the source; it is not that
+next phase. See the [record boundaries](docs/ARCHITECTURE.md#03-record-boundaries)
+and [validation record](docs/REVIEW.md) for evidence and remaining limits.
+CI results are recorded per commit: the failed history import in `15750e6`
+is corrected in `753d957`; its newer run has its own status in that record.
+
 ## Requirements
 
 - Python **3.11+** and Git.
@@ -124,6 +142,6 @@ of provider sandboxes, credential filtering and billing settings.
 | [Interface design](docs/DESIGN.md) | Dashboard layout, components and accessibility |
 | [Changelog](CHANGELOG.md) | Version history and dated changes |
 | [Validation record](docs/REVIEW.md) | Dated results, platforms and known verification gaps |
-| [Roadmap](docs/ROADMAP.md) | Future development areas |
+| [Roadmap](docs/ROADMAP.md) | 0.3 phases, release requirements and separate proposals |
 
 Licensed under the [MIT License](LICENSE).

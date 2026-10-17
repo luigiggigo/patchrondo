@@ -1,251 +1,25 @@
 # Changelog
 
-## 0.2.1 — zero configuration and self-healing
+## 0.3.0 — Unreleased
 
-Source published on `main` in commit `624f60e` on October 12, 2026 (00:30
-+02:00). No version tags or GitHub Releases exist as checked that day. The
-[technical review](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026)
-records what was checked, where, and what was not. The engine keeps every
-state transition of 0.2.0; what is new runs before the first agent call and
-before each review.
+Development series for the Task Contract and its related records. Phase 1 is
+functionally implemented in the source; this is not a release-readiness claim.
+Package metadata remains **0.2.1**. See the [0.3 roadmap](docs/ROADMAP.md)
+for planned work, the separate 0.35 proposal and release requirements.
 
-### Checks PatchRondo runs and records itself — October 17, 2026
+The entries below retain their original dates, technical details, commit
+references and validation descriptions. They were previously collected under
+0.2.1 because the package version had not changed. Grouping them here describes
+the development plan; it does not rename published commits or packages.
 
-- **A result of a check is what PatchRondo observed.** The new verification
-  runner (`verification.py`) runs the project's commands after each
-  development step, as the test stage did, under the same consent. Each
-  result goes into the evidence ledger as soon as its check ends, before the
-  next one starts and before any agent is told: `passed`, `failed`, `error`
-  (no result could be established) or `blocked` (not started), with the
-  exit code, times to the millisecond, the computer it ran on, the state of
-  the task's files before and after, the log and the report. Nothing an
-  agent writes reaches it, and `evidence.append` now gives a `command` record
-  to the runtime only, whatever a caller passes.
-- **Checks with a JUnit XML report.** A `verification` section beside `tests`
-  configures typed checks (`test`, `build`, `static_analysis`,
-  `repository_check`). A check with `"report": "junit"` is read from the
-  report its run wrote: exit code 0 without the report, a report that is not
-  XML, declares a document type, contradicts its exit code or its own counts,
-  or was there before the run is an error, never a pass; zero tests, fewer
-  than `min_tests`, or a `required_tests` entry without a pass fail the
-  check. A build can name the `artifacts` it must produce. The reports are
-  read with `expat`, with no entity expanded and size, depth and test cases
-  bounded.
-- **A check that gave no result no longer goes to the agents.** A missing
-  program, a refused start, an unreadable report or a check that changed the
-  task's files pause the task with `verification_blocked` or
-  `verification_error` at the test stage, where a Resume runs the checks
-  again. Before, a missing program paused with `configuration` and the rest
-  reached the reviewer and the developer as failing tests. The criterion it
-  was to prove stays `PENDING` with the reason, not `FAILED`; so does one
-  whose tests timed out.
-- **A check that changes the task's files proves nothing about them.** It was
-  recorded as passed on the files it left; it is now an error naming the
-  files Git saw change. Keep what tests generate ignored by Git.
-- **Logs are masked and kept.** The output of each check is saved with the
-  values of PatchRondo's secret-named environment variables and
-  credential-shaped text replaced by `[redacted]`. Each run names its files
-  (`<run>-test-01.log`), so a run again in the same iteration no longer
-  replaces the log an earlier record names.
-- **On native Windows a time limit stops what a check started.** Checks run
-  in a job object, so a test runner's child processes no longer outlive its
-  timeout. Agent CLIs are still stopped alone.
-- **Compatibility.** The entries of `tests.commands` run as before, read from
-  their exit code, under the names `command-1`, `command-2`. A task saved
-  before resumes where it was: its test context stays equal while no
-  `verification` section is configured. No event was added and the events of
-  the loop are those of before. `PATCHRONDO_VERIFICATION=0` runs the tests as
-  the versions before this one did.
-- **`tests/test_history.py` imports again.** A stray character committed in
-  `15750e6` broke its line 78, and every job of CI run 39051863842 failed on
-  it; the line is as it was in `14d7b86`.
-- `tests/test_verification.py` has 47 tests: reports (valid, failing,
-  zero tests, a partial suite, declared counts, malformed, a document type),
-  the configuration, real processes in a repository whose path has spaces
-  (timeouts with child processes, a missing program, a refused start, an
-  unconfigured or unallowed check, an interruption, a ledger that cannot be
-  written, two runs at once, two writers of one ledger, a restart, a changed
-  record, no Git, a check that changes the files, a known token, a report
-  location through a link or a junction, a report from before the run, build
-  artifacts) and the loop (a claim of the developer, a reviewer that names
-  evidence, a pause for an error and for a blocked check, an interrupted
-  check, a quota pause, changed checks, the switch, a task saved before the
-  runner). 22 new mutation protections remove the new safeguards one at a
-  time.
+### Step 1.1 — Acceptance Task Contract
 
-### The four records checked together — October 17, 2026
+Persistent, versioned acceptance criteria separate code approval from task
+completion. Criteria are judged against intact evidence, with compatibility
+for tasks created before criteria were tracked. Source: `303a8d3`, `b9e5283`,
+`d4c0ecd`, `d04ec84`, `e7c8243`, `d010809`; see the dated entries below.
 
-- **An entry of the history that is not an event no longer breaks the
-  report.** `history.append` numbers past such entries, but `report.md` read
-  `at`, `iteration` and `event` of each one without checking: with a `null`
-  or a text in `state["history"]` the report was never written, a run ended
-  with an error right after saving its checkpoint, and recording a check by
-  the user raised after its record was written. The state stayed as saved.
-  The report now lists such an entry as one, and a field an event lacks as
-  "unknown"; nothing in `state.json` is changed for it.
-- **The task page no longer shows what an event does not say.** Tests were
-  shown as passed for a `tests_completed` with no statuses, unknown ones, or
-  a list of statuses cut at 100 entries; a check by the user whose event had
-  no result was shown as passed. Each now says that the event does not tell.
-  An event saved with a list cut short says which list and how long it was,
-  the timeline says how many saved entries are not events instead of leaving
-  them out, and a history that is not a list no longer stops the page.
-- **The links between the records can be read.** The history in `report.md`
-  gives each event its ID and the verdict, ledger records and findings it
-  names, and says when the event lists only part of one. The issues of the
-  last review, in the report and on the Review tab, show the finding each was
-  recorded under and whether an earlier review reported it.
-- **Nothing the loop decides changed.** No engine module was edited. Tasks
-  made with the sources from before findings and workflow events (`d4c0ecd`)
-  and from before criteria (`624f60e`), at fifteen points between created and
-  ended, were resumed with these sources on October 17, 2026: each ended or
-  stayed as it was, with its older events unchanged and every review
-  traceable.
-- `tests/test_coherence.py` has nine tests that rebuild every review of a
-  task from its event, ledger record, findings and criteria and check each
-  link both ways: a problem corrected over three iterations; approved code
-  that waits for a person, a download and a publication without another
-  iteration; crashes before and after eight checkpoints (every checkpoint
-  with `PATCHRONDO_ALL_CHECKPOINTS=1`); a quota pause; evidence invalidated
-  and a ledger started again; the iteration limit; a task as `d4c0ecd` would
-  have left it, at three points; a review of 120 problems; and entries that
-  are not events. Three new mutation protections remove the new safeguards
-  of the report one at a time, and the `criteria` scenario of
-  `tools/ui_e2e.py` checks the finding of an issue and an event saved in
-  part on the page.
-
-### Workflow events say what they cut — October 17, 2026
-
-- **A list cut short in an event is no longer taken for the whole of it.**
-  An event keeps the first 100 entries of a list, and said nothing when it
-  cut one: the `review_completed` of a review of 120 problems listed 100
-  findings in `finding_ids` with `unrecorded_issues` 0, as if the review had
-  recorded only those. The limit stays; an event a detail of which was cut
-  now carries `truncated`, the path of each list or object cut with how many
-  entries it had (`{"finding_ids": 120, "new_findings": 120}`), and so does a
-  `pending_verification` of more than 100 findings. The findings and the
-  ledger's `review` record kept all of them before and still do. Events
-  saved before stay as they were.
-- `tests/test_history.py` has a review of 120 problems and checks the paths
-  and lengths of lists and objects cut inside a detail. Three new mutation
-  protections remove the notice one way each, and the pattern of one
-  existing protection follows the changed line.
-
-### Workflow events are versioned and identified — October 17, 2026
-
-- **Every event written to a task's history has an identity.** Besides
-  `at`, `event`, `iteration` and its details, an event now carries `version`
-  (1), `id` (`WE-0001`, `WE-0002`, …), `task_id` and `phase`, set by
-  `history.py` from the state and PatchRondo's clock. A new number is past
-  every ID of the history and past its length, so an ID that was saved is
-  never given again. A detail can no longer set one of these fields: a call
-  that tries raises an error and records nothing. Text in an event is cut and
-  filtered for credentials, and lists and objects are bounded. The events of
-  quota recovery are numbered with those of the engine.
-- **A review is tied to its ledger record and to its findings.**
-  `review_completed` names the `review` record of the ledger (`evidence`),
-  counts the issues, lists the findings they were recorded under, new
-  (`new_findings`) or linked to an earlier one (`linked_findings`), counts
-  the issues recorded under none, and says how the backend settled the
-  verdict when it did (`normalized`). `code_approved`, or `task_completed`
-  when the same run completes the task, names the findings the approval made
-  wait for a verification (`pending_verification`); none is resolved by it.
-  `evidence_invalidated` names its `invalidation` records and
-  `evidence_ledger_restarted` the `restart` record of the new ledger.
-- **References, not proof.** No event takes words from an agent. An event
-  says what PatchRondo did; whether a record it names counts is the ledger's
-  to say, and nothing reads the history to decide. Events are saved with the
-  checkpoints, as before: those of a checkpoint that was never saved are not
-  written afterwards.
-- **Older histories are read as they are.** Events without an ID are never
-  rewritten; the first new event of such a task is numbered past them.
-- **The loop decides as before.** The same events are written in the same
-  order, the decisions recorded before findings (`DECIDED` in
-  `tests/test_findings.py`) are unchanged, and a Resume with nothing to do
-  still adds no event.
-- `tests/test_history.py` has 15 tests: the schema, the numbering, the
-  bounds, an older history, a review with new and linked findings, findings
-  left out, the three idempotent pauses, an interruption, a process that
-  ends before its checkpoint, a reference to a record invalidated and then a
-  ledger started again, what the activity journal and an event added by hand
-  do not verify, and quota recovery. Seven new mutation protections in
-  `tools/recovery_checks.py` remove one safeguard each, and the pattern of
-  one existing protection follows the changed line.
-
-### Findings: a criterion the task does not have links nothing, and free text takes no ID — October 17, 2026
-
-- **A `criterion_id` the task does not have is no longer taken for none.**
-  An issue naming one (`AC-999` in a task with `AC-01` only) was compared as
-  an issue about no criterion, so a review could link it, by its ID or by
-  its words, to a finding about none. Such an issue is now linked to
-  nothing; a claim is refused ("the issue names a criterion this task does
-  not have"), and the finding it becomes keeps the value in
-  `unknown_criterion` and is never linked either. A missing, null or empty
-  value still names no criterion. A finding saved without a criterion before
-  this change may have come from such an issue, since both were saved the
-  same way: it is read with `unknown_criterion` `""`, is never linked again,
-  and its history stays as it is.
-- **Only the `findings` field of the ledgers' records keeps an ID from new
-  problems.** Every ID-shaped text of a ledger did, a summary the user typed
-  included, so a note quoting `RF-999999` used up the numbers and no new
-  finding got an ID afterwards. `findings.named` now reads the `findings`
-  field of each record, in the text of each line so that a record cut short
-  by a crash or damaged is read up to where its list or the line ends, in
-  the active ledger and in each ledger put aside. Inside a JSON string a
-  quote is always written `\"`, so text cannot pass for that field.
-- `tests/test_findings.py` has two new tests and two extended ones, and nine
-  new mutation protections in `tools/recovery_checks.py` remove one
-  safeguard each. Findings still decide nothing: the loop decides as before.
-
-### Findings of a review keep their identity — October 17, 2026
-
-- **Each problem a reviewer reports gets an ID that it keeps across
-  iterations.** An issue lived only in the review that reported it, so a
-  problem reported again in other words could not be told from a new one.
-  Each issue of a validated review is now recorded as a finding
-  (`findings.py`), `RF-001`, `RF-002`, …, saved with the task under
-  `findings` in `state.json` with the checkpoint of the review, and the
-  `review` record of the evidence ledger names the findings of its issues. A
-  finding keeps its kind, file and criterion, its last severity and
-  description, who it is for, whether they could act on it, whether the task
-  needed a correction or a check for it to be done (a change the code needs,
-  or a check, a decision or an action for a required criterion that is not
-  verified), the iterations of its first and last report and the review
-  records that reported it. What it is about follows from the kind of the
-  issue and the plan of the task by fixed rules; the reviewer sets none of it.
-- **Links are explicit or word for word, and checked.** The reviewer is shown
-  the findings with their IDs, and the review schema gives each issue
-  `finding_id` and `criterion_id`, empty when there is none. An ID links an
-  issue to its finding only with the same kind, file (a line after it aside)
-  and criterion, once in a review; an issue without one is linked only when
-  exactly one finding has the same identity and the same words. Any other
-  issue is a new finding, which keeps the refused claim and its reason.
-  Nothing is matched by similarity, and the file and the words are compared
-  whole, through the SHA-256 of their normalized text: the copies kept to be
-  shown are shortened and never compared, and a finding whose copy may have
-  been shortened is never linked through it. A new finding is numbered past
-  every ID the task's findings or its ledgers ever named, a ledger put aside
-  as damaged included, so no ID is given twice, not even after a crash
-  between the ledger and the state.
-- **A finding a review leaves out is not resolved.** It stays as it was. A
-  review that approves the code makes the developer's findings it did not
-  report wait for a verification (`PENDING_VERIFICATION`, naming that
-  review); no finding becomes `RESOLVED`, because nothing yet verifies that
-  one problem is gone.
-- **The loop decides as before.** Findings decide nothing: the verdict, the
-  test gate and the criteria do. An answer without the new fields, or with
-  values the backend cannot use, is still a review. A saved record of
-  findings this version cannot read is never replaced: the review goes on
-  without findings, and the history records `findings_not_recorded`. A task
-  whose reviews reported no issue gets no record.
-- `tests/test_findings.py` covers the rules and the engine scenarios, among
-  them an interrupted review checkpoint, a crash after the review record,
-  the same crash followed by a ledger found damaged and started again, and a
-  scenario whose decisions were recorded with the sources from before
-  findings. Twenty-five mutation protections in `tools/recovery_checks.py`
-  remove one safeguard each.
-
-### Saved criteria that cannot be read pause the task, and statuses are shown as the ledger has them — October 17, 2026
+#### Saved criteria that cannot be read pause the task, and statuses are shown as the ledger has them — October 17, 2026
 
 - **A saved record of the criteria that this version cannot read is no longer
   replaced.** Since "Criteria records kept when they cannot be read" below,
@@ -298,16 +72,7 @@ before each review.
 - Sixteen protections were added to `tools/recovery_checks.py`, and the one
   for the copy kept aside was removed.
 
-### Validation responsibilities — October 17, 2026
-
-- The full unittest matrix and package build/metadata checks belong to GitHub
-  CI, without requiring duplicate runs during development or before a push.
-  Local validation keeps the checks CI does not perform: browser, reliability,
-  recovery protections and real-clock checks, opt-in sandbox checks and
-  publication scanning, as applicable. Focused regression tests remain
-  available locally; manual package inspection belongs to versioned releases.
-
-### Criteria records kept when they cannot be read — October 16, 2026
+#### Criteria records kept when they cannot be read — October 16, 2026
 
 - **A saved record of the criteria that cannot be read is kept, not
   overwritten.** A task's `acceptance` record that this version cannot read,
@@ -326,7 +91,7 @@ before each review.
   error names the schema version it found.
 - Four protections were added to `tools/recovery_checks.py`.
 
-### A change to the code only for what the code can satisfy — October 16, 2026
+#### A change to the code only for what the code can satisfy — October 16, 2026
 
 - **A change to the code asked for a criterion that no change to the files
   can satisfy no longer goes back to the developer.** The reviewer could mark
@@ -352,7 +117,7 @@ before each review.
   one follows the new condition. The review answer had still not been
   confirmed with a call to an authenticated CLI on October 16, 2026.
 
-### The review settled by kind, and an outcome for each criterion — October 14, 2026
+#### The review settled by kind, and an outcome for each criterion — October 14, 2026
 
 Published on `main` in commit `b9e5283` on October 16, 2026 (22:33 +02:00).
 
@@ -384,40 +149,7 @@ Published on `main` in commit `b9e5283` on October 16, 2026 (22:33 +02:00).
   `tools/recovery_checks.py`. The review answer had still not been confirmed
   with a call to an authenticated CLI on October 14, 2026.
 
-### Documentation structure — October 14, 2026
-
-Published on `main` in commit `b376702` on October 14, 2026 (22:54 +02:00).
-
-- Shortened the README to the project overview, workflow, requirements, quick
-  start and essential safety limits. Moved the operational reference to
-  `docs/USAGE.md`, validation instructions to `docs/TESTING.md` and future
-  development areas to `docs/ROADMAP.md`. Dated validation results remain in
-  `docs/REVIEW.md`.
-
-### Refused writes answered on Windows — October 14, 2026
-
-Published on `main` in commit `8fe1f47` on October 14, 2026 (22:49 +02:00).
-
-- The interface no longer loses its answer to a write it refuses on the
-  headers: a missing or wrong session token, a foreign Host or Origin, a
-  content type that is not JSON or a size out of bounds. A client may send the
-  headers and the body separately, as Python's `http.client` does. When the
-  server had answered and closed the connection before the body arrived, the
-  body met a closed socket and the connection was reset, and on Windows the
-  client lost the answer it had not read yet: it saw a network error instead
-  of the refusal. After an answer the server now closes only its sending
-  side, then reads and discards what the client still sends, at most 256 kB
-  and for at most two seconds, until the client closes. A refused body is
-  still never processed, and the checks keep their order.
-- The fault dates from the interface of 0.2.0. It was found by the CI run for
-  `303a8d3`: one of six jobs (Python 3.13 on `windows-latest`) failed in
-  `test_every_api_route_requires_the_session_token` with
-  `ConnectionAbortedError` (WinError 10053); the other five passed. A
-  regression test sends the body after the answer. Against the previous
-  server it fails on native Windows with the same error and on WSL2 with the
-  reset recorded on the socket. A mutation check protects the correction.
-
-### Capability and acceptance engine — October 13, 2026
+#### Capability and acceptance engine — October 13, 2026
 
 Published on `main` in commit `303a8d3` on October 14, 2026 (22:14 +02:00).
 
@@ -495,6 +227,335 @@ loop had one verdict for everything and one place to send it.
 - Twenty-six removed protections were added to `tools/recovery_checks.py`, a
   `criteria` scenario to the browser checks, and a sample task with criteria
   to the demo.
+
+### Step 1.2 — Structured Review Findings
+
+Persistent RF identities link problems across reviews by explicit, checked
+references or exact identity. OPEN and PENDING_VERIFICATION do not imply
+resolution; no finding becomes RESOLVED without proof. Source: `40c5e5c`,
+`bd6536b`.
+
+#### Findings: a criterion the task does not have links nothing, and free text takes no ID — October 17, 2026
+
+- **A `criterion_id` the task does not have is no longer taken for none.**
+  An issue naming one (`AC-999` in a task with `AC-01` only) was compared as
+  an issue about no criterion, so a review could link it, by its ID or by
+  its words, to a finding about none. Such an issue is now linked to
+  nothing; a claim is refused ("the issue names a criterion this task does
+  not have"), and the finding it becomes keeps the value in
+  `unknown_criterion` and is never linked either. A missing, null or empty
+  value still names no criterion. A finding saved without a criterion before
+  this change may have come from such an issue, since both were saved the
+  same way: it is read with `unknown_criterion` `""`, is never linked again,
+  and its history stays as it is.
+- **Only the `findings` field of the ledgers' records keeps an ID from new
+  problems.** Every ID-shaped text of a ledger did, a summary the user typed
+  included, so a note quoting `RF-999999` used up the numbers and no new
+  finding got an ID afterwards. `findings.named` now reads the `findings`
+  field of each record, in the text of each line so that a record cut short
+  by a crash or damaged is read up to where its list or the line ends, in
+  the active ledger and in each ledger put aside. Inside a JSON string a
+  quote is always written `\"`, so text cannot pass for that field.
+- `tests/test_findings.py` has two new tests and two extended ones, and nine
+  new mutation protections in `tools/recovery_checks.py` remove one
+  safeguard each. Findings still decide nothing: the loop decides as before.
+
+#### Findings of a review keep their identity — October 17, 2026
+
+- **Each problem a reviewer reports gets an ID that it keeps across
+  iterations.** An issue lived only in the review that reported it, so a
+  problem reported again in other words could not be told from a new one.
+  Each issue of a validated review is now recorded as a finding
+  (`findings.py`), `RF-001`, `RF-002`, …, saved with the task under
+  `findings` in `state.json` with the checkpoint of the review, and the
+  `review` record of the evidence ledger names the findings of its issues. A
+  finding keeps its kind, file and criterion, its last severity and
+  description, who it is for, whether they could act on it, whether the task
+  needed a correction or a check for it to be done (a change the code needs,
+  or a check, a decision or an action for a required criterion that is not
+  verified), the iterations of its first and last report and the review
+  records that reported it. What it is about follows from the kind of the
+  issue and the plan of the task by fixed rules; the reviewer sets none of it.
+- **Links are explicit or word for word, and checked.** The reviewer is shown
+  the findings with their IDs, and the review schema gives each issue
+  `finding_id` and `criterion_id`, empty when there is none. An ID links an
+  issue to its finding only with the same kind, file (a line after it aside)
+  and criterion, once in a review; an issue without one is linked only when
+  exactly one finding has the same identity and the same words. Any other
+  issue is a new finding, which keeps the refused claim and its reason.
+  Nothing is matched by similarity, and the file and the words are compared
+  whole, through the SHA-256 of their normalized text: the copies kept to be
+  shown are shortened and never compared, and a finding whose copy may have
+  been shortened is never linked through it. A new finding is numbered past
+  every ID the task's findings or its ledgers ever named, a ledger put aside
+  as damaged included, so no ID is given twice, not even after a crash
+  between the ledger and the state.
+- **A finding a review leaves out is not resolved.** It stays as it was. A
+  review that approves the code makes the developer's findings it did not
+  report wait for a verification (`PENDING_VERIFICATION`, naming that
+  review); no finding becomes `RESOLVED`, because nothing yet verifies that
+  one problem is gone.
+- **The loop decides as before.** Findings decide nothing: the verdict, the
+  test gate and the criteria do. An answer without the new fields, or with
+  values the backend cannot use, is still a review. A saved record of
+  findings this version cannot read is never replaced: the review goes on
+  without findings, and the history records `findings_not_recorded`. A task
+  whose reviews reported no issue gets no record.
+- `tests/test_findings.py` covers the rules and the engine scenarios, among
+  them an interrupted review checkpoint, a crash after the review record,
+  the same crash followed by a ledger found damaged and started again, and a
+  scenario whose decisions were recorded with the sources from before
+  findings. Twenty-five mutation protections in `tools/recovery_checks.py`
+  remove one safeguard each.
+
+### Step 1.3 — Structured Workflow Events
+
+Versioned WE events retain references at checkpoints and across Resume, with
+explicit truncation notices. History describes orchestration; activity only
+observes output; the evidence ledger determines what counts as proof. Source:
+`c27e61f`, `14d7b86`.
+
+#### Workflow events say what they cut — October 17, 2026
+
+- **A list cut short in an event is no longer taken for the whole of it.**
+  An event keeps the first 100 entries of a list, and said nothing when it
+  cut one: the `review_completed` of a review of 120 problems listed 100
+  findings in `finding_ids` with `unrecorded_issues` 0, as if the review had
+  recorded only those. The limit stays; an event a detail of which was cut
+  now carries `truncated`, the path of each list or object cut with how many
+  entries it had (`{"finding_ids": 120, "new_findings": 120}`), and so does a
+  `pending_verification` of more than 100 findings. The findings and the
+  ledger's `review` record kept all of them before and still do. Events
+  saved before stay as they were.
+- `tests/test_history.py` has a review of 120 problems and checks the paths
+  and lengths of lists and objects cut inside a detail. Three new mutation
+  protections remove the notice one way each, and the pattern of one
+  existing protection follows the changed line.
+
+#### Workflow events are versioned and identified — October 17, 2026
+
+- **Every event written to a task's history has an identity.** Besides
+  `at`, `event`, `iteration` and its details, an event now carries `version`
+  (1), `id` (`WE-0001`, `WE-0002`, …), `task_id` and `phase`, set by
+  `history.py` from the state and PatchRondo's clock. A new number is past
+  every ID of the history and past its length, so an ID that was saved is
+  never given again. A detail can no longer set one of these fields: a call
+  that tries raises an error and records nothing. Text in an event is cut and
+  filtered for credentials, and lists and objects are bounded. The events of
+  quota recovery are numbered with those of the engine.
+- **A review is tied to its ledger record and to its findings.**
+  `review_completed` names the `review` record of the ledger (`evidence`),
+  counts the issues, lists the findings they were recorded under, new
+  (`new_findings`) or linked to an earlier one (`linked_findings`), counts
+  the issues recorded under none, and says how the backend settled the
+  verdict when it did (`normalized`). `code_approved`, or `task_completed`
+  when the same run completes the task, names the findings the approval made
+  wait for a verification (`pending_verification`); none is resolved by it.
+  `evidence_invalidated` names its `invalidation` records and
+  `evidence_ledger_restarted` the `restart` record of the new ledger.
+- **References, not proof.** No event takes words from an agent. An event
+  says what PatchRondo did; whether a record it names counts is the ledger's
+  to say, and nothing reads the history to decide. Events are saved with the
+  checkpoints, as before: those of a checkpoint that was never saved are not
+  written afterwards.
+- **Older histories are read as they are.** Events without an ID are never
+  rewritten; the first new event of such a task is numbered past them.
+- **The loop decides as before.** The same events are written in the same
+  order, the decisions recorded before findings (`DECIDED` in
+  `tests/test_findings.py`) are unchanged, and a Resume with nothing to do
+  still adds no event.
+- `tests/test_history.py` has 15 tests: the schema, the numbering, the
+  bounds, an older history, a review with new and linked findings, findings
+  left out, the three idempotent pauses, an interruption, a process that
+  ends before its checkpoint, a reference to a record invalidated and then a
+  ledger started again, what the activity journal and an event added by hand
+  do not verify, and quota recovery. Seven new mutation protections in
+  `tools/recovery_checks.py` remove one safeguard each, and the pattern of
+  one existing protection follows the changed line.
+
+### Step 1.4 — Phase 1 Integration
+
+Integration coverage checks Acceptance, Findings, History and Evidence Ledger
+together, including legacy tasks, crashes and Resume. Reports and the UI show
+record links and incomplete events explicitly. Source: `15750e6`; its history
+test import error is corrected in `753d957`. See the dated validation record
+for the distinction between executed checks and CI failures.
+
+#### The four records checked together — October 17, 2026
+
+- **An entry of the history that is not an event no longer breaks the
+  report.** `history.append` numbers past such entries, but `report.md` read
+  `at`, `iteration` and `event` of each one without checking: with a `null`
+  or a text in `state["history"]` the report was never written, a run ended
+  with an error right after saving its checkpoint, and recording a check by
+  the user raised after its record was written. The state stayed as saved.
+  The report now lists such an entry as one, and a field an event lacks as
+  "unknown"; nothing in `state.json` is changed for it.
+- **The task page no longer shows what an event does not say.** Tests were
+  shown as passed for a `tests_completed` with no statuses, unknown ones, or
+  a list of statuses cut at 100 entries; a check by the user whose event had
+  no result was shown as passed. Each now says that the event does not tell.
+  An event saved with a list cut short says which list and how long it was,
+  the timeline says how many saved entries are not events instead of leaving
+  them out, and a history that is not a list no longer stops the page.
+- **The links between the records can be read.** The history in `report.md`
+  gives each event its ID and the verdict, ledger records and findings it
+  names, and says when the event lists only part of one. The issues of the
+  last review, in the report and on the Review tab, show the finding each was
+  recorded under and whether an earlier review reported it.
+- **Nothing the loop decides changed.** No engine module was edited. Tasks
+  made with the sources from before findings and workflow events (`d4c0ecd`)
+  and from before criteria (`624f60e`), at fifteen points between created and
+  ended, were resumed with these sources on October 17, 2026: each ended or
+  stayed as it was, with its older events unchanged and every review
+  traceable.
+- `tests/test_coherence.py` has nine tests that rebuild every review of a
+  task from its event, ledger record, findings and criteria and check each
+  link both ways: a problem corrected over three iterations; approved code
+  that waits for a person, a download and a publication without another
+  iteration; crashes before and after eight checkpoints (every checkpoint
+  with `PATCHRONDO_ALL_CHECKPOINTS=1`); a quota pause; evidence invalidated
+  and a ledger started again; the iteration limit; a task as `d4c0ecd` would
+  have left it, at three points; a review of 120 problems; and entries that
+  are not events. Three new mutation protections remove the new safeguards
+  of the report one at a time, and the `criteria` scenario of
+  `tools/ui_e2e.py` checks the finding of an issue and an event saved in
+  part on the page.
+
+### Separate development — Evidence Engine proposal (0.35)
+
+`753d957` implements the verification runner requested as the proposal's
+"Phase 2, step 1". This is separate from the planned 0.3 Progress & Stagnation
+Detection phase; it does not mean that phase or the whole 0.35 proposal is
+implemented. The existing ledger is extended, not replaced.
+
+#### Checks PatchRondo runs and records itself — October 17, 2026
+
+- **A result of a check is what PatchRondo observed.** The new verification
+  runner (`verification.py`) runs the project's commands after each
+  development step, as the test stage did, under the same consent. Each
+  result goes into the evidence ledger as soon as its check ends, before the
+  next one starts and before any agent is told: `passed`, `failed`, `error`
+  (no result could be established) or `blocked` (not started), with the
+  exit code, times to the millisecond, the computer it ran on, the state of
+  the task's files before and after, the log and the report. Nothing an
+  agent writes reaches it, and `evidence.append` now gives a `command` record
+  to the runtime only, whatever a caller passes.
+- **Checks with a JUnit XML report.** A `verification` section beside `tests`
+  configures typed checks (`test`, `build`, `static_analysis`,
+  `repository_check`). A check with `"report": "junit"` is read from the
+  report its run wrote: exit code 0 without the report, a report that is not
+  XML, declares a document type, contradicts its exit code or its own counts,
+  or was there before the run is an error, never a pass; zero tests, fewer
+  than `min_tests`, or a `required_tests` entry without a pass fail the
+  check. A build can name the `artifacts` it must produce. The reports are
+  read with `expat`, with no entity expanded and size, depth and test cases
+  bounded.
+- **A check that gave no result no longer goes to the agents.** A missing
+  program, a refused start, an unreadable report or a check that changed the
+  task's files pause the task with `verification_blocked` or
+  `verification_error` at the test stage, where a Resume runs the checks
+  again. Before, a missing program paused with `configuration` and the rest
+  reached the reviewer and the developer as failing tests. The criterion it
+  was to prove stays `PENDING` with the reason, not `FAILED`; so does one
+  whose tests timed out.
+- **A check that changes the task's files proves nothing about them.** It was
+  recorded as passed on the files it left; it is now an error naming the
+  files Git saw change. Keep what tests generate ignored by Git.
+- **Logs are masked and kept.** The output of each check is saved with the
+  values of PatchRondo's secret-named environment variables and
+  credential-shaped text replaced by `[redacted]`. Each run names its files
+  (`<run>-test-01.log`), so a run again in the same iteration no longer
+  replaces the log an earlier record names.
+- **On native Windows a time limit stops what a check started.** Checks run
+  in a job object, so a test runner's child processes no longer outlive its
+  timeout. Agent CLIs are still stopped alone.
+- **Compatibility.** The entries of `tests.commands` run as before, read from
+  their exit code, under the names `command-1`, `command-2`. A task saved
+  before resumes where it was: its test context stays equal while no
+  `verification` section is configured. No event was added and the events of
+  the loop are those of before. `PATCHRONDO_VERIFICATION=0` runs the tests as
+  the versions before this one did.
+- **`tests/test_history.py` imports again.** A stray character committed in
+  `15750e6` broke its line 78, and every job of CI run 39051863842 failed on
+  it; the line is as it was in `14d7b86`.
+- `tests/test_verification.py` has 47 tests: reports (valid, failing,
+  zero tests, a partial suite, declared counts, malformed, a document type),
+  the configuration, real processes in a repository whose path has spaces
+  (timeouts with child processes, a missing program, a refused start, an
+  unconfigured or unallowed check, an interruption, a ledger that cannot be
+  written, two runs at once, two writers of one ledger, a restart, a changed
+  record, no Git, a check that changes the files, a known token, a report
+  location through a link or a junction, a report from before the run, build
+  artifacts) and the loop (a claim of the developer, a reviewer that names
+  evidence, a pause for an error and for a blocked check, an interrupted
+  check, a quota pause, changed checks, the switch, a task saved before the
+  runner). 22 new mutation protections remove the new safeguards one at a
+  time.
+
+### Documentation alignment — October 17, 2026
+
+- Group Phase 1 under 0.3.0 in development, preserving all dated entries,
+  the 0.2.1 publication history and package metadata. Separate the 0.35
+  proposal from the next 0.3 phase, Progress & Stagnation Detection.
+- Keep local agent instructions ignored by Git and excluded from source
+  distributions; do not incorporate their contents in public documentation.
+- Identify CI results by commit: the failed history import belongs to
+  `15750e6` and is corrected in `753d957`. Record the focused history recheck
+  and GitHub connection check separately from the unfinished newer CI run.
+- No orchestration runtime changes. Documentation and publication checks
+  are recorded in [the technical review](docs/REVIEW.md#documentation-alignment-october-17-2026).
+
+## 0.2.1 — zero configuration and self-healing
+
+Source published on `main` in commit `624f60e` on October 12, 2026 (00:30
++02:00). No version tags or GitHub Releases exist as checked that day. The
+[technical review](docs/REVIEW.md#zero-configuration-and-self-healing-october-11-2026)
+records what was checked, where, and what was not. The engine keeps every
+state transition of 0.2.0; what is new runs before the first agent call and
+before each review.
+
+### Validation responsibilities — October 17, 2026
+
+- The full unittest matrix and package build/metadata checks belong to GitHub
+  CI, without requiring duplicate runs during development or before a push.
+  Local validation keeps the checks CI does not perform: browser, reliability,
+  recovery protections and real-clock checks, opt-in sandbox checks and
+  publication scanning, as applicable. Focused regression tests remain
+  available locally; manual package inspection belongs to versioned releases.
+
+### Documentation structure — October 14, 2026
+
+Published on `main` in commit `b376702` on October 14, 2026 (22:54 +02:00).
+
+- Shortened the README to the project overview, workflow, requirements, quick
+  start and essential safety limits. Moved the operational reference to
+  `docs/USAGE.md`, validation instructions to `docs/TESTING.md` and future
+  development areas to `docs/ROADMAP.md`. Dated validation results remain in
+  `docs/REVIEW.md`.
+
+### Refused writes answered on Windows — October 14, 2026
+
+Published on `main` in commit `8fe1f47` on October 14, 2026 (22:49 +02:00).
+
+- The interface no longer loses its answer to a write it refuses on the
+  headers: a missing or wrong session token, a foreign Host or Origin, a
+  content type that is not JSON or a size out of bounds. A client may send the
+  headers and the body separately, as Python's `http.client` does. When the
+  server had answered and closed the connection before the body arrived, the
+  body met a closed socket and the connection was reset, and on Windows the
+  client lost the answer it had not read yet: it saw a network error instead
+  of the refusal. After an answer the server now closes only its sending
+  side, then reads and discards what the client still sends, at most 256 kB
+  and for at most two seconds, until the client closes. A refused body is
+  still never processed, and the checks keep their order.
+- The fault dates from the interface of 0.2.0. It was found by the CI run for
+  `303a8d3`: one of six jobs (Python 3.13 on `windows-latest`) failed in
+  `test_every_api_route_requires_the_session_token` with
+  `ConnectionAbortedError` (WinError 10053); the other five passed. A
+  regression test sends the body after the answer. Against the previous
+  server it fails on native Windows with the same error and on WSL2 with the
+  reset recorded on the socket. A mutation check protects the correction.
 
 ### Test consent before the review — October 13, 2026
 

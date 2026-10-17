@@ -1,5 +1,25 @@
 # Architecture and handoff contract
 
+## 0.3 record boundaries
+
+The functionally implemented Phase 1 of [0.3](ROADMAP.md) joins four records
+with different responsibilities. The package metadata remains 0.2.1.
+
+| System | Owns | Boundary |
+|---|---|---|
+| Acceptance Task Contract | Versioned criteria, capabilities, code approval and completion | Rejudges required criteria against intact ledger evidence; saved statuses and a developer's claims do not verify them |
+| Structured Review Findings | RF identity, checked links, ownership and status across reviews | Records problems; decides no verdict or pause; omission or code approval never proves resolution |
+| Structured Workflow Events | WE identity, checkpoint history and bounded references | Describes orchestration; explicit truncation; neither evidence nor a source of decisions |
+| Evidence Ledger | Append-only, hash-chained records and invalidations | Determines what counts as evidence; not a signature or an atomic transaction with state.json |
+
+The first three are saved at state checkpoints; ledger writes occur separately.
+Legacy reads and crash/Resume coherence are covered by `tests/test_coherence.py`.
+The activity journal only observes CLI output and is outside these decisions.
+Sections [14](#14-acceptance-criteria-capabilities-and-evidence) and
+[15](#15-workflow-history) give the detailed contracts. Section
+[16](#16-verification-runner) describes the implemented runner of the
+separate 0.35 proposal. Progress & Stagnation Detection remains planned.
+
 ## 1. Components
 
 | Module | Responsibility |

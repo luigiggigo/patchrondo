@@ -189,3 +189,16 @@ A pass covers only the platform, CLI versions and login reported in its output.
 Record authorized runs in [docs/REVIEW.md](REVIEW.md), including their date,
 platform, CLI versions and scope. Historical real-provider results are recorded
 there; simulated checks do not establish compatibility with authenticated accounts.
+
+## Documentation-only validation
+
+Check Markdown destinations and anchors, cross-references, versions, milestone
+claims and UTF-8/LF line endings, then run `git diff --check` and
+`python tools/check_publication.py`. Review every scanner finding; a nonzero
+exit is not a pass even when the findings are expected. Do not routinely
+repeat the full unittest matrix or package builds for documentation edits.
+
+Local agent instructions remain private, ignored by Git and excluded from
+source distributions. Do not add public imports or generated copies of them.
+The documentation describes product behavior and validation evidence without
+incorporating private agent instructions.

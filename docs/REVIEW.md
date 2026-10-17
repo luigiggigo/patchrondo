@@ -29,7 +29,52 @@ working tree at its date.
 
 ## Current source and CI status (October 17, 2026)
 
-The source on `main` is 0.2.1, at
+GitHub API and `gh run list` were checked for this alignment on October 17,
+2026. Remote `main` matches checkout `753d957f9a5d96d6169790dc9faadbeabfa1e314`,
+one commit after the requested baseline `15750e6`. The working tree was clean
+at the start. That commit implements the verification runner and corrects the
+history-test import error. Package metadata remains 0.2.1; the implemented
+Phase 1 is now grouped under the 0.3.0 development series in the changelog.
+No version tags or GitHub Releases were returned.
+
+The two runs must be read separately, by the commit they actually tested:
+
+| Commit | CI run | Observed status on October 17, 2026 |
+|---|---|---|
+| `15750e6` (previous implementation) | [39051863842](https://github.com/luigiggigo/patchrondo/actions/runs/39051863842) | FAILED: `test_history.py` did not import at line 78 |
+| `753d957` (verification runner and import correction) | [39060579672](https://github.com/luigiggigo/patchrondo/actions/runs/39060579672) | IN PROGRESS: both Ubuntu and both macOS jobs succeeded; both Windows jobs were still running |
+
+The failed run belongs to `15750e6`; it is not the result of `753d957`.
+The Linux Python 3.13 package check succeeded on `753d957`. The overall
+conclusion of that run remains UNKNOWN until the two Windows jobs finish.
+
+### Focused recheck and GitHub connection (October 17, 2026)
+
+The import failure was reproduced without running old code: parsing
+`git show 15750e6:tests/test_history.py` with `ast.parse` raises
+`IndentationError` at line 78. The current file parses successfully; the
+correction was already committed in `753d957`, so no further test or engine
+code change was needed.
+
+On native Windows, Python 3.13.3, with `PYTHONPATH=src`,
+`python -m unittest discover -s tests -p test_history.py -v` ran **16 tests,
+all passed, no skips**, in 29.839 seconds, exit 0. Providers were simulated.
+This targeted run verifies the affected module; it is not a repeat of the
+full suite or a passing result for unfinished remote jobs.
+
+The reported Git error, `Failed to connect to github.com port 443`, was also
+checked. `git ls-remote --heads origin main` succeeded (exit 0) and returned
+`753d957f9a5d96d6169790dc9faadbeabfa1e314`. DNS resolution, a TCP connection
+to `github.com:443` and an HTTPS request succeeded (HTTP 200). No Git proxy
+was set in the three inspected keys (`http.proxy`, `https.proxy`,
+`http.https://github.com.proxy`). The connection timeout was not reproduced;
+its earlier cause remains UNKNOWN. This confirms read access at the time of
+the check, not push authorization or uninterrupted future availability.
+No network, TLS, credential, proxy or CI configuration was changed.
+
+### Publication and CI observations retained from earlier checks
+
+The earlier October 17 observation found `main` with package metadata 0.2.1 at
 [`15750e6`](https://github.com/luigiggigo/patchrondo/commit/15750e61b540d4028d16da82301cca483c87782d),
 pushed on October 17, 2026 (19:00 +02:00): 0.2.0 with the interface, live
 activity and the streaming failure correction, the environment check, repairs
@@ -117,6 +162,54 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Documentation alignment (October 17, 2026)
+
+**Scope.** README, CHANGELOG, ROADMAP, ARCHITECTURE, REVIEW, TESTING,
+PUBLISHING and CONTRIBUTING distinguish package metadata 0.2.1 from the
+0.3.0 development series. Phase 1 is grouped as Steps 1.1–1.4; Progress &
+Stagnation Detection stays planned. The verification runner belongs to the
+separate 0.35 proposal. All 17 existing dated changelog entries in the
+reorganized range retain their text; the 0.2.1 base and earlier versions
+are unchanged. No runtime, package version, CI workflow, publication scanner
+or scanner test changes are part of this alignment.
+
+Local agent instructions remain ignored by Git and excluded from source
+distributions. The original ignore rules and packaging exclusions are
+preserved; no public import or copy of private instructions is included.
+
+**Evidence categories.** Checks of this alignment were observed on native
+Windows with Python 3.13.3. Older sections retain reports of earlier runs;
+they are not fresh confirmation. Their failures and skips remain recorded.
+Simulated providers do not confirm authenticated accounts, and the October 10
+real-provider results do not validate the later Phase 1 review formats.
+
+| Check | Result and scope | Exit |
+|---|---|---|
+| `python .test-tmp/check_docs.py` (one-off audit) | VERIFIED: 13 Markdown files, 97 local links/anchors, UTF-8/LF/no-BOM/final newline for 8 changed public documents and the local instruction file, 17 historical entries preserved; versions, milestones, original exclusions, Git privacy and unchanged executable scope checked | 0 |
+| `git diff --check`; `git diff --cached --check` | No whitespace errors in the final documentation diff | 0 |
+| `git check-ignore -v AGENTS.md`; `git ls-files -- AGENTS.md agents.md`; `git status --short --untracked-files=all` | Original ignore rule matches; no agent instruction file tracked or proposed for commit | 0 |
+| `python tools/check_publication.py` | FAILED (findings require review): 125 files, 5 findings classified below | 1 |
+
+**Scanner findings.** `.claude/` and `debug.log` are ignored private material;
+their contents were not copied into documentation. The three existing tracked
+binary assets (`docs/assets/rondo-mascot-v1.png`, `static/rondo-head.webp` and
+`static/rondo.webp` under the package) were opened for visual review during
+the alignment: Rondo mascot illustrations, unchanged. Findings are reported
+with the scanner's nonzero exit, not described as a pass. This heuristic scans
+the working tree, not Git history; it does not prove absence of all secrets.
+
+**NOT_RUN.** The full unittest/OS matrix and package build/metadata checks
+remain CI's responsibility. Runtime reliability, recovery, browser, sandbox
+and authenticated-provider checks were not repeated for documentation-only
+changes. Instruction loading in a real CLI session was not verified. Current
+checks of the final diff establish no change to executable code; earlier
+exploratory scanner-test results do not validate this corrected scope. The
+dated remote CI observations above cover only their named commits.
+
+**Verdict: READY for documentation alignment.** Release requirements and
+remaining product validation are explicit in [ROADMAP.md](ROADMAP.md).
+This is not a 0.3 release-readiness verdict or a claim that every test passed.
 
 ## Checks PatchRondo runs itself (October 17, 2026)
 
