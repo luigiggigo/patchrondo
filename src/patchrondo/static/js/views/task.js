@@ -570,6 +570,16 @@ function logsPanel(projectId, taskId) {
   } };
 }
 
+// What the verification runner recorded about one check: its name, what its report counted, and its ledger record.
+function checkFacts(test) {
+  const counts = test.counts;
+  const tally = counts && Number.isInteger(counts.tests)
+    ? `${plural(counts.tests, "test")}: ${counts.passed ?? "?"} passed, ${counts.failed ?? "?"} failed, ${counts.errors ?? "?"} with errors, ${counts.skipped ?? "?"} skipped`
+    : null;
+  return [`Check ${test.check || "?"}${test.type ? ` (${String(test.type).replace("_", " ")})` : ""}`, tally, `evidence ${test.evidence}`]
+    .filter(Boolean).join(" · ");
+}
+
 function testsPanel() {
   const el = h("div", { class: "stack" });
   return { el, update(detail, task) {
@@ -584,6 +594,7 @@ function testsPanel() {
           h("span", { class: "mono grow break" }, test.command?.length ? test.command.join(" ") : "(no command)"),
           test.returncode != null ? h("span", { class: "chip mono" }, `exit ${test.returncode}`) : null),
         test.message ? h("div", { class: "muted" }, test.message) : null,
+        test.evidence ? h("div", { class: "faint" }, checkFacts(test)) : null,
         test.output_tail?.trim() ? h("details", { class: "output", open: test.status !== "passed" },
           h("summary", {}, `Output (last lines) of command ${index + 1}`), h("pre", { class: "log-chunk" }, test.output_tail.replace(ANSI, ""))) : null)))
         : emptyState({ compact: true, title: "Tests have not run yet", body: effective?.tests_enabled

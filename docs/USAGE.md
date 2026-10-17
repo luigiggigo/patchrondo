@@ -490,6 +490,62 @@ cannot be approved. Resuming while tests are still disabled changes nothing
 and calls no agent; after you enable them, Resume runs the tests and then the
 review.
 
+#### Checks with a report
+
+The commands of `tests.commands` are read from their exit code. A check whose
+result should be read from the tests it reports, a build that must produce a
+file, or a static analysis named as such go in a `verification` section beside
+`tests` (edit `config.json`; *Settings → Tests* keeps the section when it
+saves). This is a minimal check for a Python project that uses pytest:
+
+```json
+"verification": {
+  "checks": [
+    {"id": "pytest", "type": "test", "report": "junit",
+     "command": ["python", "-m", "pytest", "-q", "--junitxml={report}"]}
+  ]
+}
+```
+
+PatchRondo replaces `{report}` with a new file in the task's private run
+folder, so the report it reads is always the one this run wrote. More fields:
+
+- `type`: `test`, `build`, `static_analysis` or `repository_check`;
+- `min_tests` (1 by default with a report) and `required_tests`, such as
+  `["tests/test_auth.py::test_expired_token", "tests/test_users.py"]`: a
+  report with fewer tests, or without a pass for each required one, fails;
+- `report_path`, a file inside the project, for a tool that cannot be told
+  where to write; keep it ignored by Git;
+- `artifacts`, such as `["dist/*.whl"]`, for a build: the files are hashed,
+  and a pattern that matches nothing fails the check;
+- `cwd`, `timeout_seconds` (`workflow.test_timeout_seconds` by default) and
+  `criteria`, the criteria the check may give evidence for, such as
+  `["AC-02"]` (it lists the record under them; it verifies nothing by
+  itself);
+- `"shell": true`, required for a command that starts a shell.
+
+Checks run under the same consent as `tests.commands`, after them, in order,
+until one does not pass. With tests enabled, `tests.commands` may be empty
+when `verification.checks` has a check. Each result is recorded as one of:
+
+| Result | Meaning | Then |
+|---|---|---|
+| `passed` | It ran; exit code 0; with a report, enough tests, none failing, every required one passed | The review |
+| `failed` | It ran and showed a defect | The review, then the developer |
+| `error` | No result: no report, an unreadable or contradicting one, task files the check changed, a start that failed | Pauses with `verification_error` |
+| `blocked` | Not started: program missing, start refused, not allowed, location outside the project | Pauses with `verification_blocked` |
+| `timeout` | The time limit, as before | Pauses with `timeout` |
+
+Neither `error` nor `blocked` reaches an agent: nothing was learned about the
+code. Fix the cause and resume: the checks run again. A check must leave the
+task's files as it found them: keep what tests generate (`__pycache__/`,
+`.pytest_cache/`, reports, build output) out of the project or ignored by Git,
+in `.gitignore` or in the repository's `.git/info/exclude`, which applies to
+the task worktrees too. Output is saved with values that look like secrets
+masked. `PATCHRONDO_VERIFICATION=0` runs `tests.commands` as versions before
+the runner did, and leaves `verification` aside. The
+[architecture](ARCHITECTURE.md#16-verification-runner) has every rule.
+
 A complete reference configuration is in
 [`examples/config.example.json`](../examples/config.example.json). It also includes
 `workflow.max_iterations`, timeouts, the maximum number of Claude turns and the
@@ -819,7 +875,8 @@ now without automatic recovery stays possible in both cases.
               reviewer.last-message.txt  # Codex
               review.schema.json         # Codex
               reviewer.reply.md
-              test-01.log
+              3f9c2a1b-test-01.log       # output of check 1 of run 001-3f9c2a1b, secrets masked
+              3f9c2a1b-test-01.junit.xml # its report, when it reads one (test-01.log before the runner)
       worktrees/                # the one folder made readable for a review sandbox (Windows)
         T-.../                  # isolated Git worktree for each task
 ```
@@ -895,7 +952,7 @@ are cleaned up automatically. *Settings → RAG → Update index now* does what
 7. **Billing and limits:** subscriptions have quotas and may support additional usage billing. The loop stops on rate limits, timeouts, errors, `BLOCKED` or the maximum iteration count. Nothing polls for quota availability. With the opt-in [automatic quota recovery](#automatic-quota-recovery-opt-in), a waiting process retries a usage-limit pause a bounded number of times; every retry uses plan quota.
 8. **Fallible LLM review:** the JSON schema checks structure, not review accuracy. Require human review before integrating changes into main or production.
 9. **Sensitive logs:** logs and handoffs may contain confidential project data. They are saved locally with private permissions; protect backups and disk storage, and do not share `~/.patchrondo`. The activity journal holds agent messages, command lines, file paths and excerpts of command output; masking of values that look like credentials is best effort, not a guarantee.
-10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group; native Windows terminates only the direct child, so WSL2 remains recommended.
+10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group. On native Windows the project's checks run in a job object, which a timeout ends with everything they started, while an agent CLI is terminated alone, so WSL2 remains recommended.
 11. **Windows access control lists:** POSIX private permissions are not translated into Windows lists. On Windows the privacy of the state directory is whatever Python gives a directory made with mode `0o700`: measured on October 11, 2026, owner-only with Python 3.13.3 and inherited from the parent folder with Python 3.11.3. PatchRondo changes lists in one place only, described under [Preparation and repairs](#preparation-and-repairs): read access for your own user on the `worktrees` folder, and "read attributes" on a folder of its own above it. A Codex reviewer's read-only sandbox reads what your user may read by name on the whole disk; that is the design of that sandbox, not something PatchRondo widens.
 12. **The interface is local and single-user.** It is bound to the loopback interface and protected by a session token, but anyone who can read that token (your terminal output, your browser tab) can create tasks, change settings and start runs with your accounts. A repository does not become trusted by being added: its tests stay disabled until you enable them for it.
 

@@ -42,6 +42,12 @@ Tasks retain checkpoints, logs, test results and review feedback. Quota errors
 pause the loop; optional automatic recovery retries within configured limits
 while the run process remains active.
 
+Test results are what PatchRondo itself observed: it runs the configured
+checks, reads a JUnit XML report where one is configured, and records each
+result in the task's evidence ledger before any agent sees it. A developer's
+"all tests pass" is never one of them
+([checks with a report](docs/USAGE.md#checks-with-a-report)).
+
 ## Requirements
 
 - Python **3.11+** and Git.

@@ -75,7 +75,7 @@ class EventTests(unittest.TestCase):
         self.assertIn("[redacted]", entry["message"])
         self.assertLess(len(entry["message"]), history.TEXT_LIMIT + 40)
         self.assertEqual(entry["codes"], list(range(history.LIST_LIMIT)))
-         elf.assertEqual((entry["nested"], entry["where"], entry["ratio"]), ({"a": {"b": {"c": None}}}, "feature.txt", None))
+        self.assertEqual((entry["nested"], entry["where"], entry["ratio"]), ({"a": {"b": {"c": None}}}, "feature.txt", None))
         # Nothing is cut without saying so: the path of each list or object cut, and how many entries it had.
         self.assertEqual(entry["truncated"], {"codes": 500, "nested.a.b.c": 1})
         wide = history.append(state, "x", rows=[list(range(150))], table={str(n): n for n in range(120)})

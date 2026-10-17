@@ -3,6 +3,7 @@
 Providers are scripted: no CLI is started. The engine scenarios are named
 after what they establish; the letters are those of the feature's request.
 """
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -634,10 +635,11 @@ class EngineTests(Case):
         kinds = {criterion.id: [ledger.get(name)["kind"] for name in criterion.evidence] for criterion in record.criteria}
         self.assertEqual(kinds, {"AC-01": ["review"], "AC-02": ["command"]})  # each by who can verify it
         command = ledger.get(record.get("AC-02").evidence[0])
-        self.assertEqual((command["executor"], command["result"], command["exit_code"], command["log"], command["of"]),
-                         ("runtime", "passed", 0, "iteration-001/test-01.log", 1))
+        self.assertEqual((command["executor"], command["result"], command["exit_code"], command["of"]), ("runtime", "passed", 0, 1))
+        # The log of each run has a name of its own, so a later run never replaces the log an earlier record names.
+        self.assertRegex(command["log"], r"\Aiteration-001/[0-9a-f]{8}-test-01\.log\Z")
         self.assertEqual((command["fingerprint"], command["base"]), (state["test_context"]["fingerprint"], state["base_sha"]))
-        self.assertEqual(len(command["log_sha256"]), 64)
+        self.assertEqual(command["log_sha256"], hashlib.sha256((path / "runs" / command["log"]).read_bytes()).hexdigest())
         self.assertEqual(self.events(path), ["run_started", "development_started", "development_completed", "tests_started",
                                              "tests_completed", "review_started", "review_completed", "task_completed"])
         report = (path / "report.md").read_text(encoding="utf-8")

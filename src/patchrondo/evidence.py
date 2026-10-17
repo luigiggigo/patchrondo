@@ -37,12 +37,18 @@ import re
 import time
 
 from .activity import clip, redact
-from .storage import _unshared, now, private_dir
+from .storage import FileMutex, _unshared, now, private_dir
 
 LEDGER = "evidence.jsonl"
 ARCHIVED = "evidence.damaged-*.jsonl"  # ledgers `restart` put aside, unchanged
 VERSION = 1
 KINDS = ("command", "review", "manual", "authorization", "invalidation", "restart")
+# The one executor that writes each kind. A command record is the runtime's: what an agent or a person says about a
+# command is never one.
+EXECUTORS = {"command": "runtime", "review": "reviewer", "manual": "user", "authorization": "user",
+             "invalidation": "runtime", "restart": "runtime"}
+# What a command record may say it showed (`verification.Status`, and `timeout` as earlier versions wrote it).
+COMMAND_RESULTS = ("passed", "failed", "error", "blocked", "timeout")
 RECORD_ID = re.compile(r"E\d*-\d{4,}")  # what `append` names a record: E-0001, or E2-0001 in a ledger started again
 MAX_RECORDS = 5000            # records read from one ledger; a task never comes near
 TEXT_LIMIT = 2000             # characters of a summary
@@ -158,32 +164,44 @@ def read(task_path: Path) -> Ledger:
 
 
 def append(task_path: Path, kind: str, **fields) -> dict:
-    """Append one record and return it. The caller holds the task lock and has read a ledger without problems."""
+    """Append one record and return it. The caller holds the task lock and has read a ledger without problems.
+
+    The executor of a record is the one `EXECUTORS` names for its kind: one
+    left out is filled in, another is refused. Writers of one ledger take
+    turns (a brief `FileMutex`), so two of them never number a record alike.
+    """
     if kind not in KINDS:
         raise ValueError(f"Unknown kind of evidence: {kind}")
+    executor = fields.get("executor") or EXECUTORS[kind]
+    if executor != EXECUTORS[kind]:
+        raise ValueError(f"A {kind} record is written by the {EXECUTORS[kind]} only, never by {executor}")
+    if kind == "command" and fields.get("result") not in COMMAND_RESULTS:
+        raise ValueError(f"A command record says one of {', '.join(COMMAND_RESULTS)}, not {fields.get('result')!r}")
+    fields["executor"] = executor
     file = private_dir(task_path) / LEDGER
-    ledger = read(task_path)
-    if ledger.problems:
-        raise RuntimeError("The evidence ledger failed its integrity check and must be restarted before it is written")
-    # A ledger that was started again numbers its records apart ("E2-0003"), so that an ID kept elsewhere
-    # can never come to mean another record.
-    first = ledger.records[0] if ledger.records else fields
-    generation = first.get("generation") if kind == "restart" or first.get("kind") == "restart" else None
-    record = {"version": VERSION, "id": f"E{generation or ''}-{ledger.count + 1:04d}", "seq": ledger.count + 1, "at": now(),
-              "kind": kind, **{key: value for key, value in fields.items() if value is not None}, "prev": ledger.head}
-    record["hash"] = _digest(record)
-    line = (json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-    fd = os.open(file, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
-    with os.fdopen(fd, "r+b") as stream:
-        if ledger.incomplete:
-            # A record cut short by a crash was never referred to by a saved state: it is dropped, not repaired.
-            stream.seek(stream.read().rfind(b"\n") + 1)
-            stream.truncate()
-        else:
-            stream.seek(0, os.SEEK_END)
-        stream.write(line)
-        stream.flush()
-        os.fsync(stream.fileno())
+    with FileMutex(file):
+        ledger = read(task_path)
+        if ledger.problems:
+            raise RuntimeError("The evidence ledger failed its integrity check and must be restarted before it is written")
+        # A ledger that was started again numbers its records apart ("E2-0003"), so that an ID kept elsewhere
+        # can never come to mean another record.
+        first = ledger.records[0] if ledger.records else fields
+        generation = first.get("generation") if kind == "restart" or first.get("kind") == "restart" else None
+        record = {"version": VERSION, "id": f"E{generation or ''}-{ledger.count + 1:04d}", "seq": ledger.count + 1, "at": now(),
+                  "kind": kind, **{key: value for key, value in fields.items() if value is not None}, "prev": ledger.head}
+        record["hash"] = _digest(record)
+        line = (json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        fd = os.open(file, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "r+b") as stream:
+            if ledger.incomplete:
+                # A record cut short by a crash was never referred to by a saved state: it is dropped, not repaired.
+                stream.seek(stream.read().rfind(b"\n") + 1)
+                stream.truncate()
+            else:
+                stream.seek(0, os.SEEK_END)
+            stream.write(line)
+            stream.flush()
+            os.fsync(stream.fileno())
     return {**record, "trusted": True, "invalidated": None}
 
 

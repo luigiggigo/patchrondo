@@ -18,7 +18,8 @@ from .gitops import repo_root, create_worktree, changes, stat, fingerprint
 from .process import execute, short_log
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
-from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery, winacl
+from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery
+from . import verification, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -92,6 +93,8 @@ def validate_config(obj, home: Path) -> dict:
     for field in ("agent_timeout_seconds", "test_timeout_seconds", "claude_max_turns"):
         if type(w.get(field)) is not int or not 1 <= w[field] <= 86400:
             raise ValueError(f"Invalid workflow.{field}")
+    # Checks beyond tests.commands: typed, with a report when they have one. They run under the same consent.
+    checks = verification.parse_section(obj.get("verification"), default_timeout=w["test_timeout_seconds"])
     # Optional default roles for new tasks of this project.
     agents = obj.get("agents")
     if agents is not None and (not isinstance(agents, dict) or set(agents) - {"developer", "reviewer"}
@@ -101,7 +104,7 @@ def validate_config(obj, home: Path) -> dict:
         raise ValueError("Enabling tests requires tests.trust_acknowledged=true (trusted repositories only)")
     if t.get("enabled"):
         cmds = t.get("commands")
-        if not isinstance(cmds, list) or not cmds or any(
+        if not isinstance(cmds, list) or (not cmds and not checks) or any(
             not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) and x for x in cmd)
             for cmd in cmds
         ):
@@ -485,6 +488,8 @@ A test failure must result in CHANGES_REQUESTED or BLOCKED, never APPROVED.
 {_read(path, 'handoff.md', 15000)}
 
 ## Test results (from independent test runner)
+Only this section and the evidence listed above are results of checks; each names its record in the evidence ledger.
+What the handoff says about tests is the developer's claim, not a result.
 {json.dumps(state['tests'], ensure_ascii=False, indent=2)[:15000]}
 
 ## Files changed
@@ -632,6 +637,35 @@ def _run_tests(cfg: dict, workspace: Path, run_dir: Path, journal) -> list[dict]
     return results
 
 
+def _run_checks(path: Path, state: dict, cfg: dict, workspace: Path, run_dir: Path) -> tuple[list[dict], dict]:
+    """Run the project's checks with the verification runner (`verification.py`).
+
+    Each result is in the evidence ledger before this returns, written as
+    soon as its check ended. Returns the results as the task state keeps
+    them, and the run with the records it wrote. An interruption records
+    nothing about the check it stopped.
+    """
+    settings, checks = cfg["tests"], verification.checks(cfg)
+    runner = verification.Runner(path, workspace, allowed=checks, iteration=state["iteration"], base=state.get("base_sha"),
+                                 consent=settings["enabled"] is True and settings["trust_acknowledged"] is True, run_dir=run_dir,
+                                 execute=lambda argv, cwd, **options: execute(argv, cwd, **options))
+    _event(state, "tests_started", commands=len(checks), run=runner.run)
+    _save(path, state)
+    with activity.attempt(path, iteration=state["iteration"], role="tests", provider="local") as journal:
+        runner.journal = journal
+        observed = runner.run_all(checks)
+    return [item.entry() for item in observed], {"run": runner.run, "evidence": [item.evidence for item in observed]}
+
+
+def _unsettled(item: dict) -> AgentFailure:
+    """The pause for a check that gave no result: nothing about the code, so nothing for the reviewer or the developer."""
+    name, why = item.get("check") or "of the project", (item.get("message") or "").rstrip(".")
+    if item["status"] == verification.Status.BLOCKED:
+        return AgentFailure(f"The check {name} was not started: {why}. Resume runs the checks again", "verification_blocked")
+    return AgentFailure(f"The check {name} gave no usable result: {why}. Its log is with the task; resume runs the checks again",
+                        "verification_error")
+
+
 def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path, reviewer_check=None, sync=None) -> None:
     """Run the authorized tests, or stop at the missing consent before any review.
 
@@ -640,24 +674,34 @@ def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path, reviewer_ch
     reported first instead of being found after the consent. `sync` judges
     the task's criteria again from the evidence ledger; each command that ran
     is put on record there first, with the fingerprint of the files it ran on.
+
+    The checks run with the verification runner, which records each result
+    as it ends; `PATCHRONDO_VERIFICATION=0` runs tests.commands as the
+    versions before it did, and records them afterwards. A check that gave no
+    result (an error, or blocked before it started) pauses the task here:
+    it is no defect of the code, so it goes to neither agent.
     """
     settings = cfg["tests"]
     run_dir = private_dir(path / "runs" / f"iteration-{state['iteration']:03d}")
-    results = []
+    results, ran = [], None
     if not settings["enabled"]:
         results.append({"command": [], "status": "skipped", "message": "Tests are disabled: final approval requires enabled tests"})
+    elif verification.enabled():
+        results, ran = _run_checks(path, state, cfg, workspace, run_dir)
     else:
+        if not settings["commands"]:
+            raise AgentFailure("verification.checks run only with the verification runner, which PATCHRONDO_VERIFICATION=0 "
+                               "switches off, and tests.commands is empty", "configuration")
         _event(state, "tests_started", commands=len(settings["commands"]))
         _save(path, state)
         with activity.attempt(path, iteration=state["iteration"], role="tests", provider="local") as journal:
             results = _run_tests(cfg, workspace, run_dir, journal)
     state["tests"] = results
     current = fingerprint(workspace)
-    state["test_context"] = {"fingerprint": current,
-                             "commands": settings["commands"] if settings["enabled"] else []}
-    _event(state, "tests_completed", statuses=[x["status"] for x in results])
+    state["test_context"] = _test_context(cfg, current)
+    _event(state, "tests_completed", statuses=[x["status"] for x in results], **(ran or {}))
     if sync is not None:
-        if settings["enabled"]:
+        if settings["enabled"] and ran is None:
             _record_commands(path, state, cfg, results, current)
         sync(current=current)
     if not settings["enabled"]:
@@ -670,6 +714,10 @@ def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path, reviewer_ch
     if any(x["status"] == "timeout" for x in results):
         _save(path, state)
         raise AgentFailure("Tests timed out; check the logs before resuming", "timeout")
+    unsettled = next((x for x in results if x["status"] in verification.UNSETTLED), None)
+    if unsettled is not None:
+        _save(path, state)
+        raise _unsettled(unsettled)
     state["phase"] = "review"
     _save(path, state)
 
@@ -679,7 +727,17 @@ def _tests_green(state: dict) -> bool:
 
 
 def _test_context(cfg: dict, current: str) -> dict:
-    return {"fingerprint": current, "commands": cfg["tests"]["commands"] if cfg["tests"]["enabled"] else []}
+    """What test results are about: the files, and the commands and checks that ran on them.
+
+    `checks` is there only when the project configured checks beyond
+    tests.commands, so the context of a task saved before them stays equal.
+    """
+    enabled = cfg["tests"]["enabled"]
+    context = {"fingerprint": current, "commands": cfg["tests"]["commands"] if enabled else []}
+    checks = verification.context(cfg) if enabled else []
+    if checks:
+        context["checks"] = checks
+    return context
 
 
 def _check_test_context(state: dict, cfg: dict, workspace: Path) -> str:

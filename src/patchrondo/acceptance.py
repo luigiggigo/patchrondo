@@ -45,7 +45,7 @@ import copy
 import json
 import re
 
-from . import capabilities as caps, evidence
+from . import capabilities as caps, evidence, verification
 from .activity import clip, redact
 from .storage import now
 
@@ -533,15 +533,31 @@ class _Proofs:
         manual = self._manual(criterion)
         return [manual["id"]] if manual and self._passed(manual) else []
 
+    def _unpassed(self, proof: str) -> dict | None:
+        """The command of the last run that did not pass for this kind of proof, when one did not."""
+        kind = RUNTIME_PROOFS[proof]
+        return next((record for record in self.run if self.ledger.counts(record) and record.get("result") != "passed"
+                     and (proof == "test" or kind in (record.get("covers") or []))), None)
+
+    def unsettled(self, proof: str) -> str | None:
+        """Why the last run of the project's commands gave no result for this kind of proof: nothing about the code."""
+        record = self._unpassed(proof) if proof in RUNTIME_PROOFS else None
+        if record is None or record.get("result") not in verification.UNSETTLED:
+            return None
+        how = {"timeout": "did not end in time", "error": "gave no usable result",
+               "blocked": "could not be started"}[record["result"]]
+        reason = ((record.get("check") or {}).get("reason") if isinstance(record.get("check"), dict) else None) or ""
+        return (f"A command of the project {how}: {caps.shown(record.get('command') or [])}" + (f". {reason}" if reason else "")
+                + ". Nothing was learned about the code; the next run of the project's commands tries again")
+
     def failure(self, proof: str, criterion: str) -> str | None:
-        """Why this kind of proof failed, when the last attempt at it did."""
+        """Why this kind of proof failed, when the last attempt at it did. A command without a result did not fail."""
         if proof in RUNTIME_PROOFS:
-            kind = RUNTIME_PROOFS[proof]
-            failed = next((record for record in self.run if self.ledger.counts(record) and record.get("result") != "passed"
-                           and (proof == "test" or kind in (record.get("covers") or []))), None)
-            if failed:
-                how = "timed out" if failed.get("result") == "timeout" else f"failed (exit {failed.get('exit_code')})"
-                return f"A command of the project {how}: {caps.shown(failed.get('command') or [])}"
+            failed = self._unpassed(proof)
+            if failed and failed.get("result") not in verification.UNSETTLED:
+                reason = ((failed.get("check") or {}).get("reason") if isinstance(failed.get("check"), dict) else None) or ""
+                return (f"A command of the project failed (exit {failed.get('exit_code')}): {caps.shown(failed.get('command') or [])}"
+                        + (f". {reason}" if reason else ""))
         if proof != "review" and proof != "test":
             manual = self._manual(criterion)
             if manual and self.ledger.counts(manual) and manual.get("result") == "failed":
@@ -741,6 +757,9 @@ class Acceptance:
         failure = next((text for proof in held if (text := proofs.failure(proof, criterion.id))), None)
         if failure:
             return Status.FAILED, failure, found
+        unsettled = next((text for proof in held if (text := proofs.unsettled(proof))), None)
+        if unsettled:
+            return Status.PENDING, unsettled, found
         if criterion.authorization_required and not granted:
             operation = next((OPERATIONS[need] for need in criterion.needs if need in OPERATIONS), "This operation")
             if decision.get("decision") == "denied":
@@ -1008,8 +1027,10 @@ class Acceptance:
             lack = [key for key, entry in found.items() if entry.get("state") == caps.ABSENT]
             able.append(f"- {name}: can {', '.join(have) or 'nothing known'}; cannot {', '.join(lack) or 'nothing known'}")
         proofs = _Proofs(ledger)
+        # Built from the ledger each time: what the developer's handoff says about tests never takes its place.
         recorded = [f"- {record['id']} command `{caps.shown(record.get('command') or [])}`: {record.get('result')} "
-                    f"(exit {record.get('exit_code')})" for record in proofs.run if ledger.counts(record)]
+                    f"(exit {record.get('exit_code')})" + (f" — {described}" if (described := verification.describe(record)) else "")
+                    for record in proofs.run if ledger.counts(record)]
         recorded += [f"- {record['id']} check by the user for {', '.join(record.get('criteria') or [])}: {record.get('result')}"
                      for record in ledger.records if record.get("kind") == "manual" and ledger.counts(record)]
         return "\n".join([

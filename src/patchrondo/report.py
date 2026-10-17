@@ -58,6 +58,11 @@ def render_report(state: dict) -> str:
     for t in state.get("tests", []):
         cmd = " ".join(t.get("command", [])) or "(disabled)"
         rows.append(f"- `{cmd}` → **{t.get('status', '?')}**")
+        if isinstance(t.get("evidence"), str):
+            # Recorded by the verification runner: the check and its record in the evidence ledger.
+            rows.append(f"  Check `{t.get('check')}` ({t.get('type')}), evidence `{t['evidence']}`")
+        if t.get("message") and t.get("status") != "skipped":
+            rows.append(f"  {clip(redact(str(t['message'])), 400)}")
         if t.get("log_file"):
             rows.append(f"  Log: `{t['log_file']}`")
     review = state.get("review")

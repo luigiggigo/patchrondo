@@ -43,7 +43,7 @@ export const VERDICTS = {
   BLOCKED: { label: "Blocked by reviewer", tone: "danger", icon: "x" },
 };
 export const SEVERITY = { low: "neutral", medium: "warn", high: "danger", critical: "danger" };
-export const TEST_TONE = { passed: "ok", failed: "danger", timeout: "warn", skipped: "neutral" };
+export const TEST_TONE = { passed: "ok", failed: "danger", timeout: "warn", error: "warn", blocked: "warn", skipped: "neutral" };
 
 export const ERRORS = {
   quota: { title: "Usage limit reached", help: "The provider reported a usage limit for your plan. PatchRondo never works around a limit: wait for it to reset, then resume." },
@@ -170,6 +170,7 @@ const PAUSE_REASONS = {
   git_dubious_ownership: "Git does not trust the project folder", cli_missing: "an agent is not installed",
   awaiting_validation: "criteria wait for a verification", awaiting_authorization: "criteria wait for your authorization",
   acceptance_unreadable: "the saved criteria cannot be read",
+  verification_error: "a check gave no usable result", verification_blocked: "a check could not be started",
 };
 const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git trust for this project folder" };
 const REPAIR_OUTCOMES = { applied: ["Fixed", "ok"], unchanged: ["Already in place", "neutral"], rolled_back: ["Could not fix; put back as it was", "warn"],
@@ -194,6 +195,8 @@ export function describeEvent(event, task) {
     case "tests_started": return { text: `Tests started (${plural(event.commands ?? 0, "command")})`, tone: "accent", icon: "flask" };
     case "tests_completed":
       if (statuses.includes("timeout")) return { text: "Tests timed out", tone: "warn", icon: "flask" };
+      if (statuses.includes("blocked")) return { text: "A check could not be started", tone: "warn", icon: "flask", detail: "Nothing was learned about the code" };
+      if (statuses.includes("error")) return { text: "A check gave no usable result", tone: "warn", icon: "flask", detail: "Nothing was learned about the code" };
       if (statuses.includes("failed")) return { text: "Tests failed", tone: "danger", icon: "flask" };
       if (statuses.length && statuses.every((s) => s === "skipped")) return { text: "Tests skipped (disabled for this project)", tone: "neutral", icon: "flask" };
       // Passed only when the event says so for every command: an empty, unknown or shortened list proves nothing.
@@ -293,7 +296,8 @@ export const EVIDENCE_KINDS = {
   invalidation: "Earlier evidence stopped counting", restart: "Ledger started again",
 };
 export const EVIDENCE_RESULTS = {
-  passed: ["Passed", "ok"], failed: ["Failed", "danger"], timeout: ["Timed out", "warn"], approved: ["Approved", "ok"],
+  passed: ["Passed", "ok"], failed: ["Failed", "danger"], timeout: ["Timed out", "warn"], error: ["No usable result", "warn"],
+  approved: ["Approved", "ok"],
   changes_requested: ["Changes requested", "warn"], blocked: ["Blocked", "danger"], granted: ["Authorized", "ok"],
   denied: ["Not authorized", "neutral"], invalidated: ["Invalidated", "neutral"], restarted: ["Restarted", "warn"],
 };

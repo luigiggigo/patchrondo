@@ -31,7 +31,7 @@ from pathlib import Path
 import re
 import shutil
 
-from . import agents
+from . import agents, verification
 from .activity import clip, redact
 from .storage import now
 
@@ -128,14 +128,30 @@ def covers(argv: list[str]) -> list[str]:
     return kinds + (["build"] if build else []) + (["package"] if package else [])
 
 
+def check_covers(check) -> list[str]:
+    """What a configured check proves when it passes: what its command does, and a build for a check of that type."""
+    kinds = covers(list(check.command))
+    if check.type == "build" and "build" not in kinds:
+        kinds.append("build")
+    return kinds
+
+
 def shown(argv: list[str]) -> str:
     """A command as people read it: credentials masked, bounded."""
     return clip(redact(" ".join(argv)), 200)
 
 
+def _checks(cfg: dict) -> list:
+    """The checks a run of the project's commands runs; tests.commands alone when the rest cannot be read."""
+    try:
+        return verification.checks(cfg)
+    except ValueError:
+        return verification.legacy(cfg)  # a configuration that does not validate runs nothing: `config` refuses it first
+
+
 def test_commands(cfg: dict) -> list[list[str]]:
-    commands = (cfg.get("tests") or {}).get("commands") or []
-    return [cmd for cmd in commands if isinstance(cmd, list) and cmd and all(isinstance(part, str) and part for part in cmd)]
+    """The command of every check a run of the project's commands runs, tests.commands first."""
+    return [list(check.command) for check in _checks(cfg)]
 
 
 def _developer(provider, values) -> dict:
@@ -197,14 +213,16 @@ def _reviewer(provider, state: dict) -> dict:
 def _runtime(cfg: dict, state: dict, toolchains, which) -> dict:
     """What PatchRondo can do itself: the project's authorized commands, and nothing that needs a new privilege."""
     tests = cfg.get("tests") or {}
-    commands = test_commands(cfg)
+    configured = [(list(check.command), check_covers(check)) for check in _checks(cfg)]
+    commands = [cmd for cmd, _ in configured]
     allowed = bool(tests.get("enabled") is True and tests.get("trust_acknowledged") is True and commands)
-    ran = any(isinstance(item, dict) and item.get("status") in {"passed", "failed", "timeout"} for item in state.get("tests") or [])
+    ran = any(isinstance(item, dict) and item.get("status") in {"passed", "failed", "timeout", "error"}
+              for item in state.get("tests") or [])
     missing = {"tests": "No test command is configured for this project", "build": "No command of this project runs a build",
                "package": "No command of this project creates a package"}
     found = {}
     for kind, name in COMMAND_KINDS.items():
-        matching = [shown(cmd) for cmd in commands if kind in covers(cmd)]
+        matching = [shown(cmd) for cmd, kinds in configured if kind in kinds]
         if not matching:
             found[name] = _cap(ABSENT, missing[kind])
         elif not allowed:

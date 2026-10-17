@@ -51,8 +51,10 @@ an edit of the file.
 
 Captured process output is bounded in memory; temporary capture files can grow on
 disk until the timeout. Apply disk quotas in isolated runners. On native Windows,
-process cleanup terminates the direct child only, and stale-lock recovery is
-conservative. Use WSL2 for POSIX process-group cleanup.
+the project's checks run in a job object, so a time limit ends every process
+they started; an agent CLI is still terminated alone, a process started before
+the job object holds it escapes, and stale-lock recovery is conservative. Use
+WSL2 for POSIX process-group cleanup.
 
 ## Environment check and repairs
 
@@ -258,6 +260,57 @@ rules, and a link the reviewer gives is checked before it is kept.
 The actions on criteria go through the same server checks as every other
 write (token, `Host`, `Origin`, JSON body) and hold the task lock, so they
 never overlap a run.
+
+## The project's checks
+
+The verification runner (`verification.py`) runs the commands of
+`tests.commands` and the checks of the `verification` section of a project's
+configuration, after each development step, and records what each one showed
+in the evidence ledger.
+
+**What it never does.**
+
+- It runs nothing the configuration does not name, and nothing without
+  `tests.enabled` and `tests.trust_acknowledged`: a check that is not
+  configured, or anything without the consent, is recorded as blocked before
+  it starts. No agent and no text an agent wrote can name a command for it.
+- It starts no shell. A configured check whose program runs its arguments as
+  a script (`sh`, `bash`, `cmd`, `powershell`, `pwsh`, `wsl` and the like)
+  needs `"shell": true` in the configuration; the entries of `tests.commands`
+  run as they always did.
+- It reads nothing outside the task's copy of the project and its own run
+  folder: the folder of a check and a report location are relative, without
+  `..` or a drive, and are refused when a link or a junction leads elsewhere.
+- It changes no permission, sandbox or access list to let a check run: a
+  check that cannot start is recorded as blocked, and the task pauses.
+- It takes no agent's word: a record of a command can only be written as the
+  runtime's (`evidence.EXECUTORS`), and a report counts only when this run
+  wrote it where it was told to.
+
+**What a result is worth.** A check runs the repository's code with your
+permissions; that is what `trust_acknowledged` accepts, and it is no sandbox.
+Code under test can print anything and can write a report that says what it
+likes. The runner refuses a report that was there before the run, a report
+that contradicts the exit code or its own counts, and a run that changed the
+task's files, so a forged pass takes deliberate code, which the review of the
+change is there to find. A record is evidence of what PatchRondo observed,
+not a signature.
+
+**Reports.** JUnit XML reports are untrusted input. They are parsed with
+`xml.parsers.expat`; a document type declaration is refused before any entity
+is defined, so no entity is expanded and nothing is fetched; the size (32 MiB),
+the depth and the number of test cases are bounded.
+
+**Logs.** The output of a check is saved in the task's private run folder.
+Before it is written, the values of PatchRondo's own environment variables
+whose names say they hold a secret (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`,
+…) and the shapes the activity journal masks are replaced by `[redacted]`.
+That is best effort: a secret printed in another shape is kept, so the logs
+are private project data. The child process does not receive those variables
+(`process.safe_env`), but it can read what your account can read.
+
+`PATCHRONDO_VERIFICATION=0` runs `tests.commands` as the versions before the
+runner did, without the masking of logs.
 
 ## Local interface
 

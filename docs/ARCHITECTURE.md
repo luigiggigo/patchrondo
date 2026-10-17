@@ -8,7 +8,8 @@
 | `core.py` | Deterministic state machine and completion criteria; configuration and task-override validation; the operations a person has on a task's criteria |
 | `acceptance.py` | The acceptance criteria of a task as typed records: classification by fixed rules, planning against the detected capabilities, verification against the evidence ledger, the settling of a review, the results of the task |
 | `capabilities.py` | What each executor of a task can do (developer, reviewer, PatchRondo itself, the user), read from settings and from the computer; nothing is started |
-| `evidence.py` | The evidence ledger of a task: append-only, hash-chained records of commands, reviews, checks by the user and decisions; invalidation and integrity |
+| `evidence.py` | The evidence ledger of a task: append-only, hash-chained records of commands, reviews, checks by the user and decisions; invalidation and integrity; the one executor allowed to write each kind |
+| `verification.py` | The verification runner: the project's configured checks (tests, build, static analysis, repository checks), run by PatchRondo, judged from their exit code or JUnit XML report, each result recorded in the ledger as it ends |
 | `findings.py` | The findings of a task's reviews: an ID for each problem that it keeps across iterations, links by fixed rules only, and its history; it decides nothing |
 | `history.py` | The workflow history of a task: versioned events with an ID each, saved with the checkpoints, naming ledger records, findings and criteria; it proves and decides nothing |
 | `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse; starts each step with its agent settings |
@@ -16,7 +17,7 @@
 | `streams.py` | Parsers of the two CLIs' activity streams into provider-independent events; drop internal reasoning; keep a bounded transcript |
 | `activity.py` | The activity journal of a task: bounded, redacted, append-only events, and paging through them by cursor |
 | `recovery.py` | Opt-in quota recovery: retry policy, the persisted plan and the foreground supervisor that waits without the task lock |
-| `process.py` | Process stdin/stdout, timeouts, group cleanup and filtered environment; optional observers that see output while the process runs |
+| `process.py` | Process stdin/stdout, timeouts, group cleanup (a job object on native Windows when asked) and filtered environment; optional observers that see output while the process runs |
 | `gitops.py` | Separate worktrees and branches, Git status |
 | `storage.py` | Atomic JSON state, private directories, locks and process PID checks |
 | `report.py` | Auditable reports with files, tests, reviews and events |
@@ -53,7 +54,8 @@ interface cannot bypass the lock, the checkpoints or the consent rules.
 - The developer cannot award itself an `APPROVED` verdict.
 - Claude reviewer uses read-only file tools; Codex reviewer uses the `read-only` sandbox and can execute commands allowed by it. Change requests are passed to the developer as data.
 - State moves between atomically saved checkpoints: `develop` -> `test` -> `review` -> `complete`, or `develop` in the next iteration. `review` -> `validate` -> `complete` is the path of a task whose code is approved while criteria are open; `validate` goes back to `test` when evidence that only the project's commands and a review can give is missing, and to `develop` when a check by the user failed. No agent is called at `validate`.
-- If an agent subprocess fails, the loop stops in `PAUSED`. A failed test proceeds to review so the reviewer can provide useful feedback; test timeouts pause at the test phase.
+- If an agent subprocess fails, the loop stops in `PAUSED`. A failed test proceeds to review so the reviewer can provide useful feedback; a check that gave no result (a timeout, an error, or blocked before it started) pauses at the test phase, since it says nothing about the code (section 16).
+- A result of a check is what PatchRondo observed and put in the ledger before telling anybody: never what an agent said, never a report the run did not write, never a run that changed the task's files (section 16).
 - Tests that are not enabled are a missing prerequisite, not work for the reviewer: the loop pauses at the `test` checkpoint with `tests_disabled` before any reviewer call, also from a saved `review` checkpoint whose tests were disabled afterwards (the saved results are replaced by a skipped entry). A run started while that pause and the missing consent both still hold returns the saved state unchanged: no event, no environment check, no provider call. With tests enabled, Resume runs them and then the review.
 - Only a `quota` pause can be retried without a person, only when recovery is active, and never before its persisted `resume_at`. No task lock is held while waiting, and no lock is ever removed automatically (section 8).
 - The orchestrator does not automatically merge, push, commit or install dependencies.
@@ -1179,19 +1181,33 @@ that does not exist yet. It never stops a task from being created.
 
 ```json
 {"id": "E-0001", "seq": 1, "at": "…", "kind": "command", "executor": "runtime", "result": "passed", "exit_code": 0,
- "command": ["python", "-m", "pytest", "-q"], "covers": ["tests"], "run": "001-3f9c2a1b", "of": 1,
- "log": "iteration-001/test-01.log", "log_sha256": "…", "iteration": 1, "fingerprint": "…", "base": "…", "scope": "code",
+ "command": ["python", "-m", "pytest", "-q"], "covers": ["tests"], "run": "001-3f9c2a1b", "of": 1, "criteria": [],
+ "log": "iteration-001/3f9c2a1b-test-01.log", "log_sha256": "…", "iteration": 1, "fingerprint": "…", "base": "…",
+ "scope": "code", "check": {"version": 1, "id": "command-1", "type": "test", "adapter": "exit_code", "…": "…"},
  "prev": "", "hash": "…"}
 ```
 
+A `command` record written by the verification runner carries `check`, what
+the runner observed (section 16); one written before it, or with
+`PATCHRONDO_VERIFICATION=0`, has none and names `iteration-001/test-01.log`.
+
 | Kind | Written when | By |
 |---|---|---|
-| `command` | A configured command of the project ran in the test stage | `_record_commands` |
+| `command` | A configured check of the project ran in the test stage, or was refused before it started | `verification.Runner`, as each check ends (`_record_commands` with the runner switched off) |
 | `review` | A review was parsed and settled | `_record_review` |
 | `manual` | The user attached a check: what was done, a reference or a file hashed by PatchRondo, passed or failed | `attach_evidence` |
 | `authorization` | The user granted or denied an operation | `decide_authorization` |
 | `invalidation` | Earlier records stopped counting | `_sync`, `_validate_stage` |
 | `restart` | The ledger was started again after failing its check | `evidence.restart` |
+
+Each kind has one executor (`evidence.EXECUTORS`): `append` fills it in
+when it is left out and refuses any other, and a `command` record says one
+of `passed`, `failed`, `error`, `blocked` or `timeout`. So a record of a
+command is the runtime's whatever a caller passes; what an agent says about
+a command never reaches the ledger at all. Writers of one ledger take turns
+(`storage.FileMutex` on `evidence.jsonl.lock`, held for one append), so two
+writers never give two records the same number; the task lock still
+serializes everything a run does.
 
 `fingerprint` is the digest of the task's files the record was made on
 (`gitops.fingerprint`), `base` the commit the task started from. `prev` and
@@ -1220,7 +1236,9 @@ kind of proof it needs has records that count, the criteria it depends on are
 verified and, for an operation that needs consent, the user's last decision
 is a grant. Otherwise its status says what is missing, in this order: waiting
 for another criterion; being developed; a change to the code asked by the
-reviewer, or a command or a check that failed (`FAILED`); a decision
+reviewer, or a command or a check that failed (`FAILED`); a command of the
+project that gave no result, an error, a timeout or a check that could not
+start (`PENDING`, with that reason: nothing was learned about the code); a decision
 (`AWAITING_AUTHORIZATION`, also when the project's commands are configured
 and not allowed); a missing program or command (`BLOCKED_CAPABILITY`); a
 check by the user (`AWAITING_MANUAL_VALIDATION`, or `UNKNOWN` for an
@@ -1672,3 +1690,215 @@ operations of the user go on.
   and the findings keep all 120. The whole length of a list is its entry in
   `truncated` when there is one, otherwise its length. The counts beside the
   lists (`issues`, `unrecorded_issues`, `records`) are never cut.
+
+## 16. Verification runner
+
+Before this, the test stage ran the entries of `tests.commands` one after the
+other, read each from its exit code, and put the results in the ledger after
+the last one ended. A report was never read, an infrastructure error was a
+failure of the code, a command that rewrote the task's files was recorded as
+having passed on the files it left, the output was kept unmasked, and a run
+again in the same iteration replaced the log an earlier record named.
+`verification.py` keeps that stage and its consent and changes how a check
+is run, read and recorded. No model runs or reads anything here: the runner
+is plain Python, and an agent can neither start a check nor write a result.
+
+### Data
+
+A check is a `verification.Check`, built only from the validated project
+configuration. The entries of `tests.commands` are checks named
+`command-1`, `command-2`, … of type `test`, read from their exit code, as
+before. More checks go in a top-level section of `config.json`, next to
+`tests`, which the interface keeps when it saves the test settings:
+
+```json
+"verification": {"checks": [
+  {"id": "pytest", "type": "test", "report": "junit",
+   "command": ["python", "-m", "pytest", "-q", "--junitxml={report}"],
+   "min_tests": 1, "required_tests": ["tests/test_api.py::test_expired_token"], "criteria": ["AC-01"]},
+  {"id": "ruff", "type": "static_analysis", "command": ["ruff", "check", "."]},
+  {"id": "wheel", "type": "build", "command": ["python", "-m", "build", "--wheel"], "artifacts": ["dist/*.whl"]}
+]}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | 1–40 letters, digits, `.`, `_`, `-`; unique; `command-<n>` is reserved for `tests.commands` |
+| `type` | `test`, `build`, `static_analysis`, `repository_check`; a `build` check proves a build (`capabilities.check_covers`) |
+| `command` | An argument array, started without a shell. A program that runs its arguments as a script (`sh`, `bash`, `cmd`, `powershell`, `pwsh`, `wsl`, …) needs `"shell": true` |
+| `cwd` | A folder inside the task's copy of the project, `.` by default |
+| `timeout_seconds` | 1–86400; `workflow.test_timeout_seconds` by default, so a task's override applies |
+| `report` | `junit`: the result is read from a JUnit XML report |
+| `{report}` / `report_path` | Where the report is written: `{report}` in an argument is replaced with a new path in the task's private run folder; `report_path` is a file inside the project, for a tool that cannot be told where to write |
+| `min_tests` | With a report: fewer test cases fail the check; 1 by default |
+| `required_tests` | With a report: tests, classes, modules or suites that must be in it with a pass and no failure (`tests/test_api.py::test_x`, `tests.test_api.TestA`, a suite's name) |
+| `artifacts` | Patterns inside the project; a passing check hashes the files they match, and fails when one matches none |
+| `criteria` | Criteria this check may give evidence for. Naming one proves nothing: it lists the record under the criterion on the page, and is kept for the acceptance gate of a later step |
+
+`validate_config` refuses an unknown field, a location that is absolute, has
+a drive, `..` or a `:`, a report nobody is told to write, `min_tests` or
+`required_tests` without a report, and a check named twice, so an invalid
+check never reaches the disk from the interface and never runs. With tests
+enabled, `tests.commands` may be empty when `verification.checks` has a check.
+
+### Running
+
+`core._test_stage` runs `verification.checks(cfg)`, `tests.commands` first,
+in one run named `<iteration>-<8 hex>`, until the first check that does not
+pass, as before. For each check the runner:
+
+1. refuses it before anything starts (`blocked`) when it is not one of the
+   checks of the configuration, when `tests.enabled` and
+   `tests.trust_acknowledged` are not both true, when it starts a shell it
+   does not allow (`tests.commands` entries keep the behavior they always
+   had), or when its folder or report location is not inside the project or
+   goes through a link or a junction (`winacl.is_reparse_point`, then
+   `resolve`);
+2. takes a snapshot of the task's files (`verification.snapshot`): the
+   commit, the branch, the Git directory of the worktree, whether it is
+   dirty and how many entries `git status` lists, and `gitops.fingerprint`.
+   The commit alone never says that two copies are the same;
+3. starts the command with `process.execute(..., tree=True)` through the
+   engine's own `execute`, so the tests that replace it still do. On POSIX
+   the process group, and on native Windows a job object (`process._Job`),
+   stops everything the command started when it times out or the run is
+   interrupted;
+4. writes its output to `runs/iteration-NNN/<run>-test-NN.log` after
+   masking the values of this process's variables named like secrets
+   (`known_secrets`) and what `activity.redact` recognizes; the task state
+   keeps the last 6000 characters;
+5. takes the snapshot again, and judges.
+
+| Observed | Result | `check.error.kind` |
+|---|---|---|
+| The time limit | `timeout` (an error, written as before) | `timeout` |
+| A signal ended it (POSIX) | `error` | `killed` |
+| The task's files changed between the two snapshots | `error`, naming up to 20 entries `git status` lists | `workspace_modified` |
+| Git answered before and not after | `error` | `snapshot_unavailable` |
+| No report; a link; larger than 32 MiB; not XML; a document type; not JUnit | `error` | `report_missing`, `report_invalid`, `report_unsafe` |
+| A `report_path` file that is the one from before the run (size, time and SHA-256 equal) | `error` | `report_stale` |
+| Suites that declare more failures or errors than their test cases show; another number of tests while none fails; exit 0 with failing cases; a nonzero exit with none | `error` | `report_inconsistent` |
+| Failing test cases and a nonzero exit; fewer than `min_tests`; a required test absent or without a pass; an artifact pattern that matches nothing; a nonzero exit without a report | `failed` | |
+| Everything else | `passed` | |
+| The program is not there, or the system refused to start it | `blocked` | `not_found`, `permission_denied` |
+| A start that failed otherwise | `error` | `start_failed` |
+
+`parse_junit` reads the report with `xml.parsers.expat` and refuses a
+document type declaration before an entity can be defined, so nothing is
+expanded and nothing outside the file is fetched; it bounds the size, the
+depth (64) and the test cases (200,000). Counts come from the `testcase`
+elements, a case with a `failure` and an `error` counting once for each, as
+pytest writes a test that fails and then errors in its teardown. What the
+suites declare is only compared with them. `judge_report` and `judge_exit`
+read nothing but their arguments.
+
+A report written to `{report}` is read where it is; one read from
+`report_path` is copied beside the log, to a name of this run only. The copy
+and every artifact are hashed into `artifacts`, so `evidence.outdated`
+invalidates the record when one of them changes or disappears. A report
+inside the project must be ignored by Git, or the run changed the task's
+files.
+
+The result is appended to the ledger as soon as it is known, before the
+next check starts and before the stage returns. An interruption records
+nothing about the check it stopped, and a ledger that cannot be written
+stops the run with the error: no result exists that the ledger does not
+hold.
+
+### The record
+
+```json
+{"kind": "command", "executor": "runtime", "result": "passed", "exit_code": 0, "criteria": ["AC-01"],
+ "command": ["python", "-m", "pytest", "-q", "--junitxml=…/runs/iteration-001/3f9c2a1b-test-01.junit.xml"],
+ "covers": ["tests"], "run": "001-3f9c2a1b", "of": 2, "fingerprint": "<before the check>", "base": "…", "scope": "code",
+ "log": "iteration-001/3f9c2a1b-test-01.log", "log_sha256": "…",
+ "artifacts": [{"path": "…/3f9c2a1b-test-01.junit.xml", "sha256": "…", "size": 1234, "mtime_ns": 0}],
+ "check": {"version": 1, "id": "pytest", "type": "test", "adapter": "junit", "index": 1, "cwd": ".", "timeout_seconds": 180,
+           "started_at": "…", "finished_at": "…", "duration_ms": 2140,
+           "environment": {"id": "H-…", "system": "Windows", "release": "11", "machine": "AMD64", "python": "3.13.3", "wsl": false},
+           "snapshot": {"before": {"available": true, "head": "…", "branch": "patchrondo/T-…", "git_dir": "…", "dirty": true,
+                                   "changes": 1, "fingerprint": "…", "worktree": "…"}, "after": {"…": "…"}, "changed": false},
+           "report": {"format": "junit", "path": "iteration-001/3f9c2a1b-test-01.junit.xml", "sha256": "…", "source": "{report}",
+                      "suites": 1, "counts": {"tests": 12, "passed": 11, "failed": 0, "errors": 0, "skipped": 1}},
+           "reason": "12 tests: 11 passed, 1 skipped", "error": null}}
+```
+
+| Field asked for | Where it is |
+|---|---|
+| `evidence_id` | `id` (`E-0001`, `E2-0001` after a restart), numbered by the ledger |
+| `schema_version` | `version` of the record, and `check.version` of what the runner observed |
+| `task_id`, `criterion_ids` | The ledger is the task's own file; `criteria`, as candidates |
+| `verification_id`, `run_id`, `type` | `check.id`, `run`, `check.type` |
+| `source` | `kind` `command` with `executor` `runtime`: only the runtime writes it (`evidence.EXECUTORS`) |
+| `status` | `result`; `verification.status_of` gives the typed `Status` (`timeout` is `ERROR`) |
+| `repository_revision`, `workspace_snapshot` | `check.snapshot.before.head`, `check.snapshot`; `fingerprint` binds the record to the files before the check |
+| `command`, `exit_code` | `command` as it ran, `exit_code` (none when it never started) |
+| `started_at`, `finished_at`, `duration_ms` | In `check`, to the millisecond, UTC |
+| `environment_id` | `check.environment.id`: a digest of the system, the interpreter and the computer's name, which is not kept |
+| `artifacts`, `error` | `log`, `log_sha256`, `artifacts`, `check.report`; `check.error.kind` and `check.reason` |
+
+`stale` is reserved in `verification.STALE`: no version writes it, and
+evidence that stopped counting is named by an `invalidation` record.
+
+### In the loop
+
+The `tests_started` event names the run (`run`) and is saved before the
+first check starts; `tests_completed` names it again with the records it
+wrote (`evidence`). A run with a start and no completion in the history is
+one whose outcome is not known, and none of its checks counts unless its
+record is in the ledger. No new event exists, so the loop's sequence of
+events does not change. The journal's `test` events name the check and,
+at the end, its record.
+
+`state["tests"]` keeps, for each check, what it kept before (`command`,
+`status`, `returncode`, `log_file`, `output_tail`) and `check`, `type`,
+`evidence`, `duration_ms`, the reason as `message` when it did not pass and
+the report's `counts`. The reviewer reads that list under its heading, told
+that the developer's word about tests is a claim; the evidence it is shown
+is built from the ledger each time (`verification.describe`), and the
+developer reads the list in `feedback.md`.
+
+| After the run | The task |
+|---|---|
+| Every check passed | Goes to the review, as before |
+| A check failed | Goes to the review, which cannot approve it, then to the developer, as before |
+| `timeout` | Pauses with `timeout` at `test`, as before |
+| `error` | Pauses with `verification_error` at `test`: no agent is told |
+| `blocked` | Pauses with `verification_blocked` at `test`: no agent is told |
+
+A Resume runs the checks again: a check is meant to be repeatable, and its
+earlier records stay. A criterion whose proof is a run that gave no result
+is `PENDING` with the reason, not `FAILED`: nothing was learned about the
+code. The test context of a task (`_test_context`) gains `checks`, the
+identity of each configured check, only when there is one, so the context
+saved by an earlier version stays equal and a changed check makes the saved
+results stale. A quota pause after the tests keeps them: the review resumes
+on the same records.
+
+`PATCHRONDO_VERIFICATION=0` runs `tests.commands` as the versions before
+this one did, and records them after the last one ends; the
+`verification` section is then not run, and a task that has nothing else
+pauses with `configuration`.
+
+### Limits
+
+- The command under test runs with the user's rights. It can print what it
+  likes and write any report where it is told to. The runner reads a report
+  only from where this run was told to write it, refuses one left from
+  before, compares it with the exit code and refuses a run that changed the
+  task's files; a test suite written to forge a passing report can still
+  do it, and the review of its changes is what finds that. Nothing here is a
+  signature.
+- Masking is best effort: the values of this process's variables named like
+  secrets, and the shapes `activity.redact` knows. A secret printed in
+  another shape stays in the log, which is private to the user.
+- The snapshot needs Git. Without it the record says which facts are
+  missing, binds itself to no files and so never counts for the task's
+  files. Ignored files and submodule contents are outside the fingerprint.
+- `report_path` names one file. A tool that writes one report per module
+  (Maven Surefire) needs a single merged file.
+- Required tests are matched by name, never by what they test.
+- On native Windows a child that starts before it is put in the job object,
+  or a process that leaves the job, is not stopped with it. Agent CLIs are
+  still stopped alone, as before.
+- Nothing marks a check as unrepeatable: a Resume runs every check again.

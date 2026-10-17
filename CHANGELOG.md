@@ -9,6 +9,70 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Checks PatchRondo runs and records itself — October 17, 2026
+
+- **A result of a check is what PatchRondo observed.** The new verification
+  runner (`verification.py`) runs the project's commands after each
+  development step, as the test stage did, under the same consent. Each
+  result goes into the evidence ledger as soon as its check ends, before the
+  next one starts and before any agent is told: `passed`, `failed`, `error`
+  (no result could be established) or `blocked` (not started), with the
+  exit code, times to the millisecond, the computer it ran on, the state of
+  the task's files before and after, the log and the report. Nothing an
+  agent writes reaches it, and `evidence.append` now gives a `command` record
+  to the runtime only, whatever a caller passes.
+- **Checks with a JUnit XML report.** A `verification` section beside `tests`
+  configures typed checks (`test`, `build`, `static_analysis`,
+  `repository_check`). A check with `"report": "junit"` is read from the
+  report its run wrote: exit code 0 without the report, a report that is not
+  XML, declares a document type, contradicts its exit code or its own counts,
+  or was there before the run is an error, never a pass; zero tests, fewer
+  than `min_tests`, or a `required_tests` entry without a pass fail the
+  check. A build can name the `artifacts` it must produce. The reports are
+  read with `expat`, with no entity expanded and size, depth and test cases
+  bounded.
+- **A check that gave no result no longer goes to the agents.** A missing
+  program, a refused start, an unreadable report or a check that changed the
+  task's files pause the task with `verification_blocked` or
+  `verification_error` at the test stage, where a Resume runs the checks
+  again. Before, a missing program paused with `configuration` and the rest
+  reached the reviewer and the developer as failing tests. The criterion it
+  was to prove stays `PENDING` with the reason, not `FAILED`; so does one
+  whose tests timed out.
+- **A check that changes the task's files proves nothing about them.** It was
+  recorded as passed on the files it left; it is now an error naming the
+  files Git saw change. Keep what tests generate ignored by Git.
+- **Logs are masked and kept.** The output of each check is saved with the
+  values of PatchRondo's secret-named environment variables and
+  credential-shaped text replaced by `[redacted]`. Each run names its files
+  (`<run>-test-01.log`), so a run again in the same iteration no longer
+  replaces the log an earlier record names.
+- **On native Windows a time limit stops what a check started.** Checks run
+  in a job object, so a test runner's child processes no longer outlive its
+  timeout. Agent CLIs are still stopped alone.
+- **Compatibility.** The entries of `tests.commands` run as before, read from
+  their exit code, under the names `command-1`, `command-2`. A task saved
+  before resumes where it was: its test context stays equal while no
+  `verification` section is configured. No event was added and the events of
+  the loop are those of before. `PATCHRONDO_VERIFICATION=0` runs the tests as
+  the versions before this one did.
+- **`tests/test_history.py` imports again.** A stray character committed in
+  `15750e6` broke its line 78, and every job of CI run 39051863842 failed on
+  it; the line is as it was in `14d7b86`.
+- `tests/test_verification.py` has 47 tests: reports (valid, failing,
+  zero tests, a partial suite, declared counts, malformed, a document type),
+  the configuration, real processes in a repository whose path has spaces
+  (timeouts with child processes, a missing program, a refused start, an
+  unconfigured or unallowed check, an interruption, a ledger that cannot be
+  written, two runs at once, two writers of one ledger, a restart, a changed
+  record, no Git, a check that changes the files, a known token, a report
+  location through a link or a junction, a report from before the run, build
+  artifacts) and the loop (a claim of the developer, a reviewer that names
+  evidence, a pause for an error and for a blocked check, an interrupted
+  check, a quota pause, changed checks, the switch, a task saved before the
+  runner). 22 new mutation protections remove the new safeguards one at a
+  time.
+
 ### The four records checked together — October 17, 2026
 
 - **An entry of the history that is not an event no longer breaks the

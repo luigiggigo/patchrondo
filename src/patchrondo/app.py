@@ -25,7 +25,7 @@ import time
 from typing import NamedTuple
 
 from . import __version__, acceptance as criteria, activity, agents, doctor, environment, evidence, providers, rag, recovery, repair
-from . import runinfo, streams
+from . import runinfo, streams, verification
 from .commands import join_command, split_command
 from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config, create_task,
                    decide_authorization, effective_config, preflight, recheck_acceptance, record_environment,
@@ -398,7 +398,7 @@ class App:
     def _compact(cfg: dict) -> dict:
         tests, workflow = cfg["tests"], cfg["workflow"]
         return {"tests_enabled": tests["enabled"], "trust_acknowledged": tests["trust_acknowledged"],
-                "test_commands": len(tests.get("commands") or []),
+                "test_commands": len(verification.checks(cfg)),
                 "max_iterations": workflow["max_iterations"],
                 "agent_timeout_seconds": workflow["agent_timeout_seconds"],
                 "test_timeout_seconds": workflow["test_timeout_seconds"],
@@ -1133,7 +1133,7 @@ class App:
                              "test_timeout_seconds": merged["workflow"]["test_timeout_seconds"],
                              "recovery_enabled": merged["recovery"]["enabled"],
                              "tests_enabled": merged["tests"]["enabled"],
-                             "test_commands": [join_command(cmd) for cmd in merged["tests"].get("commands") or []]}
+                             "test_commands": [join_command(list(check.command)) for check in verification.checks(merged)]}
             except ValueError as exc:
                 config_error = str(exc)
         worktree = state.get("worktree")

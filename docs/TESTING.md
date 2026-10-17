@@ -62,6 +62,15 @@ eight of them; to crash before and after every checkpoint of the scenario
 PATCHRONDO_ALL_CHECKPOINTS=1 PYTHONPATH=src python -m unittest discover -s tests -p test_coherence.py -v
 ```
 
+`tests/test_verification.py` checks the verification runner with real
+processes: a synthetic tool that writes JUnit XML reports, in a repository
+whose path has spaces. Some of its tests check one kind of system only: the
+job object that stops a check's child processes on native Windows (on POSIX
+the process group does it), a program without the right to run and a command
+ended by a signal on POSIX. Run it on both to cover all of them. One
+test runs the real pytest and is skipped where pytest is not installed, as on
+CI; a skip is not a pass.
+
 ### Browser checks of the interface (no provider quota usage)
 
 ```bash

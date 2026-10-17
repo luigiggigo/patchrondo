@@ -67,9 +67,10 @@ export function describe(event) {
       return { kind: "tool", icon: "file", tone: event.status === "failed" ? "danger" : "ok", mono: true,
         title: `${CHANGES[event.change] || humanize(event.change || "changed")} ${event.path || ""}`.trim(), note: event.status === "failed" ? "not applied" : "" };
     case "test": {
-      const tone = { started: "accent", passed: "ok", failed: "danger", timeout: "warn" }[event.status] || "neutral";
+      const tone = { started: "accent", passed: "ok", failed: "danger", timeout: "warn", error: "warn", blocked: "warn" }[event.status] || "neutral";
       return { kind: "test", icon: "flask", tone, mono: true, title: event.command || `Test command ${event.index ?? ""}`,
-        state: run, note: run ? "" : `${event.status}${event.exit_code != null ? ` · exit ${event.exit_code}` : ""}` };
+        state: run, note: run ? "" : `${event.status}${event.exit_code != null ? ` · exit ${event.exit_code}` : ""}`,
+        detail: run ? null : event.text || null };
     }
     case "error":
       return { kind: "error", icon: "alert", tone: "danger", title: event.kind ? `Error · ${humanize(event.kind).toLowerCase()}` : "Error reported by the CLI",

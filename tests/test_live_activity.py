@@ -441,11 +441,13 @@ class EngineActivityTests(EngineCase):
                 task_id, path = self.task()
                 state = run_task(self.home, task_id)
             calls = self.cli.calls()[-2:]
+            run = lambda text: re.sub(r"[0-9a-f]{8}-test-", "RUN-test-", text)  # noqa: E731 - each run of the checks names its files
             return ({key: state[key] for key in ("status", "phase", "iteration", "review", "last_error", "recovery")},
                     [entry["event"] for entry in state["history"]], [test["status"] for test in state["tests"]],
                     (path / "handoff.md").read_text(encoding="utf-8"),
-                    re.sub(r"\d{4}-\d\d-\d\dT[0-9:.+]+", "TIME", (path / "report.md").read_text(encoding="utf-8").replace(task_id, "T-x")),
-                    sorted(file.name for file in (path / "runs" / "iteration-001").iterdir()),
+                    run(re.sub(r"\d{4}-\d\d-\d\dT[0-9:.+]+", "TIME",
+                               (path / "report.md").read_text(encoding="utf-8").replace(task_id, "T-x"))),
+                    sorted(run(file.name) for file in (path / "runs" / "iteration-001").iterdir()),
                     [call["live"] for call in calls])
 
         live, legacy = outcome("1"), outcome("0")

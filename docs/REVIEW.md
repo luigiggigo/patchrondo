@@ -18,7 +18,8 @@ October 17, 2026. Findings of a review keep their identity: October 17, 2026.
 Findings with a criterion the task does not have, and IDs kept from the
 findings field only: October 17, 2026. Versioned workflow events: October
 17, 2026. Workflow events that say what they cut: October 17, 2026. The
-four records checked together: October 17, 2026.
+four records checked together: October 17, 2026. Checks PatchRondo runs
+itself, and publication-status update: October 17, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -26,21 +27,38 @@ repository was present in those original directories. A local, ignored
 Each section below says which code it covers: a published commit or a local
 working tree at its date.
 
-## Current source and CI status (October 16, 2026)
+## Current source and CI status (October 17, 2026)
 
 The source on `main` is 0.2.1, at
-[`b9e5283`](https://github.com/luigiggigo/patchrondo/commit/b9e528324f7e38f2e5776ad8d76c54d419e12a85),
-pushed on October 16, 2026 (22:33 +02:00): 0.2.0 with the interface, live
+[`15750e6`](https://github.com/luigiggigo/patchrondo/commit/15750e61b540d4028d16da82301cca483c87782d),
+pushed on October 17, 2026 (19:00 +02:00): 0.2.0 with the interface, live
 activity and the streaming failure correction, the environment check, repairs
 and one-press start of 0.2.1 (commit
 [`624f60e`](https://github.com/luigiggigo/patchrondo/commit/624f60e77ce4122473af472931371d2faf15167b)),
 the correction of the activity journal reader (`a529273`), the agent settings
 (`77cdc14`), the test consent before the review (`b7347fe`), the capability
 and acceptance engine (`303a8d3`), refused writes answered on Windows
-(`8fe1f47`), the documentation structure (`b376702`) and the review settled
-by kind (`b9e5283`). The remote commit (`git ls-remote`), the empty tag list
-and the empty GitHub Releases list were checked on October 16, 2026 (exit
-status 0). There is no tagged release.
+(`8fe1f47`), the documentation structure (`b376702`), the review settled by
+kind (`b9e5283`), a change to the code only for what the code can satisfy
+(`d4c0ecd`), the criteria records that cannot be read (`d04ec84`, `e7c8243`,
+`d010809`), the findings of the reviews (`40c5e5c`, `bd6536b`), the workflow
+events (`c27e61f`, `14d7b86`) and the four records checked together
+(`15750e6`). The remote branch (`git fetch`), the empty tag list and the empty
+GitHub Releases list were checked on October 17, 2026. There is no tagged
+release.
+
+Checked with `gh run list` and `gh run view` on October 17, 2026:
+
+- [CI run 39051863842](https://github.com/luigiggigo/patchrondo/actions/runs/39051863842)
+  for `15750e6` **failed** in all six jobs, each for the same reason:
+  `tests/test_history.py` did not import (`IndentationError` at line 78, a
+  stray character in `self.assertEqual`), and every other test passed (627
+  run, 1 error, 18 skipped on Ubuntu and macOS). The correction is described
+  under [Checks PatchRondo runs itself](#checks-patchrondo-runs-itself-october-17-2026).
+- The runs for `14d7b86` (39046549197), `c27e61f` (39043540935), `bd6536b`
+  (39037459218), `40c5e5c` (39032308118), `d010809` (39026140938), `e7c8243`
+  (39023584780), `d04ec84` (38974416125) and `d4c0ecd` (38969768607)
+  completed **successfully**.
 
 Checked with `gh run list` and `gh run view` on October 16, 2026:
 
@@ -99,6 +117,118 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Checks PatchRondo runs itself (October 17, 2026)
+
+This section covers changes on top of `15750e6`: the new `verification.py`,
+`process.py` (a job object on native Windows for the project's checks),
+`evidence.py` (one executor for each kind of record, writers taking turns),
+the test stage, the configuration and the test context in `core.py`,
+`capabilities.py`, the judgement of a command without a result in
+`acceptance.py`, the tests rows of `report.py`, `app.py` and the task page
+(`tasks.js`, `views/task.js`, `views/live.js`), the new
+`tests/test_verification.py`, three adjusted tests and 22 new mutation
+protections. The package version is unchanged, 0.2.1.
+
+**The request and what it mapped onto.** The user's "Phase 2, step 1"
+asked for an evidence registry and a verification runner. The audit found
+the registry already there, as the evidence ledger of section 14
+(append-only, hash-chained, per task, written under the task lock), and the
+runner's place already there, as the test stage after each development step
+under the test consent. Both were extended rather than duplicated: no new
+store, no new state transition, no new event in the loop, no LLM verifier.
+The fields the request named are mapped in
+[section 16](ARCHITECTURE.md#16-verification-runner) ("The record").
+
+**What the test stage did before, found in the audit.**
+
+- A command's result was its exit code only; no report was read.
+- A missing program paused with `configuration` and left no record; a
+  timeout made its criterion `FAILED`; any other problem reached the
+  reviewer and the developer as a failing test.
+- A command that changed the task's files was recorded as having passed on
+  the files it left: its record was bound to the fingerprint taken after it.
+- Output was saved and shown unmasked, in the log, in `state["tests"]` and in
+  the reviewer's prompt.
+- The log of check 1 was always `iteration-NNN/test-01.log`: a run again in
+  the same iteration replaced the file an earlier record named, whose hash
+  then no longer matched.
+- Records were written after the last command ended, and nothing kept a
+  caller from writing a `command` record as another executor.
+- On native Windows a timeout ended the command only; its child processes
+  went on.
+
+**Decisions.**
+
+- Statuses are the ledger's `result`: `passed`, `failed`, `error`,
+  `blocked`, and `timeout` kept as written before, an `error` for
+  `verification.status_of`. `stale` is reserved and never written: an
+  `invalidation` record already names evidence that stopped counting.
+- `error` and `blocked` pause at `test` with `verification_error` and
+  `verification_blocked`; their criterion is `PENDING`. Zero tests, fewer than
+  `min_tests`, a required test without a pass and a missing artifact are
+  `failed`, which the developer can address. A check that changes the task's
+  files is an `error`, also for an entry of `tests.commands`: the fixtures
+  of the repository's own tools already ignore what their tests generate.
+- New checks go in a top-level `verification` section, because the interface
+  replaces the whole `tests` section when it saves it. The entries of
+  `tests.commands` stay what they were (`command-<n>`, exit code, no shell
+  rule), and the test context gains `checks` only when one is configured.
+- `criteria` of a check are candidates, stored in the record's existing
+  `criteria` field; whether a criterion is verified is unchanged.
+- `PATCHRONDO_VERIFICATION=0` keeps the previous test stage whole.
+
+**Baseline.** `15750e6`, working tree clean. Its CI run failed in all six
+jobs because `tests/test_history.py` did not import: a stray character at
+line 78 (`elf.assertEqual`, indented one space more). That line was put back
+as in `14d7b86`. With that one line, a copy of `15750e6` passed on native
+Windows, Python 3.13.3: 642 tests, 11 skipped, 456 s, exit status 0.
+
+**Tests.** `tests/test_verification.py`, 47 tests, each scenario of the
+request among them. Two tests that named `test-01.log` or compared whole runs
+now accept the run's token in file names, and one asserts the hash of the
+log. Checked against the change, not only with it: with the job object
+switched off, the test of a timeout with a child process failed on native
+Windows (the child wrote its marker); and the first full protections run
+missed "a report that hides failures is believed", because the test judged
+that report with a nonzero exit, which another rule already makes an error;
+with exit code 0 added to the test, that mutation was detected alone, then
+in a second full run.
+
+Validation on October 17, 2026, with `PATH` filtered so that `shutil.which`
+found neither `claude` nor `codex`:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| `test_verification` | Native Windows, Python 3.13.3: 47 tests, 44 passed, 3 skipped (a program without the right to run and a signal, POSIX only; real pytest, not installed) | 0 |
+| `test_verification` | Native Windows, Python 3.11.3: 47 tests, 44 passed, 3 skipped | 0 |
+| `test_verification` | WSL2, Python 3.12.3: 47 tests, 46 passed, 1 skipped (real pytest) | 0 |
+| Whole suite, as a diagnostic (CI runs the matrix) | Native Windows, Python 3.13.3, final sources: 689 tests, 675 passed, 14 skipped, 701 s | 0 |
+| `test_coherence` crash test, `PATCHRONDO_ALL_CHECKPOINTS=1` | Native Windows, Python 3.13.3: 9 tests, 112 s, beside the protections run | 0 |
+| Protections | WSL2, Python 3.12.3: 241 of 241 removed safeguards detected, 0 missed (22 of them new), 515 s | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.08 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 355 passed, 0 failed | 0 |
+| Publication scanner | 125 files checked; five findings: the three images of earlier sections (binary, reviewed by hand, unchanged), and `.claude/` and `debug.log`, both ignored by Git and not written for this change | 1 |
+| Python 3.11 parse of every source, test and tool | Native Windows, Python 3.11.3: 72 files | 0 |
+
+Every provider was scripted: no model was called. Not run: the real pytest
+test (pytest is installed in none of the three interpreters, and CI installs
+none), the opt-in tests in the real Codex sandbox (the environment check did
+not change), macOS, the package build and `twine check` (CI's under the rule
+of October 17, 2026).
+
+**Limits that remain.** A test suite written to forge a passing report can
+still do it: the runner makes that take deliberate code, which the review of
+the change is there to find. Masking is best effort. One report file per
+check; required tests matched by name. A check's child that starts before
+the job object holds it, on native Windows, is not stopped with it. A check
+is always taken as repeatable. Nothing yet invalidates evidence by the files
+a test depends on, or validates provenance beyond the snapshot: those are
+the next steps of the user's plan, for which the record already keeps the
+snapshots before and after, the environment, the identity of each check and
+the reserved `stale`.
 
 ## The four records checked together (October 17, 2026)
 
