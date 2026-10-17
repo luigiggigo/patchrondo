@@ -1066,7 +1066,14 @@ Criteria are `acceptance.Criterion` dataclasses and the block an
 does not know: another schema `version` (an integer, `acceptance.VERSION`),
 an unknown status or category, a repeated ID, or a criterion whose `evidence`
 names anything but IDs of ledger records (`E-0001`, `E2-0001`) or that is
-`VERIFIED` without naming any. `refresh` never carries a saved status over,
+`VERIFIED` without naming any. It also refuses a null, and any field whose
+content does not have the shape this version saves (October 17, 2026): a
+criterion's `review` (an outcome of `ReviewOutcome`), `authorization` (a
+decision and the ledger record that holds it), `classification`,
+`requires`, `toolchains` (names of `capabilities.TOOLCHAIN_LABELS`),
+executor and verifier, and the block's `code`, `ledger`, `capabilities`,
+`outcome`, `source` and dates. A field the block lacks takes its default; a
+field it holds is never replaced by one. `refresh` never carries a saved status over,
 and what shows criteria judges them against the ledger first (see "Shown as
 the ledger has them"). IDs are
 `AC-01`, `AC-02`, … in the order the criteria were given, and never change.
@@ -1326,6 +1333,8 @@ judged them when it wrote the report.
 ### Older tasks
 
 A state without `acceptance` is a task created before criteria were tracked.
+A state with `"acceptance": null` is not: `load` refuses the null like any
+record it cannot read.
 A task that ended is returned as it is by `run_task`; the interface lists its
 criteria as written and says nothing about them. A task that runs again gets
 its criteria from `task.md` (`acceptance_planned`, `source: "task.md"`), with

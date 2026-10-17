@@ -26,6 +26,22 @@ before each review.
   about a criterion are refused for such a task. A task created before
   criteria were tracked, with no record at all, still gets its criteria from
   `task.md`.
+- **A null record is not a task from before criteria were tracked.**
+  `Acceptance.load` returned nothing for `"acceptance": null`, as for a
+  state without the key, so a run rebuilt the criteria from `task.md` and
+  lost what only the record held. Only a state without the key is such a
+  task now. A null is refused like any record this version cannot read: the
+  task pauses with `acceptance_unreadable`, and `report.md` says that the
+  saved criteria cannot be read instead of saying nothing about them.
+- **Every field of a saved record is checked.** `load` checked the type of a
+  criterion's `review`, `authorization`, `classification`, `requires` and
+  `toolchains`, not what they held, and fell back to defaults for an
+  approval of the code, an outcome or capabilities it could not use. A
+  review saved as `{"outcome": []}` was loaded and stopped the run with a
+  `TypeError` when the criterion was planned. These fields, and the
+  executor, the verifier, `ledger`, `source` and the dates, now need the
+  shape this version saves, or the record is refused with the field named
+  and nothing replaces it. A field the record lacks still takes its default.
 - **What shows criteria shows them as the ledger has them now.** The task
   page, the list of tasks and `patchrondo criteria` showed the statuses as
   last saved, so a `VERIFIED` whose evidence the ledger had since invalidated,
@@ -43,8 +59,8 @@ before each review.
 - In `tools/ui_e2e.py`, the `criteria` scenario waits until the page knows the
   project it registered before it opens the form, and a press waits for its
   button to be enabled: two races that made the scenario fail now and then.
-- Nine protections were added to `tools/recovery_checks.py`, and the one for
-  the copy kept aside was removed.
+- Sixteen protections were added to `tools/recovery_checks.py`, and the one
+  for the copy kept aside was removed.
 
 ### Validation responsibilities — October 17, 2026
 

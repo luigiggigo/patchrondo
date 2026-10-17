@@ -75,7 +75,7 @@ def render_report(state: dict) -> str:
         rows.append("No review completed")
     if state.get("last_error"):
         rows += ["", "## Block/interruption", "", f"`{state['last_error']}`"]
-    rows += _acceptance_rows(state.get("acceptance"))
+    rows += _acceptance_rows(state)
     rows += _agent_rows(state.get("agent_runs"))
     rows += _environment_rows(state.get("environment"))
     rows += _recovery_rows(state.get("recovery"))
@@ -92,14 +92,16 @@ def render_report(state: dict) -> str:
     return "\n".join(rows) + "\n"
 
 
-def _acceptance_rows(block) -> list[str]:
+def _acceptance_rows(state: dict) -> list[str]:
     """The criteria of the task as last judged: approval of the code, overall result, and each criterion with its evidence.
 
     A task created before criteria were tracked, and never run since, has no
-    such record: nothing is said about its criteria.
+    such record: nothing is said about its criteria. A record that cannot be
+    read, a null included, is said to be one.
     """
-    if not isinstance(block, dict) or not isinstance(block.get("criteria"), list):
+    if "acceptance" not in state:
         return []
+    block = state["acceptance"]
     try:
         Acceptance.load({"acceptance": block})
     except ValueError as exc:

@@ -200,9 +200,47 @@ class ClassificationTests(unittest.TestCase):
         good.refresh(evidence.Ledger())
         block = json.loads(json.dumps(good.dump()))
         self.assertEqual([c.id for c in Acceptance.load({"acceptance": block}).criteria], ["AC-01", "AC-02"])
-        self.assertIsNone(Acceptance.load({}))
+        self.assertIsNone(Acceptance.load({}))  # only a state without the key is a task from before criteria were tracked
+        with self.assertRaisesRegex(ValueError, "The acceptance record of the task is null"):
+            Acceptance.load({"acceptance": None})
         with self.assertRaisesRegex(ValueError, "has schema version 2; this version of PatchRondo reads version 1"):
             Acceptance.load({"acceptance": {**block, "version": 2}})
+        # Nested fields in the shapes this version saves are read.
+        detected = {"version": 1, "detected_at": "2026-10-17T10:00:00+00:00", "executors": {"runtime": {"provider": None, "capabilities": {
+            "commands.tests": {"state": "VERIFIED", "source": "Commands you allowed", "consent": "granted", "commands": ["pytest"]}}}}}
+        full = json.loads(json.dumps(block))
+        full.update(capabilities=detected, code={"status": "APPROVED", "evidence": "E-0002", "iteration": 1, "at": "x"},
+                    ledger={"count": 2, "head": "ab"}, outcome="AWAITING_VALIDATION", source="task.md")
+        full["criteria"][0].update(review={"outcome": "SATISFIED", "note": "", "iteration": 1},
+                                   authorization={"decision": "denied", "at": "x", "evidence": "E2-0003"}, toolchains=["cpp"])
+        read = Acceptance.load({"acceptance": full})
+        self.assertEqual((read.criteria[0].review["outcome"], read.code["evidence"], read.source), ("SATISFIED", "E-0002", "task.md"))
+        nested = (lambda b: b["criteria"][0].update(review={"outcome": []}), lambda b: b["criteria"][0].update(review={"outcome": "FINE"}),
+                  lambda b: b["criteria"][0].update(review={"note": "no outcome"}),
+                  lambda b: b["criteria"][0].update(review={"outcome": "SATISFIED", "iteration": True}),
+                  lambda b: b["criteria"][0].update(review={"outcome": "SATISFIED", "note": ["x"]}),
+                  lambda b: b["criteria"][0].update(authorization={"decision": "maybe", "evidence": "E-0001"}),
+                  lambda b: b["criteria"][0].update(authorization={"decision": "granted", "evidence": ["E-0001"]}),
+                  lambda b: b["criteria"][0].update(authorization={"decision": "granted"}),
+                  lambda b: b["criteria"][0].update(classification={"signals": "a pull request"}),
+                  lambda b: b["criteria"][0].update(classification={"signals": [1]}),
+                  lambda b: b["criteria"][0].update(toolchains=["fortran"]), lambda b: b["criteria"][0].update(toolchains=[["cpp"]]),
+                  lambda b: b["criteria"][0].update(executor="robot"), lambda b: b["criteria"][0].update(verifier="anyone"),
+                  lambda b: b["criteria"][0].update(requires=["files.write"]),
+                  lambda b: b["criteria"][0].update(requires=[{"executor": "developer", "capability": 3}]),
+                  lambda b: b.update(code="APPROVED"), lambda b: b.update(code={"status": "DONE"}),
+                  lambda b: b.update(code={"status": "APPROVED", "evidence": ["E-0001"]}),
+                  lambda b: b.update(ledger={"count": "2", "head": ""}), lambda b: b.update(ledger=[]),
+                  lambda b: b.update(capabilities=[]), lambda b: b.update(capabilities={"executors": []}),
+                  lambda b: b.update(capabilities={"executors": {"runtime": {"capabilities": {"commands.tests": "VERIFIED"}}}}),
+                  lambda b: b.update(capabilities={"executors": {"runtime": {"capabilities": {"commands.tests": {"commands": "pytest"}}}}}),
+                  lambda b: b.update(outcome="SHIPPED"), lambda b: b.update(source="elsewhere"), lambda b: b.update(planned_at=5))
+        for change in nested:
+            broken = json.loads(json.dumps(full))
+            change(broken)
+            with self.subTest(broken={key: broken[key] for key in ("code", "ledger", "outcome", "source")}
+                              | {"criterion": broken["criteria"][0]}), self.assertRaisesRegex(ValueError, "cannot be read"):
+                Acceptance.load({"acceptance": broken})
         for change in (lambda b: b.update(version=2), lambda b: b.update(version=True), lambda b: b.update(version="1"),
                        lambda b: b.update(criteria=[]), lambda b: b["criteria"][0].update(status="FINE"),
                        lambda b: b["criteria"][0].update(id="first"), lambda b: b["criteria"][0].update(required="yes"),
@@ -974,14 +1012,17 @@ class EngineTests(Case):
 
     def test_a_record_that_cannot_be_read_pauses_the_task_and_nothing_replaces_it(self):
         later = {"id": "AC-03", "text": "Signed off by the release manager", "required": True}  # only a later version knows it
-        for change, reason in ((lambda block: block["criteria"][1].update(status="VERIFIED_BY_HAND"), "unknown category, need, proof or status"),
-                               (lambda block: (block.update(version=2), block["criteria"].append(later)), "has schema version 2")):
+        for change, reason in (
+                (lambda state: state["acceptance"]["criteria"][1].update(status="VERIFIED_BY_HAND"), "unknown category, need, proof or status"),
+                (lambda state: (state["acceptance"].update(version=2), state["acceptance"]["criteria"].append(later)), "has schema version 2"),
+                (lambda state: state.update(acceptance=None), "is null"),  # a record, not a task from before criteria were tracked
+                (lambda state: state["acceptance"]["criteria"][0].update(review={"outcome": []}), "its review cannot be read")):
             with self.subTest(reason=reason):
                 task_id, path, _ = self.task(GOOD, MO2)
                 run_task(self.home, task_id, adapter=Agents())
                 state = self.state(path)
                 saved = json.loads(json.dumps(state["acceptance"]))
-                change(state["acceptance"])
+                change(state)
                 block = state["acceptance"]
                 save_json(path / "state.json", state)
                 ledger = (path / evidence.LEDGER).read_bytes()

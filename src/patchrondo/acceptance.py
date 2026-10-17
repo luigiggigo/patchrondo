@@ -127,6 +127,11 @@ CONSENT_NEEDS = frozenset({"network", "publish"})  # operations nobody does with
 DEFAULT_NEED = {Category.CODE: "edit", Category.TEST: "tests", Category.BUILD: "build", Category.INTEGRATION: "external",
                 Category.EXTERNAL: "network", Category.PUBLISHING: "publish", Category.MANUAL: "manual"}
 OPERATIONS = {"network": "Downloading or installing from the network", "publish": "Committing, pushing or publishing"}
+# Values a saved record may hold: who does the work of a criterion and who proves it, the user's decisions, and where
+# the criteria came from (given when the task was created, or read back from the task.md of an older task).
+WORKERS, VERIFIERS = ("developer", "runtime", "user"), ("reviewer", "runtime", "user")
+DECISIONS = ("granted", "denied")
+SOURCES = ("task", "task.md")
 
 REVIEW_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -361,6 +366,21 @@ class Criterion:
             raise ValueError(f"Criterion {raw['id']}: its evidence names something that is not a record of the ledger")
         if criterion.status == Status.VERIFIED and not criterion.evidence:
             raise ValueError(f"Criterion {raw['id']}: saved as verified without the records that verify it")
+        # What a criterion holds in its own fields has the shape this version gives it, or the record is not read:
+        # planning and judging use these values as they are.
+        review, decision, about = criterion.review, criterion.authorization, criterion.classification
+        unread = [name for name, readable in (
+            ("review", review is None or (_within([review.get("outcome")], ReviewOutcome) and _typed(review, note=str, iteration=int))),
+            ("decision", decision is None or (_within([decision.get("decision")], DECISIONS) and _typed(decision, at=str)
+                                              and _within([decision.get("evidence")], None)
+                                              and evidence.RECORD_ID.fullmatch(decision["evidence"]) is not None)),
+            ("classification", _typed(about, source=str, signals=list, note=str) and _within(about.get("signals") or [], None)),
+            ("plan", _within([criterion.executor], WORKERS) and _within([criterion.verifier], VERIFIERS)
+             and all(isinstance(item, dict) and _within([item.get("executor"), item.get("capability")], None)
+                     and _typed(item, label=str, state=str, source=str, consent=str) for item in criterion.requires)),
+            ("toolchains", _within(criterion.toolchains, caps.TOOLCHAIN_LABELS))) if not readable]
+        if unread:
+            raise ValueError(f"Criterion {raw['id']}: its {', '.join(unread)} cannot be read")
         return criterion
 
 
@@ -368,6 +388,24 @@ def _within(values, allowed) -> bool:
     """Whether every value is text, and one of `allowed` when that is given."""
     names = None if allowed is None else {str(item) for item in allowed}
     return all(isinstance(value, str) and (names is None or value in names) for value in values)
+
+
+def _typed(mapping: dict, **kinds) -> bool:
+    """Whether each key named holds a value of its kind, where `mapping` holds one (an int is never a bool)."""
+    return all(mapping.get(key) is None or (type(mapping[key]) is int if kind is int else isinstance(mapping[key], kind))
+               for key, kind in kinds.items())
+
+
+def _detected(found) -> bool:
+    """Whether saved capabilities have the shape `capabilities.detect` gives them; None when none were detected."""
+    if found is None:
+        return True
+    executors = found.get("executors", {}) if isinstance(found, dict) else None
+    return isinstance(executors, dict) and all(
+        isinstance(entry, dict) and isinstance(entry.get("capabilities", {}), dict) and all(
+            isinstance(item, dict) and _typed(item, state=str, source=str, consent=str, commands=list)
+            and _within(item.get("commands") or [], None) for item in entry.get("capabilities", {}).values())
+        for entry in executors.values())
 
 
 def parse_items(raw) -> list[dict]:
@@ -541,10 +579,18 @@ class Acceptance:
 
     @classmethod
     def load(cls, state: dict) -> "Acceptance | None":
-        """The record saved with a task; None for a task that has none. Raises ValueError when it cannot be used."""
-        raw = state.get("acceptance")
-        if raw is None:
+        """The record saved with a task; None for a task that has none. Raises ValueError when it cannot be used.
+
+        Only a state without the key is a task created before criteria were
+        tracked. A null is a record, and not one any version saves: it is
+        refused, never read as no record, which a run would replace with
+        the criteria of task.md.
+        """
+        if "acceptance" not in state:
             return None
+        raw = state["acceptance"]
+        if raw is None:
+            raise ValueError("The acceptance record of the task is null")
         if isinstance(raw, dict) and (type(raw.get("version")) is not int or raw["version"] != VERSION):
             # Written by another version of PatchRondo, or edited by hand: the engine pauses the task and replaces nothing.
             raise ValueError(f"The acceptance record of the task has schema version {raw.get('version')!r:.20}; this "
@@ -558,13 +604,20 @@ class Acceptance:
         if any(set(criterion.depends_on) - known for criterion in criteria):
             raise ValueError("The acceptance record of the task depends on a criterion it does not have")
         _ordered(criteria)  # refuses criteria that wait for each other in a circle
-        code = raw.get("code") if isinstance(raw.get("code"), dict) and _within([raw["code"].get("status")], Code) \
-            else {"status": str(Code.PENDING)}
-        ledger = raw.get("ledger") if isinstance(raw.get("ledger"), dict) else {"count": 0, "head": ""}
-        return cls(criteria=criteria, capabilities=raw.get("capabilities") if isinstance(raw.get("capabilities"), dict) else None,
-                   code=dict(code), outcome=raw.get("outcome") if _within([raw.get("outcome")], Outcome) else Outcome.IN_PROGRESS,
-                   ledger=dict(ledger), source=str(raw.get("source") or "task"), planned_at=str(raw.get("planned_at") or ""),
-                   updated_at=str(raw.get("updated_at") or ""))
+        # A field it lacks takes its default; a field it holds is read as saved, or the record is not read at all.
+        code, ledger = raw.get("code", {"status": str(Code.PENDING)}), raw.get("ledger", {"count": 0, "head": ""})
+        unread = [name for name, readable in (
+            ("approval of the code", isinstance(code, dict) and _within([code.get("status")], Code)
+             and _typed(code, evidence=str, iteration=int, at=str, reason=str)),
+            ("reference to the ledger", isinstance(ledger, dict) and _typed(ledger, count=int, head=str)),
+            ("capabilities", _detected(raw.get("capabilities"))),
+            ("outcome", _within([raw.get("outcome", Outcome.IN_PROGRESS)], Outcome)),
+            ("source", raw.get("source", "task") in SOURCES), ("dates", _typed(raw, planned_at=str, updated_at=str))) if not readable]
+        if unread:
+            raise ValueError(f"The acceptance record of the task: its {', '.join(unread)} cannot be read")
+        return cls(criteria=criteria, capabilities=raw.get("capabilities"), code=dict(code),
+                   outcome=raw.get("outcome", Outcome.IN_PROGRESS), ledger=dict(ledger), source=raw.get("source", "task"),
+                   planned_at=raw.get("planned_at") or "", updated_at=raw.get("updated_at") or "")
 
     def dump(self) -> dict:
         return {"version": VERSION, "source": self.source, "planned_at": self.planned_at, "updated_at": self.updated_at,

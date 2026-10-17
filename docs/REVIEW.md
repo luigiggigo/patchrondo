@@ -101,8 +101,10 @@ validation scope for this refresh was documentation only.
 This section covers changes on top of `d04ec84`, the commit that holds the
 change of the next section: `acceptance.py`, `evidence.py`, `core.py`,
 `app.py`, `cli.py`, `report.py` and `static/js/tasks.js`, with their tests,
-nine new mutation protections (and one removed) and two corrections of
-`tools/ui_e2e.py`. The package version is unchanged, 0.2.1.
+sixteen new mutation protections (and one removed) and two corrections of
+`tools/ui_e2e.py`. The package version is unchanged, 0.2.1. Commit
+`e7c8243` holds them up to the review of the ledger reference; the further
+review at the end of this section is about `e7c8243`.
 
 **The review of `d04ec84`.** It found two problems:
 
@@ -233,7 +235,7 @@ native Windows with Python 3.13.3 before the correction, both subtests and
 the page test failed. Each of the four new protections was run alone before
 the full set and detected.
 
-Validation on October 17, 2026, on the final code, with `PATH` in WSL2
+Validation on October 17, 2026, of that correction, with `PATH` in WSL2
 filtered as above (`shutil.which` found neither CLI) and no new file under
 `~/.claude/projects` or `~/.codex/sessions` after the WSL2 runs:
 
@@ -252,6 +254,67 @@ filtered as above (`shutil.which` found neither CLI) and no new file under
 `tests/test_browser_tools.py` was not run again. What the paragraph after
 the first table says about the scanner, the scripted providers, the CI
 checks and the real Codex sandbox holds for this run too.
+
+**A further review of `e7c8243`: what `load` accepted.** It found two
+problems in `Acceptance.load`:
+
+- `"acceptance": null` was read as no record, like a state without the key,
+  so a run would plan the criteria from `task.md` again and lose what only
+  the record held. Run against the sources of `e7c8243`, with the record of
+  a task waiting at `validate` set to null, a run rebuilt the record, called
+  the reviewer and paused with `awaiting_validation`.
+- The fields of a criterion were checked for their type only, and the
+  block's approval of the code, outcome and capabilities fell back to
+  defaults. With `review` saved as `{"outcome": []}`, the same run on
+  `e7c8243` stopped
+  with `TypeError: unhashable type: 'list'` when the criterion was planned.
+  Of the 28 changed fields of the new unit test, `e7c8243` accepted all 28,
+  keeping them as saved or putting a default in their place.
+
+**Changes.** Only a state without the key is a task from before criteria
+were tracked: a null is refused (`The acceptance record of the task is
+null`) and the task pauses with `acceptance_unreadable`, as for any record
+`load` cannot read. `Criterion.from_dict` checks what a criterion's
+`review`, `authorization`, `classification`, `requires` and `toolchains`
+hold, and its executor and verifier, against the values this version
+saves; `load` does the same for `code`, `ledger`, `capabilities` (the shape
+`capabilities.detect` gives them), `outcome`, `source` and the dates. A
+field the record lacks still takes its default; one it holds is read as
+saved or the record is refused, naming the field. `report.md` says that the
+saved criteria cannot be read for every record `load` refuses, a null
+included; it said nothing before for a record that was not an object with
+a list of criteria.
+
+**Tests of this review.** In `tests/test_acceptance.py`,
+`test_a_saved_record_that_is_not_one_is_refused` now loads a record whose
+nested fields have the shapes this version saves, refuses a null and each
+of the 28 changed fields, and
+`test_a_record_that_cannot_be_read_pauses_the_task_and_nothing_replaces_it`
+has two more subtests, the null and the review outcome, through the pause,
+the unchanged record and ledger, the report, the Resume, the refused
+actions and the task going on once the record is put back. Run on native
+Windows with Python 3.13.3 against the sources of `e7c8243`, the unit test
+failed and both new subtests failed, one with the `TypeError`. Each of the seven new protections was run alone
+before the full set and detected.
+
+Validation on October 17, 2026, on the final code, with `PATH` in WSL2
+filtered as above (`shutil.which` found neither CLI) and no new file under
+`~/.claude/projects` or `~/.codex/sessions` after the WSL2 runs:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Unittest modules `test_acceptance`, `test_criteria_ui`, `test_cli`, `test_ui`, `test_frontend`, `test_workflow`, `test_integration_cli`, `test_recovery_checks`, `test_agents`, `test_environment`, `test_live_activity`, `test_recovery` | Native Windows, Python 3.13.3: 368 tests, 366 passed, 2 skipped (an interrupt of a detached run and a change of the process time zone need POSIX), 325.356 s | 0 |
+| Unittest modules `test_acceptance`, `test_criteria_ui`, `test_cli` | Native Windows, Python 3.11.3: 76 tests passed, 78.021 s | 0 |
+| Protections | WSL2, Python 3.12.3: 172 of 172 removed safeguards detected, 0 missed (seven of them new), 376 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed | 0 |
+| Publication scanner, after the documentation of this review | 118 files checked; the same four findings | 1 |
+
+What the paragraph after the first table says about the scanner, the
+scripted providers, the CI checks and the real Codex sandbox holds for this
+run too.
 
 ## Criteria records kept when they cannot be read (October 16, 2026)
 

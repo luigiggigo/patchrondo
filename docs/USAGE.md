@@ -234,7 +234,7 @@ A task created before criteria were tracked keeps working. If it ended, it is
 shown as it was, with nothing said about each criterion; if it runs again,
 its criteria are read from its description with nothing taken as verified.
 A saved record of the criteria that this version cannot read, such as one
-written by a later version, is never replaced: the task pauses with *the
+written by a later version or edited by hand, is never replaced: the task pauses with *the
 saved criteria cannot be read* and calls no agent. Open it with the version
 that saved it, or put back its `state.json`, and resume. The criteria shown
 on the task page, in the list and by `patchrondo criteria` are judged against
