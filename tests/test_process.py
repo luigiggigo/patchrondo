@@ -9,6 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+from patchrondo import process
 from patchrondo.process import LineReader, execute
 
 
@@ -51,6 +52,35 @@ class ProcessTests(unittest.TestCase):
             self.assertTrue(result.timed_out)
             time.sleep(3)
             self.assertFalse((path / "leaked").exists())
+
+
+class ProcessTreeTests(unittest.TestCase):
+    """`Result.process_tree` says how the processes a command started were held, also when nothing could hold them."""
+
+    def both(self, code, **options):
+        """The result without observers and with them: the two ways a command runs."""
+        with tempfile.TemporaryDirectory() as d:
+            argv = [sys.executable, "-c", code]
+            return execute(argv, Path(d), **options), execute(argv, Path(d), on_stdout=lambda chunk: None, **options)
+
+    def test_the_result_says_how_the_processes_were_held(self):
+        expected = {True: process.GROUP, False: process.GROUP} if os.name == "posix" else \
+            {True: process.JOB, False: process.CHILD}
+        for tree, held in expected.items():
+            for result in self.both("pass", tree=tree):
+                with self.subTest(tree=tree):
+                    self.assertEqual((result.returncode, result.process_tree), (0, held))
+
+    @unittest.skipUnless(os.name == "nt", "job objects are native Windows")
+    def test_a_child_no_job_object_can_hold_runs_alone_and_says_so(self):
+        with patch("patchrondo.process._Job", side_effect=OSError(5, "Access is denied")) as job:
+            finished = self.both("pass", tree=True)
+            stopped = self.both("import time; time.sleep(30)", tree=True, timeout=0.5)
+        self.assertEqual(job.call_count, 4)
+        for result in finished:
+            self.assertEqual((result.returncode, result.timed_out, result.process_tree), (0, False, process.CHILD))
+        for result in stopped:
+            self.assertEqual((result.timed_out, result.process_tree), (True, process.CHILD))
 
 
 SLOW_WRITER = """

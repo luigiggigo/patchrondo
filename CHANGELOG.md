@@ -493,6 +493,36 @@ implemented. The existing ledger is extended, not replaced.
   runner). 22 new mutation protections remove the new safeguards one at a
   time.
 
+#### A check no job object holds says so — October 17, 2026
+
+From a review of the runner: on native Windows, a check that Windows refused
+to put in a job object ran without one and nothing said so, so a timeout
+could leave what it started running unseen.
+
+- **The result says how the processes were held.** `process.execute` now
+  returns `process_tree`: `process_group` (POSIX), `job_object` (native
+  Windows, for the project's checks) or `child_only` (native Windows without
+  a job object: agent CLIs, or a check that no job object could hold). The
+  record of a check keeps it as `check.process_tree`; records written before
+  have no such field.
+- **A timeout says what may still run.** A check that no job object held
+  still runs and is judged as before: no result and no pause changes. Its
+  timeout's reason, which reaches the pause, the task page and the record,
+  now says that what it started was not stopped and may still be running.
+- **The limit of running checks on the host is stated.** SECURITY.md and
+  section 16 of the architecture say that a check runs with the user's
+  rights, that filtering the environment is not a sandbox, that the test
+  consent isolates nothing, and that an untrusted repository needs an
+  isolated environment before its checks are allowed to run.
+- Four new tests: the value on each platform with and without `tree`, a job
+  object refused with and without observers (native Windows), a check whose
+  processes nothing held, judged from a scripted result on every platform,
+  and the same with a real command on native Windows. The test of a timeout
+  with a child process also checks the recorded value. Two new mutation
+  protections remove the reason and the recorded value. The checks that
+  were run are recorded in
+  [the technical review](docs/REVIEW.md#a-check-no-job-object-holds-says-so-october-17-2026).
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

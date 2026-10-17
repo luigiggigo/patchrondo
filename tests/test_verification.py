@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from patchrondo import acceptance, evidence, verification
+from patchrondo import acceptance, evidence, process, verification
 from patchrondo.core import config, create_task, initialize, run_task, validate_config
 from patchrondo.providers import AgentFailure, AgentReply
 from patchrondo.storage import private_dir, read_json, save_json
@@ -316,9 +316,35 @@ class RunnerTests(Case):
         self.assertLess(time.monotonic() - started, 15)
         self.assertEqual((result.status, verification.status_of(result.status), result.error["kind"]), ("timeout", Status.ERROR, "timeout"))
         self.assertIn("1 seconds", result.reason)
+        self.assertNotIn("may still be running", result.reason)
+        self.assertEqual(self.records()[0]["check"]["process_tree"], process.JOB if os.name == "nt" else process.GROUP)
         self.assertTrue(pid.exists())
         time.sleep(4)  # the child would have written its marker by now
         self.assertFalse(marker.exists(), "a process the check started outlived the time limit")
+
+    def test_processes_nothing_held_are_said_to_be_left_running(self):
+        """Without a job object a check still runs and is judged as before; the record says how it ran."""
+        stopped = process.Result(124, "", "", timed_out=True, process_tree=process.CHILD)
+        finished = process.Result(0, "", "", process_tree=process.CHILD)
+        with patch("patchrondo.verification.process.execute", side_effect=[stopped, finished]):
+            timeout = self.run_one(self.check(placeholder=False, timeout_seconds=1))
+            passed = self.run_one(self.check(placeholder=False))
+        self.assertEqual((timeout.status, timeout.error["kind"], passed.status), ("timeout", "timeout", "passed"))
+        self.assertIn("No job object held the processes it started", timeout.reason)
+        self.assertIn("may still be running", timeout.entry()["message"])
+        self.assertNotIn("message", passed.entry())
+        self.assertEqual([(record["result"], record["check"]["process_tree"]) for record in self.records()],
+                         [("timeout", process.CHILD), ("passed", process.CHILD)])
+        self.assertIn("may still be running", self.records()[0]["check"]["reason"])
+
+    @unittest.skipUnless(os.name == "nt", "job objects are native Windows")
+    def test_a_check_no_job_object_can_hold_is_stopped_alone_and_says_so(self):
+        self.behave(sleep=30, report=GREEN)
+        with patch("patchrondo.process._Job", side_effect=OSError(5, "Access is denied")):
+            result = self.run_one(self.check(timeout_seconds=1))
+        self.assertEqual((result.status, result.process_tree), ("timeout", process.CHILD))
+        self.assertIn("may still be running", result.reason)
+        self.assertEqual(self.records()[0]["check"]["process_tree"], process.CHILD)
 
     def test_a_program_that_is_not_there_is_blocked(self):
         check = parse_check({"id": "lint", "type": "static_analysis", "command": ["patchrondo-no-such-program-0f3a"]}, default_timeout=60)

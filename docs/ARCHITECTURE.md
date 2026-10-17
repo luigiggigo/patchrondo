@@ -1782,7 +1782,12 @@ pass, as before. For each check the runner:
    engine's own `execute`, so the tests that replace it still do. On POSIX
    the process group, and on native Windows a job object (`process._Job`),
    stops everything the command started when it times out or the run is
-   interrupted;
+   interrupted. The result says which held them (`process.Result.process_tree`:
+   `process_group` or `job_object`), and the record keeps it as
+   `check.process_tree`. When Windows refuses to put the child in a job
+   object, the check still runs and is judged as before, but as
+   `child_only`: stopping it stops it alone, and the reason of a timeout
+   says that what it started was not stopped and may still be running;
 4. writes its output to `runs/iteration-NNN/<run>-test-NN.log` after
    masking the values of this process's variables named like secrets
    (`known_secrets`) and what `activity.redact` recognizes; the task state
@@ -1836,6 +1841,7 @@ hold.
  "check": {"version": 1, "id": "pytest", "type": "test", "adapter": "junit", "index": 1, "cwd": ".", "timeout_seconds": 180,
            "started_at": "…", "finished_at": "…", "duration_ms": 2140,
            "environment": {"id": "H-…", "system": "Windows", "release": "11", "machine": "AMD64", "python": "3.13.3", "wsl": false},
+           "process_tree": "job_object",
            "snapshot": {"before": {"available": true, "head": "…", "branch": "patchrondo/T-…", "git_dir": "…", "dirty": true,
                                    "changes": 1, "fingerprint": "…", "worktree": "…"}, "after": {"…": "…"}, "changed": false},
            "report": {"format": "junit", "path": "iteration-001/3f9c2a1b-test-01.junit.xml", "sha256": "…", "source": "{report}",
@@ -1855,6 +1861,7 @@ hold.
 | `command`, `exit_code` | `command` as it ran, `exit_code` (none when it never started) |
 | `started_at`, `finished_at`, `duration_ms` | In `check`, to the millisecond, UTC |
 | `environment_id` | `check.environment.id`: a digest of the system, the interpreter and the computer's name, which is not kept |
+| (not asked for) | `check.process_tree`: `process_group`, `job_object` or `child_only`; absent from records written before it, `null` when the command never started |
 | `artifacts`, `error` | `log`, `log_sha256`, `artifacts`, `check.report`; `check.error.kind` and `check.reason` |
 
 `stale` is reserved in `verification.STALE`: no version writes it, and
@@ -1919,6 +1926,20 @@ pauses with `configuration`.
   (Maven Surefire) needs a single merged file.
 - Required tests are matched by name, never by what they test.
 - On native Windows a child that starts before it is put in the job object,
-  or a process that leaves the job, is not stopped with it. Agent CLIs are
-  still stopped alone, as before.
+  or a process that leaves the job, is not stopped with it. A check that no
+  job object could hold (`child_only`) is stopped alone; its record says so,
+  and a timeout's reason says that what it started may still be running. An
+  interruption records nothing, so it cannot say so. Agent CLIs are still
+  stopped alone, as before.
+- The runner is not a sandbox. A check runs on the host with the user's
+  rights: it can read and write what the user's account can, use the
+  network, and find credentials on disk or in the user's tool
+  configuration. `process.safe_env` removes secret-named variables from its
+  environment; that only keeps them from being handed over. The consent
+  (`tests.trust_acknowledged`) records that the user trusts the repository;
+  it isolates nothing. A repository that is not trusted needs an isolated
+  environment (a virtual machine or container, without production
+  credentials) before its checks are allowed to run. A dedicated sandbox
+  for tests is only a proposal in [ROADMAP.md](ROADMAP.md), not implemented
+  and not a release commitment.
 - Nothing marks a check as unrepeatable: a Resume runs every check again.

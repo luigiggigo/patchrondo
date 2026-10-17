@@ -53,7 +53,9 @@ Captured process output is bounded in memory; temporary capture files can grow o
 disk until the timeout. Apply disk quotas in isolated runners. On native Windows,
 the project's checks run in a job object, so a time limit ends every process
 they started; an agent CLI is still terminated alone, a process started before
-the job object holds it escapes, and stale-lock recovery is conservative. Use
+the job object holds it escapes, a check no job object could hold is
+terminated alone and its record says so, and stale-lock recovery is
+conservative. Use
 WSL2 for POSIX process-group cleanup.
 
 ## Environment check and repairs
@@ -287,9 +289,23 @@ in the evidence ledger.
   runtime's (`evidence.EXECUTORS`), and a report counts only when this run
   wrote it where it was told to.
 
-**What a result is worth.** A check runs the repository's code with your
-permissions; that is what `trust_acknowledged` accepts, and it is no sandbox.
-Code under test can print anything and can write a report that says what it
+**Where a check runs.** On the host, with your account's rights: a check can
+read and change what you can, use the network, and find credentials in files
+or in the configuration of your tools. Removing secret-named variables from
+its environment (`process.safe_env`) only keeps them from being handed to it.
+`trust_acknowledged` records that you trust the repository; it isolates
+nothing. Do not enable the checks of a repository you do not trust on your
+own computer: run the whole orchestrator in a virtual machine or container,
+without production credentials, first. A dedicated sandbox for tests is a
+proposal in [the roadmap](docs/ROADMAP.md), not implemented.
+
+**Stopping a check.** A time limit stops the process group on POSIX and the
+job object on native Windows, with everything the check started. When
+Windows refuses to put the check in a job object, it still runs but is
+stopped alone: its record says `child_only`, and a timeout says that what
+it started may still be running.
+
+**What a result is worth.** Code under test can print anything and can write a report that says what it
 likes. The runner refuses a report that was there before the run, a report
 that contradicts the exit code or its own counts, and a run that changed the
 task's files, so a forged pass takes deliberate code, which the review of the

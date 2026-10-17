@@ -163,6 +163,85 @@ and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
 
+## A check no job object holds says so (October 17, 2026)
+
+This section covers changes on top of `3f284bf`: `process.py`,
+`verification.py`, two new tests in `tests/test_process.py`, two new tests
+and one extended test in `tests/test_verification.py`, two new mutation
+protections, and SECURITY, ARCHITECTURE section 16, USAGE, TESTING and the
+changelog. The package version is unchanged, 0.2.1.
+
+**Findings of the review, as received.**
+
+- P1: `process._job` returned None when Windows refused to put a check's
+  process in a job object, and the check ran without one; nothing said that
+  stopping it would stop it alone. Confirmed in the code: the `except` of
+  `_job` dropped the error, and neither the result nor the record could tell
+  the two cases apart.
+- P2: the runner runs the configured checks with the user's rights, and
+  filtering the environment is no sandbox. Already stated in SECURITY.md
+  ("Scope") and in USAGE.md, but not where the runner's limits are listed.
+
+**Decisions.**
+
+- The fallback is kept and made explicit, not made an error: a check that no
+  job object holds has still been observed, and whether it passed does not
+  depend on the job object, which stops processes only on a timeout or an
+  interruption. Making it an `error` would pause tasks that pass today, a
+  change of the loop the review did not ask for.
+- `process.Result.process_tree` is `process_group` (POSIX), `job_object` or
+  `child_only` (native Windows). The record keeps it as
+  `check.process_tree`; older records lack it and are not rewritten. A
+  timeout of a `child_only` check says that what it started may still be
+  running; that reason reaches the pause, the task state and the record.
+- P2 is documented in SECURITY.md ("The project's checks") and in the
+  limits of section 16: the host, the user's rights, `safe_env` only keeping
+  secret-named variables from being handed over, the consent isolating
+  nothing, and an isolated environment needed before the checks of an
+  untrusted repository are allowed. The sandbox for tests stays a proposal
+  in the roadmap.
+
+**Checked against the change.** With the new tests and the sources of
+`3f284bf`, the five new or extended tests failed (`AttributeError`,
+`KeyError`) on native Windows, Python 3.13.3. Each new mutation was then
+detected alone on WSL2: removing the recorded value failed two tests,
+removing the reason one. Windows' refusal is simulated by replacing
+`process._Job` with one that raises `OSError(5)`; a real refusal by the
+system was not observed.
+
+Validation on October 17, 2026, with `PATH` filtered so that `shutil.which`
+found neither `claude` nor `codex`:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| `test_process` | Native Windows, Python 3.13.3 and 3.11.3: 17 tests, 15 passed, 2 skipped (POSIX process groups) | 0 |
+| `test_process` | WSL2, Python 3.12.3: 17 tests, 16 passed, 1 skipped (job objects) | 0 |
+| `test_verification` | Native Windows, Python 3.13.3 and 3.11.3: 49 tests, 46 passed, 3 skipped (a program without the right to run and a signal, POSIX only; real pytest, not installed) | 0 |
+| `test_verification` | WSL2, Python 3.12.3: 49 tests, 47 passed, 2 skipped (job objects; real pytest) | 0 |
+| Protections | WSL2, Python 3.12.3: 243 of 243 removed safeguards detected, 0 missed (2 of them new), 467 s | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.04 s after the planned time | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Browser, all twelve scenarios | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 355 passed, 0 failed | 0 |
+| Publication scanner | 125 files checked; five findings: the three images of earlier sections (binary, unchanged), and `.claude/` and `debug.log`, both ignored by Git and not written for this change | 1 |
+| Python 3.11 parse of the changed sources, tests and tool | Native Windows, Python 3.11.3: 5 files | 0 |
+
+Every provider was scripted: no model was called. Not run: the whole suite
+and the package build and `twine check` (CI's under the rule of October 17,
+2026), the crash test at every checkpoint (no checkpoint, findings, history
+or ledger code changed), the opt-in tests in the real Codex sandbox (the
+environment check did not change), the real pytest test (pytest is not
+installed), macOS.
+
+**Limits that remain.** A process that starts before the job object holds
+the child, or that leaves the job, is still not stopped with it, and nothing
+records it. An interrupted check records nothing, so it cannot say that it
+was `child_only`. Agent CLIs are still stopped alone on native Windows. The
+checks still run on the host with the user's rights.
+
+**Verdict: READY for these two findings**, on the checks above. This is
+not a release-readiness verdict.
+
 ## Documentation alignment (October 17, 2026)
 
 **Scope.** README, CHANGELOG, ROADMAP, ARCHITECTURE, REVIEW, TESTING,

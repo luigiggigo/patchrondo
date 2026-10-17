@@ -603,6 +603,7 @@ class Result:
     artifacts: list[dict] = field(default_factory=list)
     evidence: str | None = None       # ID of the ledger record
     lines: frozenset = field(default_factory=frozenset, repr=False)  # Git's status lines after the check
+    process_tree: str | None = None   # `process.Result.process_tree`: None when the command did not start
 
     @property
     def passed(self) -> bool:
@@ -721,6 +722,7 @@ class Runner:
             result.duration_ms = round((time.monotonic() - clock) * 1000)
             result.finished_at = _stamp()
         result.exit_code = ran.returncode
+        result.process_tree = getattr(ran, "process_tree", None)
         output = scrub(ran.stdout + "\n" + ran.stderr, self.secrets)
         result.log = self.run_dir / f"{name}.log"
         atomic_text(result.log, output)
@@ -729,6 +731,9 @@ class Runner:
         result.after, result.lines = snapshot(self.workspace)
         if ran.timed_out:
             result.status, result.reason = TIMEOUT, f"The command did not end within {check.timeout} seconds and was stopped"
+            if result.process_tree == process.CHILD:
+                result.reason += (". No job object held the processes it started: they were not stopped with it and "
+                                  "may still be running")
             result.error = {"kind": "timeout"}
             return
         if ran.returncode < 0:
@@ -835,6 +840,7 @@ class Runner:
             check={"version": VERSION, "id": check.id, "type": check.type, "adapter": check.adapter, "index": result.index,
                    "cwd": check.cwd, "timeout_seconds": check.timeout, "started_at": result.started_at,
                    "finished_at": result.finished_at, "duration_ms": result.duration_ms, "environment": environment(),
+                   "process_tree": result.process_tree,
                    "snapshot": {"before": result.before, "after": result.after, "changed": result.changed},
                    "report": result.report, "reason": evidence.text(result.reason), "error": result.error})
         result.evidence = entry["id"]

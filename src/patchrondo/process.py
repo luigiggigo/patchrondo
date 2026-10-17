@@ -18,12 +18,19 @@ LINE_BYTES = 2_000_000  # one line of streamed output; a longer one is dropped w
 DRAIN_SECONDS = 2.0
 
 
+# How the processes a command starts are held, so that stopping it stops them too (`Result.process_tree`).
+GROUP = "process_group"   # POSIX: always
+JOB = "job_object"        # native Windows, with `tree`
+CHILD = "child_only"      # native Windows: no job object was asked for, or none could hold the child
+
+
 @dataclass
 class Result:
     returncode: int
     stdout: str
     stderr: str
     timed_out: bool = False
+    process_tree: str | None = None  # GROUP, JOB or CHILD; None from a caller's own `execute`
 
 
 def safe_env() -> dict[str, str]:
@@ -50,7 +57,8 @@ class _Job:
     """A Windows job object holding a child and every process it starts, so that stopping it stops all of them.
 
     POSIX gets the same from the process group. A child that cannot be put
-    in a job (the call is refused) is stopped alone, as without one.
+    in a job (the call is refused) is stopped alone, as without one, and its
+    `Result` says so (`CHILD`).
     """
 
     def __init__(self, proc: subprocess.Popen):
@@ -83,13 +91,16 @@ class _Job:
             self.kernel.CloseHandle(handle)
 
 
-def _job(proc: subprocess.Popen, tree: bool) -> _Job | None:
-    if not tree or os.name != "nt" or getattr(proc, "_handle", None) is None:
-        return None
+def _job(proc: subprocess.Popen, tree: bool) -> tuple[_Job | None, str]:
+    """The job object that holds the child, if any, and how what it starts is held (`Result.process_tree`)."""
+    if os.name == "posix":
+        return None, GROUP
+    if not tree or getattr(proc, "_handle", None) is None:
+        return None, CHILD
     try:
-        return _Job(proc)
+        return _Job(proc), JOB
     except (OSError, AttributeError, ValueError):
-        return None
+        return None, CHILD  # the command still runs; stopping it stops it alone, and the result says so
 
 
 def _terminate(proc: subprocess.Popen, job: _Job | None = None) -> None:
@@ -144,6 +155,8 @@ def execute(argv: list[str], cwd: Path, *, stdin: str = "", timeout: int = 600,
 
     `tree` stops, on native Windows, every process the command started when
     it is stopped (`_Job`); on POSIX the process group always does.
+    `Result.process_tree` says which of the two held them, or `CHILD` when
+    neither did: stopping the command then stops it alone.
     """
     if not argv or not all(isinstance(x, str) and x for x in argv):
         raise ValueError("Invalid command: expected a list of nonempty arguments")
@@ -161,17 +174,17 @@ def _execute(argv, cwd, *, stdin, timeout, pid_file, output, errors, tree=False)
         stdin=subprocess.PIPE, stdout=output, stderr=errors,
         text=True, encoding="utf-8", errors="replace", start_new_session=(os.name == "posix"),
     )
-    job = _job(proc, tree)
+    job, held = _job(proc, tree)
     try:
         if pid_file is not None:
             from .storage import save_json
             save_json(pid_file, {"pid": proc.pid, "command": argv[0]})
         proc.communicate(input=stdin, timeout=timeout)
-        return Result(proc.returncode, _captured(output), _captured(errors))
+        return Result(proc.returncode, _captured(output), _captured(errors), process_tree=held)
     except subprocess.TimeoutExpired:
         _terminate(proc, job)
         proc.communicate()
-        return Result(proc.returncode or 124, _captured(output), _captured(errors), timed_out=True)
+        return Result(proc.returncode or 124, _captured(output), _captured(errors), timed_out=True, process_tree=held)
     except BaseException:
         _terminate(proc, job)
         raise
@@ -236,7 +249,7 @@ def _observed(argv, cwd, *, stdin, timeout, pid_file, output, errors, observers,
     """`_execute` with both streams on pipes, each read by its own thread so neither can fill up."""
     proc = subprocess.Popen(argv, cwd=cwd, env=safe_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, start_new_session=(os.name == "posix"))
-    job = _job(proc, tree)
+    job, held = _job(proc, tree)
     capture = _Capture()
     readers = [threading.Thread(target=_pump, args=(source, sink, observer, capture), daemon=True,
                                 name=f"patchrondo-read-{name}")
@@ -249,7 +262,7 @@ def _observed(argv, cwd, *, stdin, timeout, pid_file, output, errors, observers,
         with capture.lock:
             capture.closed = True  # a reader still blocked on a descendant's pipe writes nothing more
             code = (proc.returncode or 124) if timed_out else proc.returncode
-            return Result(code, _captured(output), _captured(errors), timed_out=timed_out)
+            return Result(code, _captured(output), _captured(errors), timed_out=timed_out, process_tree=held)
 
     try:
         if pid_file is not None:
