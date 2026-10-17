@@ -46,7 +46,7 @@ sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import browser  # noqa: E402
-from patchrondo import activity, doctor, environment  # noqa: E402
+from patchrondo import activity, doctor, environment, history  # noqa: E402
 from patchrondo.commands import join_command  # noqa: E402
 from patchrondo.core import config, create_task, initialize  # noqa: E402
 from patchrondo.process import Result as browser_result  # noqa: E402
@@ -111,10 +111,10 @@ if control.get("mode") == "quota" and reviewer:
         print(limit, file=sys.stderr)
     sys.exit(1)
 if reviewer:
-    # As the review schema asks: an outcome for each criterion the prompt lists. A scenario may set the verdict and outcomes.
+    # As the review schema asks: an outcome for each criterion the prompt lists. A scenario may set the verdict, outcomes and issues.
     chosen = control.get("outcomes") or {}
     payload = {"verdict": control.get("verdict") or "APPROVED", "summary": "Synthetic review: the change matches the task.",
-               "issues": [], "criteria": [{"id": name, "outcome": chosen.get(name, "SATISFIED"), "note": ""}
+               "issues": control.get("issues") or [], "criteria": [{"id": name, "outcome": chosen.get(name, "SATISFIED"), "note": ""}
                                           for name in dict.fromkeys(re.findall(r'"id": "(AC-\d{2,4})"', prompt))]}
     text = json.dumps(payload)
 else:
@@ -1594,7 +1594,9 @@ def scenario_criteria(env: Env) -> None:
 
     # The run: developed, tested by PatchRondo, reviewed once. Then it waits; nothing goes back to the developer, not even
     # the change to the code the reviewer asks for the check inside Mod Organizer 2, which no change to the files can satisfy.
-    env.control(mode="ok", develop_seconds=0.6, review_seconds=0.6, verdict="CHANGES_REQUESTED", outcomes={"AC-03": "CODE_CHANGES_REQUIRED"})
+    env.control(mode="ok", develop_seconds=0.6, review_seconds=0.6, verdict="CHANGES_REQUESTED", outcomes={"AC-03": "CODE_CHANGES_REQUIRED"},
+                issues=[{"severity": "medium", "path": "", "description": "It has to be tried inside Mod Organizer 2", "kind": "MANUAL_ACTION_REQUIRED",
+                         "finding_id": "", "criterion_id": "AC-03"}])
     page.click(text="Overview", selector="[role=tab]")
     env.run_task()
     paused = env.wait_state(path, lambda s: s["status"] == "paused", 90)
@@ -1607,7 +1609,7 @@ def scenario_criteria(env: Env) -> None:
                "qa('.workflow-step')[4].classList.contains('paused') && qa('.workflow-step')[4].innerText.includes('waiting for you') && qa('.workflow-step')[1].classList.contains('done')")
     env.expect("Rondo says it in plain words", "q('.rondo-note').innerText.includes('The code is approved')")
     env.shot("task-awaiting")
-    env.control(verdict="APPROVED", outcomes={})
+    env.control(verdict="APPROVED", outcomes={}, issues=[])
     review = paused["review"]
     env.check("the change asked for a check only a person can do is recorded, refused and settled as an approval",
               (review.get("reported_verdict"), review["verdict"], review.get("refused_changes")) == ("CHANGES_REQUESTED", "APPROVED", ["AC-03"]),
@@ -1616,6 +1618,8 @@ def scenario_criteria(env: Env) -> None:
     env.expect("the Review tab says that change was not sent to the developer",
                "q('.tab-panel').innerText.includes('The reviewer answered “changes requested”') "
                "&& q('.tab-panel').innerText.includes('It asked for a change to the code for AC-03, which no change to the files can satisfy')", 8)
+    env.expect("each issue shows the finding PatchRondo recorded it under",
+               "q('.tab-panel').innerText.includes('It has to be tried inside Mod Organizer 2') && q('.finding-ref').innerText === 'RF-001 · first reported here'", 8)
     page.click(text="Overview", selector="[role=tab]")
     env.expect("the overview is back", "Boolean(byText('Open criteria and checks'))", 8)
     page.click(text="Open criteria and checks")
@@ -1685,6 +1689,16 @@ def scenario_criteria(env: Env) -> None:
     press(2, "Open log")
     env.expect("evidence opens the log it refers to", "q('[role=tab][aria-selected=true]').innerText.includes('Logs') && q('.log-select').value.endsWith('test-01.log')", 10)
     env.shot("task-criteria-done")
+
+    # A list an event was saved with only in part, and an entry that is not an event: neither is shown as more than it is.
+    saved = read_json(path / "state.json")
+    history.append(saved, "tests_completed", statuses=["passed"] * 150)  # 100 statuses kept, and `truncated` says 150
+    saved["history"].append("not an event")
+    save_json(path / "state.json", saved)
+    page.click(text="Timeline", selector="[role=tab]")
+    env.expect("an event saved in part never reads as passed tests, and says how long its list was",
+               "qa('.timeline .event').some((e) => e.innerText.includes('Tests completed') && e.innerText.includes('statuses (150 in all)'))"
+               " && q('.history-odd').innerText.includes('1 entry of the saved history is not an event')", 10)
 
     # A task from before criteria were tracked: nothing is claimed about it.
     status, old = env.api("POST", f"/api/projects/{project['id']}/tasks", {"title": "Older task", "description": "d", "developer": "claude",

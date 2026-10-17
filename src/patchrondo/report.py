@@ -15,6 +15,9 @@ STOP_REASONS = {
     "invalid_schedule": "the saved plan was unreadable or no longer matched a quota pause",
 }
 RECOVERY_DETAILS = ("attempt", "resume_at", "scheduled_for", "source", "provider", "reason", "failures", "retries")
+# What the other events name since October 17, 2026: the verdict, ledger records and findings (ARCHITECTURE section 15).
+REFERENCES = ("verdict", "evidence", "finding_ids", "pending_verification", "invalidations")
+LINKS = {"new": "first reported here", "explicit": "reported by an earlier review too", "identical": "reported by an earlier review too"}
 
 
 def _agent_rows(runs) -> list[str]:
@@ -70,7 +73,11 @@ def render_report(state: dict) -> str:
                      "satisfy, is recorded and was not sent to the developer.", ""]
         for issue in review.get("issues", []):
             kind = f" ({issue['kind']})" if issue.get("kind") else ""
-            rows.append(f"- **{issue['severity']}**{kind} `{issue.get('path', '')}`: {issue['description']}")
+            # The finding PatchRondo recorded the issue under, when it did (`findings.py`).
+            found = issue.get("finding_id") if isinstance(issue.get("finding_id"), str) else None
+            link = f", {LINKS[issue['finding_link']]}" if found and issue.get("finding_link") in LINKS else ""
+            rows.append(f"- **{issue['severity']}**{kind} `{issue.get('path', '')}`: {issue['description']}"
+                        + (f" [{found}{link}]" if found else ""))
     else:
         rows.append("No review completed")
     if state.get("last_error"):
@@ -83,13 +90,37 @@ def render_report(state: dict) -> str:
              "The main repository is not changed automatically. Review the worktree,",
              "then commit on the `patchrondo/<task-id>` branch and integrate it manually.",
              "", "## History", ""]
-    for evt in state.get("history", []):
-        row = f"- {evt['at']} · iteration {evt['iteration']} · `{evt['event']}`"
-        if str(evt["event"]).startswith("recovery_"):
-            notes = [f"{key} {evt[key]}" for key in RECOVERY_DETAILS if evt.get(key) is not None]
-            row += f" ({', '.join(notes)})" if notes else ""
-        rows.append(row)
+    history = state.get("history", [])
+    if not isinstance(history, list):
+        rows.append("The history saved with this task cannot be read: it is not a list. It is kept in state.json as it is.")
+    for evt in history if isinstance(history, list) else []:
+        rows.append(_event_row(evt))
     return "\n".join(rows) + "\n"
+
+
+def _event_row(evt) -> str:
+    """One event of the history. An entry that is not one, or a field it lacks, is said to be so: nothing is presumed."""
+    if not isinstance(evt, dict):
+        return "- An entry of the history that is not an event; it is kept in state.json as it is"
+    known = lambda value: "unknown" if value is None else value  # noqa: E731
+    name = evt.get("event")
+    ident = f"{evt['id']} · " if isinstance(evt.get("id"), str) else ""
+    row = f"- {ident}{known(evt.get('at'))} · iteration {known(evt.get('iteration'))} · `{known(name)}`"
+    if str(name).startswith("recovery_"):
+        notes = [f"{key} {evt[key]}" for key in RECOVERY_DETAILS if evt.get(key) is not None]
+        return row + (f" ({', '.join(notes)})" if notes else "")
+    # A list the event was saved with only in part says so: the whole of it is in the findings or the ledger.
+    cut = evt.get("truncated") if isinstance(evt.get("truncated"), dict) else {}
+    notes = []
+    for key in REFERENCES:
+        value = evt.get(key)
+        if value in (None, "", []):
+            continue
+        shown = ", ".join(str(item) for item in value) if isinstance(value, list) else str(value)
+        whole = cut.get(key)
+        notes.append(f"{key} {clip(shown, 1200)}" + (f" (this event lists {len(value)} of {whole})"
+                                                    if isinstance(value, list) and whole is not None else ""))
+    return row + (f" ({'; '.join(notes)})" if notes else "")
 
 
 def _acceptance_rows(state: dict) -> list[str]:

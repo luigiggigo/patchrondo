@@ -1318,7 +1318,7 @@ checkpoint of the review, once a review has reported an issue:
 | `status` | `OPEN`, `PENDING_VERIFICATION` or `RESOLVED` | PatchRondo |
 | `first_seen_iteration`, `last_seen_iteration` | The iterations of its first and of its last report | PatchRondo |
 | `reported_in` | The `review` records of the ledger that reported it | PatchRondo |
-| `verification` | The record a status beyond `OPEN` rests on: `{"review", "iteration"}` | PatchRondo |
+| `verification` | The record a status beyond `OPEN` rests on: `{"review", "iteration"}`. A finding reported again is `OPEN` and keeps it: an approval had left it out before | PatchRondo |
 | `claimed` | An ID the reviewer gave the issue that was refused, and why | PatchRondo |
 
 `reported_in` is not called evidence: those records prove that a review
@@ -1622,6 +1622,42 @@ They are read as they are and never rewritten or given IDs; the report, the
 interface and the tools read the same fields from both. The first new event
 of such a task is numbered after the length of its history: `WE-0011` in a
 task with ten older events.
+
+### The four records read together
+
+Since October 17, 2026 one review can be followed through all four, and
+each link has its way back:
+
+```text
+review_completed WE-…  --evidence-->      review record E-… (verdict, iteration, outcomes per AC, findings)
+                       --finding_ids-->   findings RF-… (reported_in names E-…; Findings.reviews names E-… once)
+code_approved WE-…     --evidence-->      the approving E-…; pending_verification -> findings whose verification is that E-…
+criteria AC-…          --evidence-->      ledger records that count now; acceptance.code.evidence -> the approving E-…
+```
+
+A record an event names may live in a ledger `evidence.restart` put aside:
+IDs are numbered apart for each ledger (`E-`, `E2-`, …), so the ID alone
+finds it. A `review` record named by no event is one whose checkpoint was
+never saved: no finding names it and `Findings.reviews` does not hold it.
+`tests/test_coherence.py` rebuilds every review of a task this way after
+whole runs, crashes before and after each checkpoint, a quota pause, a ledger
+invalidated and started again, the iteration limit, and a task as the sources
+from before findings and workflow events left it, and checks each link in
+both directions.
+
+What people read shows these links as saved, and nothing beyond them. The
+history of `report.md` gives each event its ID and the verdict, records and
+findings it names (`verdict`, `evidence`, `finding_ids`,
+`pending_verification`, `invalidations`); a list the event saved in part says
+so, "(this event lists 100 of 120)". The issues of the last review, in the
+report and on the task page, show the finding each was recorded under and
+whether an earlier review reported it. On the page, an event saved in part
+says which lists were cut and how long each was, and tests are shown as
+passed only when the event holds its whole list of statuses and each one is
+`passed`. An entry of the history that is not an event, or an event without
+`at`, `iteration` or `event`, is shown as one, with "unknown" for what it
+lacks; nothing in `state.json` is changed for it, and runs, reports and the
+operations of the user go on.
 
 ### Limits
 

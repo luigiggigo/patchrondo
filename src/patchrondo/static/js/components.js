@@ -4,7 +4,7 @@ import { h, icon } from "./dom.js";
 import { ago, clock, fullDate } from "./format.js";
 import { href } from "./router.js";
 import { state } from "./store.js";
-import { activityOf, agentName, configured, describeEvent, workflow } from "./tasks.js";
+import { activityOf, agentName, configured, describeEvent, shortened, workflow } from "./tasks.js";
 import { agentChip } from "./ui.js";
 
 const STEP_TONE = { done: "ok", current: "accent", waiting: "wait", paused: "warn", error: "danger", next: "neutral", pending: "neutral" };
@@ -62,12 +62,14 @@ export function taskSig(task, extra = "") {
 
 export function eventRow(event, task, { showTask = false } = {}) {
   const meta = describeEvent(event, task);
+  const cut = shortened(event);
   return h("div", { class: `event tone-${meta.tone}` },
     h("time", { class: "event-time num", datetime: event.at, "data-tip": fullDate(event.at) }, clock(event.at)),
     h("span", { class: "event-mark", "aria-hidden": "true" }, icon(meta.icon, "sm")),
     h("div", { class: "event-body" },
       h("div", { class: "event-text" }, meta.text),
       meta.detail ? h("div", { class: "event-detail" }, meta.detail) : null,
+      cut ? h("div", { class: "event-detail event-cut" }, cut) : null,
       showTask ? h("a", { class: "event-task truncate", href: href("tasks", task.project, task.id) }, task.title || task.id) : null));
 }
 

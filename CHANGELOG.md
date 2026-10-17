@@ -9,6 +9,47 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### The four records checked together — October 17, 2026
+
+- **An entry of the history that is not an event no longer breaks the
+  report.** `history.append` numbers past such entries, but `report.md` read
+  `at`, `iteration` and `event` of each one without checking: with a `null`
+  or a text in `state["history"]` the report was never written, a run ended
+  with an error right after saving its checkpoint, and recording a check by
+  the user raised after its record was written. The state stayed as saved.
+  The report now lists such an entry as one, and a field an event lacks as
+  "unknown"; nothing in `state.json` is changed for it.
+- **The task page no longer shows what an event does not say.** Tests were
+  shown as passed for a `tests_completed` with no statuses, unknown ones, or
+  a list of statuses cut at 100 entries; a check by the user whose event had
+  no result was shown as passed. Each now says that the event does not tell.
+  An event saved with a list cut short says which list and how long it was,
+  the timeline says how many saved entries are not events instead of leaving
+  them out, and a history that is not a list no longer stops the page.
+- **The links between the records can be read.** The history in `report.md`
+  gives each event its ID and the verdict, ledger records and findings it
+  names, and says when the event lists only part of one. The issues of the
+  last review, in the report and on the Review tab, show the finding each was
+  recorded under and whether an earlier review reported it.
+- **Nothing the loop decides changed.** No engine module was edited. Tasks
+  made with the sources from before findings and workflow events (`d4c0ecd`)
+  and from before criteria (`624f60e`), at fifteen points between created and
+  ended, were resumed with these sources on October 17, 2026: each ended or
+  stayed as it was, with its older events unchanged and every review
+  traceable.
+- `tests/test_coherence.py` has nine tests that rebuild every review of a
+  task from its event, ledger record, findings and criteria and check each
+  link both ways: a problem corrected over three iterations; approved code
+  that waits for a person, a download and a publication without another
+  iteration; crashes before and after eight checkpoints (every checkpoint
+  with `PATCHRONDO_ALL_CHECKPOINTS=1`); a quota pause; evidence invalidated
+  and a ledger started again; the iteration limit; a task as `d4c0ecd` would
+  have left it, at three points; a review of 120 problems; and entries that
+  are not events. Three new mutation protections remove the new safeguards
+  of the report one at a time, and the `criteria` scenario of
+  `tools/ui_e2e.py` checks the finding of an issue and an event saved in
+  part on the page.
+
 ### Workflow events say what they cut — October 17, 2026
 
 - **A list cut short in an event is no longer taken for the whole of it.**

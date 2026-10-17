@@ -17,7 +17,8 @@ cannot be read pause the task, and statuses shown as the ledger has them:
 October 17, 2026. Findings of a review keep their identity: October 17, 2026.
 Findings with a criterion the task does not have, and IDs kept from the
 findings field only: October 17, 2026. Versioned workflow events: October
-17, 2026. Workflow events that say what they cut: October 17, 2026.
+17, 2026. Workflow events that say what they cut: October 17, 2026. The
+four records checked together: October 17, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -98,6 +99,101 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## The four records checked together (October 17, 2026)
+
+This section covers changes on top of `14d7b86`, which holds the workflow
+events of the next section: `report.py`, the task page (`static/js/tasks.js`,
+`components.js`, `views/task.js`, `views/live.js`), the new
+`tests/test_coherence.py`, three new mutation protections and the `criteria`
+scenario of `tools/ui_e2e.py`. No module of the engine changed (`core.py`,
+`acceptance.py`, `findings.py`, `history.py`, `evidence.py`,
+`recovery.py`). The package version is unchanged, 0.2.1.
+
+**The audit.** The paths that join the acceptance record, the findings, the
+history and the evidence ledger were read, and one review was followed
+through all four: `review_completed` names its `review` record, which names
+the outcome given to each criterion and the findings of its issues; each
+finding names the records that reported it, and `Findings.reviews` names
+each record once; `code_approved` names the approving record and the
+findings it made wait for a verification. The criteria name the records
+that count for them. Nothing in the engine was found to name a wrong
+record, to count an invalidated one, to invent a review, to resolve a
+finding or to take a list cut short for the whole of it.
+
+**Defects found and fixed.**
+
+- `report.md` read `at`, `iteration` and `event` of each entry of the
+  history without checking. With an entry that is not an event in
+  `state["history"]`, which `history.append` numbers past, `render_report`
+  raised `TypeError`; reproduced against the sources of `14d7b86` on native
+  Windows with Python 3.13.3: a run ended with that error right after saving
+  its pause, `attach_evidence` raised after writing its record, and no report
+  was written. The state stayed as saved. The report now lists such an entry
+  as one, a field an event lacks as "unknown", and a history that is not a
+  list as one that cannot be read.
+- The task page showed "Tests passed" for a `tests_completed` with no
+  statuses, unknown ones, or a list cut at 100 entries (whose last entry,
+  the failure, would be past the cut), and a check by the user whose event
+  had no result as passed. Both now say that the event does not tell. An
+  event saved in part says which lists were cut and how long each was; the
+  timeline says how many saved entries are not events instead of leaving
+  them out, and a history that is not a list, or is null, no longer stops
+  the page or reads as empty.
+
+**Reading improvements.** The history of `report.md` gives each event its ID
+and the verdict, records and findings it names, "(this event lists 100 of
+120)" for a list saved in part. The issues of the last review, in the
+report and on the Review tab, show the finding each was recorded under.
+
+**Older sources.** Tasks were made with the real sources of `d4c0ecd`
+(before findings and workflow events) at nine points (done, blocked, paused
+at develop, test, review and validate, interrupted, waiting for an
+authorization, crashed after a review record) and of `624f60e` (0.2.1,
+before criteria) at six, with scripted providers, and resumed with these
+sources: all fifteen ended or stayed as they were, older events unchanged,
+new IDs numbered past them, every review rebuilt from its event with no
+broken link. The same nine scenarios made with these sources and passed
+through `downgrade` of `tests/test_coherence.py` matched the `d4c0ecd`
+tasks field by field, state and ledger, except for what changes from run to
+run (times, task IDs, paths, hashes, commits of the test repository).
+
+**Tests.** `tests/test_coherence.py`, nine tests: A, a problem corrected over
+three iterations, its ID kept through other words, a new finding and the
+approval; B, approved code waiting for a check in another program, a
+download and a publication, without another iteration; C, crashes before
+and after eight checkpoints, a quota pause of the reviewer, evidence
+invalidated and the ledger started again, the iteration limit; D, a task as
+`d4c0ecd` would have left it, at three points; E, a review of 120 problems;
+and entries of the history that are not events. Run against the
+`report.py` of `14d7b86`, four failed (the anomalies with `TypeError`, the
+report's references in A, B and E) and the five about the engine passed.
+With `PATCHRONDO_ALL_CHECKPOINTS=1` the crash test covered 46 points, before
+and after every checkpoint of the scenario: each resumed to the same
+statuses and findings, with at most one step asked again, at most one
+record named by nothing, the check of the person recorded once and the
+history saved before the crash kept. Each new protection was run alone on
+native Windows and detected.
+
+Validation on October 17, 2026, with `PATH` filtered so that
+`shutil.which` found neither `claude` nor `codex`:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| `test_coherence`, `test_acceptance`, `test_findings`, `test_history`, `test_workflow`, `test_recovery`, `test_cli`, `test_integration_cli`, `test_ui`, `test_criteria_ui`, `test_frontend`, `test_live_activity`, `test_recovery_checks`, `test_browser_tools` | Native Windows, Python 3.13.3: 318 tests, 316 passed, 2 skipped, 279 s | 0 |
+| The same modules | Native Windows, Python 3.11.3: 318 tests, 316 passed, 2 skipped, 326 s | 0 |
+| `test_coherence` crash test, `PATCHRONDO_ALL_CHECKPOINTS=1` | Native Windows, Python 3.13.3: 46 crash points, 59 s | 0 |
+| Protections | WSL2, Python 3.12.3: 219 of 219 removed safeguards detected, 0 missed (three of them new), 416 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 355 passed, 0 failed, about 138 s | 0 |
+| Publication scanner | 123 files checked; the same five findings as in the next section | 1 |
+
+Every provider was scripted: no model was called. Under the rule of October
+17, 2026, the full unittest matrix, the package build and `twine check` were
+not run here; neither were the opt-in tests in the real Codex sandbox, since
+the environment check did not change.
 
 ## Workflow events that say what they cut (October 17, 2026)
 

@@ -183,7 +183,7 @@ export function configured(record) {
 // A persisted history entry as a sentence. Nothing here is inferred beyond the entry itself.
 export function describeEvent(event, task) {
   const dev = agentName(task?.developer), rev = agentName(task?.reviewer);
-  const statuses = event.statuses || [];
+  const statuses = Array.isArray(event.statuses) ? event.statuses : [];
   switch (event.event) {
     case "run_started":
       return { text: event.previous_status === "ready" ? "Run started" : "Run resumed", tone: "accent", icon: "play" };
@@ -196,7 +196,10 @@ export function describeEvent(event, task) {
       if (statuses.includes("timeout")) return { text: "Tests timed out", tone: "warn", icon: "flask" };
       if (statuses.includes("failed")) return { text: "Tests failed", tone: "danger", icon: "flask" };
       if (statuses.length && statuses.every((s) => s === "skipped")) return { text: "Tests skipped (disabled for this project)", tone: "neutral", icon: "flask" };
-      return { text: "Tests passed", tone: "ok", icon: "flask" };
+      // Passed only when the event says so for every command: an empty, unknown or shortened list proves nothing.
+      if (statuses.length && statuses.every((s) => s === "passed") && !(event.truncated && typeof event.truncated === "object" && "statuses" in event.truncated))
+        return { text: "Tests passed", tone: "ok", icon: "flask" };
+      return { text: "Tests completed", tone: "neutral", icon: "flask", detail: "This event does not say how every command ended: the Tests tab has the results" };
     case "review_started": return { text: `${rev} started the review`, tone: "accent", icon: "eye", detail: configured(event) || null };
     case "review_completed": {
       const verdict = VERDICTS[event.verdict];
@@ -209,9 +212,10 @@ export function describeEvent(event, task) {
                detail: event.source === "task.md" ? "Read back from the task description; nothing was taken as verified" : null };
     case "code_approved":
       return { text: "Code approved", tone: "ok", icon: "check", detail: event.open ? `${plural(event.open, "required criterion", "required criteria")} still to verify` : null };
-    case "evidence_recorded":
-      return { text: `You recorded a check for ${event.criterion}: ${event.result === "failed" ? "it did not pass" : "it passed"}`,
-               tone: event.result === "failed" ? "danger" : "ok", icon: "user", detail: event.evidence || null };
+    case "evidence_recorded": {
+      const [word, tone] = { passed: ["it passed", "ok"], failed: ["it did not pass", "danger"] }[event.result] || ["its result is not in this event", "neutral"];
+      return { text: `You recorded a check for ${event.criterion}: ${word}`, tone, icon: "user", detail: event.evidence || null };
+    }
     case "authorization_decided":
       return { text: `${event.decision === "granted" ? "You authorized" : "You did not authorize"} the operation of ${event.criterion}`,
                tone: event.decision === "granted" ? "ok" : "neutral", icon: "shield", detail: "Nothing was run" };
@@ -243,6 +247,13 @@ export function describeEvent(event, task) {
     case "recovery_cancelled": return { text: "Planned retry cancelled by a manual run", tone: "neutral", icon: "x" };
     default: return { text: humanize(event.event), tone: "neutral", icon: "info" };
   }
+}
+
+// The lists an event was saved with only in part (`truncated`: path → whole length). Never shown as if they were whole.
+export function shortened(event) {
+  const cut = event.truncated && typeof event.truncated === "object" ? Object.entries(event.truncated) : [];
+  return cut.length ? `Saved in part in this event: ${cut.map(([path, length]) => `${path} (${length} in all)`).join(", ")}. `
+    + "The task's findings, evidence and test results keep all of them." : null;
 }
 
 export function eventTime(event) {

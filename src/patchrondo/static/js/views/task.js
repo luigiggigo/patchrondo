@@ -421,10 +421,16 @@ function activityPanel() {
   let last = null;
   const api_ = { el, update(detail, task) {
     last = [detail, task];
-    const history = (detail.state.history || []).filter((event) => event && typeof event === "object");
+    // What the saved history holds that is not an event is said to be there, never left out without a word.
+    const saved = detail.state.history === undefined ? [] : detail.state.history;  // a null is not an empty history
+    const entries = Array.isArray(saved) ? saved : [];
+    const history = entries.filter((event) => event && typeof event === "object" && !Array.isArray(event));
     const latest = history[history.length - 1];
-    memo(head, [history.length, order, latest?.at, ago(latest?.at)], () => [
-      h("div", { class: "muted" }, history.length ? [`${plural(history.length, "event")} saved by the engine · last one `, h("span", { "data-tip": fullDate(latest.at) }, ago(latest.at))] : "No events yet"),
+    const odd = !Array.isArray(saved) ? "The saved history of this task cannot be read: it is not a list."
+      : entries.length > history.length ? `${plural(entries.length - history.length, "entry", "entries")} of the saved history ${entries.length - history.length === 1 ? "is" : "are"} not an event and ${entries.length - history.length === 1 ? "is" : "are"} not shown.` : null;
+    memo(head, [history.length, order, latest?.at, ago(latest?.at), odd], () => [
+      h("div", { class: "muted" }, history.length ? [`${plural(history.length, "event")} saved by the engine · last one `, h("span", { "data-tip": fullDate(latest.at) }, ago(latest.at))] : odd ? "No events can be shown" : "No events yet",
+        odd ? h("div", { class: "faint history-odd" }, odd) : null),
       history.length ? button(order === "oldest" ? "Oldest first" : "Newest first", { size: "sm", variant: "ghost", iconName: order === "oldest" ? "down" : "up",
         tip: "Change the order", onClick: () => { order = order === "oldest" ? "newest" : "oldest"; localStorage.setItem("patchrondo.timeline", order); api_.update(...last); } }) : null,
     ]);
@@ -603,6 +609,8 @@ function reviewPanel() {
         issues.length ? h("div", { class: "card list" }, issues.map((issue) => h("div", { class: "issue-row" },
           badge(issue.severity, SEVERITY[issue.severity] || "neutral"),
           h("div", { class: "grow" }, h("div", { class: "break" }, issue.description), issue.path ? h("div", { class: "mono muted break" }, issue.path) : null,
+            typeof issue.finding_id === "string" && issue.finding_id ? h("div", { class: "faint finding-ref" }, [h("span", { class: "mono" }, issue.finding_id),
+              { new: " · first reported here", explicit: " · reported by an earlier review too", identical: " · reported by an earlier review too" }[issue.finding_link] || ""]) : null,
             issue.kind === "OBSERVATION" ? h("div", { class: "faint" }, "An observation: it asks for no change and is not sent to the developer.")
               : issue.kind && issue.kind !== "CODE_CHANGES_REQUIRED" ? h("div", { class: "faint" }, "Not about the code: it is not sent to the developer.") : null))))
           : h("p", { class: "muted" }, "The reviewer reported no issues."),

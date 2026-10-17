@@ -291,7 +291,7 @@ export function livePanel(projectId, taskId) {
       who = `${actor(current.last)} · iteration ${current.last.iteration}${task.max_iterations ? ` of ${task.max_iterations}` : ""}`;
       doing = describe(current.last).title;
       // The start of the attempt, or of its phase as the engine saved it when that event is not loaded.
-      const phase = [...(detail.state.history || [])].reverse().find((entry) => STARTS.has(entry?.event));
+      const phase = [...(Array.isArray(detail.state.history) ? detail.state.history : [])].reverse().find((entry) => STARTS.has(entry?.event));
       since = Date.parse(current.started?.at || phase?.at);
     } else if (running) {
       who = `${phaseSentence(task)} · iteration ${task.iteration}${task.max_iterations ? ` of ${task.max_iterations}` : ""}`;

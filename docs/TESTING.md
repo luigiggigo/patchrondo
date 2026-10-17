@@ -50,6 +50,18 @@ $env:PATCHRONDO_REAL_SANDBOX = '1'
 python -m unittest discover -s tests -p test_sandbox_real.py -v
 ```
 
+`tests/test_coherence.py` checks the acceptance record, the findings, the
+workflow history and the evidence ledger together: after whole scripted runs
+it rebuilds every review from its event and checks each reference both
+ways. Its crash test restores the files of one run as they were just before
+and just after chosen checkpoints and resumes from each. In CI it covers
+eight of them; to crash before and after every checkpoint of the scenario
+(46 points, about a minute on native Windows), run it alone with:
+
+```bash
+PATCHRONDO_ALL_CHECKPOINTS=1 PYTHONPATH=src python -m unittest discover -s tests -p test_coherence.py -v
+```
+
 ### Browser checks of the interface (no provider quota usage)
 
 ```bash
@@ -65,7 +77,8 @@ files on disk: the criteria of a task from the preflight of the form to their
 evidence, with approved code that waits instead of going back to the
 developer, an authorization declined and then granted, a statement refused as
 evidence and the task completed by the user's checks without another agent
-call; models and options chosen on the Agents page for both roles, at
+call, the finding an issue was recorded under, and an event saved with a list
+cut short; models and options chosen on the Agents page for both roles, at
 the global and the project level, and a task that is then started with exactly
 those arguments; a task started from the home page with one description and one
 press, the test consent and a guided repair of a preparation problem; first

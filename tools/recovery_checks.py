@@ -673,6 +673,15 @@ MUTATIONS = [
              "            **({\"normalized\": review[\"normalized\"]} if review.get(\"normalized\") else {})}\n",
              "            **({\"normalized\": review[\"normalized\"]} if review.get(\"normalized\") else {}), \"summary\": review[\"summary\"]}\n",
              ("test_history",)),
+    # --- the four records read together -----------------------------------------------------------
+    Mutation("the report fails on an entry of the history that is not an event", "report.py",
+             "    if not isinstance(evt, dict):\n        return \"- An entry of the history that is not an event; it is kept in state.json as it is\"\n",
+             "", ("test_coherence.RecordTests",)),
+    Mutation("the report presumes the fields an event lacks", "report.py",
+             "    known = lambda value: \"unknown\" if value is None else value  # noqa: E731\n",
+             "    known = lambda value: value  # noqa: E731\n", ("test_coherence.RecordTests",)),
+    Mutation("the report takes a list an event saved in part for the whole of it", "report.py",
+             "if isinstance(value, list) and whole is not None else \"\"))\n", "if False else \"\"))\n", ("test_coherence.RecordTests",)),
 ]
 
 
