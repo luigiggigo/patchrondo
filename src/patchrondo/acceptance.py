@@ -141,11 +141,13 @@ REVIEW_SCHEMA = {
         "summary": {"type": "string"},
         "issues": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["severity", "path", "description", "kind"],
+            "required": ["severity", "path", "description", "kind", "finding_id", "criterion_id"],
             "properties": {
                 "severity": {"type": "string", "enum": ["low", "medium", "high", "critical"]},
                 "path": {"type": "string"}, "description": {"type": "string"},
                 "kind": {"type": "string", "enum": [str(kind) for kind in ISSUE_KINDS]},
+                # Links that the backend checks before it keeps them (`findings.py`); empty when there is none.
+                "finding_id": {"type": "string"}, "criterion_id": {"type": "string"},
             },
         }},
         "criteria": {"type": "array", "items": {

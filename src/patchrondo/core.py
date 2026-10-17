@@ -18,7 +18,7 @@ from .gitops import repo_root, create_worktree, changes, stat, fingerprint
 from .process import execute, short_log
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
-from . import acceptance as criteria, activity, agents, capabilities, evidence, providers, rag, recovery, winacl
+from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, providers, rag, recovery, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -361,13 +361,42 @@ def _record_commands(path: Path, state: dict, cfg: dict, results: list[dict], cu
 
 
 def _record_review(path: Path, state: dict, review: dict, current: str, run_dir: Path) -> dict:
-    """The evidence record of a validated review: its verdict about the code and the outcome it gave to each criterion."""
+    """The evidence record of a validated review: its verdict about the code and the outcome it gave to each criterion.
+
+    It also names the findings its issues are recorded under. An issue carries
+    a `finding_id` only once `findings` has settled it, never as the reviewer
+    gave it.
+    """
     listed = review.get("criteria") or []
+    named = [issue["finding_id"] for issue in review["issues"] if issue.get("finding_id")]
     return evidence.append(path, "review", executor="reviewer", provider=state["reviewer"], result=review["verdict"].lower(),
                            verdict=review["verdict"], reported_verdict=review.get("reported_verdict"),
                            criteria=[entry["id"] for entry in listed], outcomes={entry["id"]: entry["outcome"] for entry in listed},
-                           issues=len(review["issues"]), iteration=state["iteration"], fingerprint=current,
+                           issues=len(review["issues"]), findings=named or None, iteration=state["iteration"], fingerprint=current,
                            base=state.get("base_sha"), scope="code", log=f"{run_dir.name}/reviewer.reply.md")
+
+
+def _findings(state: dict, path: Path) -> findings.Findings | None:
+    """The findings of the task's reviews, with every ID its ledgers ever named kept from new problems. Under the task lock.
+
+    None when the saved record cannot be read, or a ledger cannot be, since
+    then which IDs are taken is not known. The record is never replaced: the
+    review goes on as it would without findings, its issues linked to
+    nothing, and the history says so.
+    """
+    try:
+        registry = findings.Findings.load(state)
+        registry.reserve(findings.named(path))  # the ledgers put aside included: they are only read
+    except (ValueError, OSError) as exc:
+        _event(state, "findings_not_recorded", reason=evidence.text(exc, 300))
+        return None
+    return registry
+
+
+def _keep_findings(state: dict, registry: findings.Findings | None) -> None:
+    """Put the findings in the state, saved with the next checkpoint. A task no review reported an issue for gets no record."""
+    if registry is not None and (registry.items or "findings" in state):
+        state["findings"] = registry.dump()
 
 
 def _context(home: Path, cfg: dict, path: Path, state: dict, workspace: Path, role: str) -> str:
@@ -450,7 +479,7 @@ A test failure must result in CHANGES_REQUESTED or BLOCKED, never APPROVED.
 {stat(workspace) or '(none)'}
 {_context_section(context)}
 ## Review response — ONLY JSON, no markdown
-{{"verdict":"APPROVED|CHANGES_REQUESTED|BLOCKED", "summary":"brief assessment", "issues":[{{"severity":"low|medium|high|critical", "path":"file path or empty", "description":"specific actionable issue", "kind":"{kinds}"}}], "criteria":[{{"id":"AC-01", "outcome":"{outcomes}", "note":"one sentence"}}]}}
+{{"verdict":"APPROVED|CHANGES_REQUESTED|BLOCKED", "summary":"brief assessment", "issues":[{{"severity":"low|medium|high|critical", "path":"file path or empty", "description":"specific actionable issue", "kind":"{kinds}", "finding_id":"ID of an earlier problem it reports again, or empty", "criterion_id":"AC-01 when it is about one criterion, or empty"}}], "criteria":[{{"id":"AC-01", "outcome":"{outcomes}", "note":"one sentence"}}]}}
 """
 
 
@@ -463,7 +492,10 @@ def parse_review(text: str) -> dict:
     (`acceptance.requires_change`) is a request for changes: a
     CODE_CHANGES_REQUIRED issue of any severity, or, without a kind, a high
     or critical one. An observation and what is missing outside the code
-    never are: they are not the developer's.
+    never are: they are not the developer's. An issue's `finding_id` and
+    `criterion_id` are links the backend checks afterwards
+    (`findings.Findings.settle`): one it cannot use links nothing, and never
+    makes an answer invalid.
     """
     clean = text.strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean, flags=re.S | re.I)
@@ -883,6 +915,10 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
     criterion is verified as well. Otherwise it pauses at the `validate`
     checkpoint, where a later run calls no agent: it completes the task, or
     returns the saved state while nothing changed.
+
+    Each issue of a review is recorded as a finding with an ID that it keeps
+    across iterations (`findings.py`), saved with the review's checkpoint.
+    Findings decide nothing: the verdict, the test gate and the criteria do.
     """
     root = Path(agents_root) if agents_root is not None else agents.workspace_root(home)
     cfg = config(home)
@@ -984,6 +1020,7 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     # A review of these very files that approved the code and still counts is not asked for again:
                     # the task came back here only for the evidence of the project's commands.
                     reused = record.code.get("status") == criteria.Code.APPROVED and isinstance(state.get("review"), dict)
+                    registry = None
                     if reused:
                         review = state["review"]
                     else:
@@ -994,8 +1031,10 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                         _event(state, "review_started", **_configured(settings))
                         _save(path, state)
                         context = _context(home, cfg, path, state, workspace, "reviewer")
+                        registry = _findings(state, path)
                         reply = _invoke(adapter, path, state, "reviewer",
-                                        _review_prompt(path, state, workspace, context, record.reviewer_brief(evidence.read(path))),
+                                        _review_prompt(path, state, workspace, context, record.reviewer_brief(evidence.read(path))
+                                                       + findings.brief(registry)),
                                         workspace, run_dir, settings)
                         # The answer is validated against the plan: what the reviewer says about a criterion it
                         # cannot verify is recorded and proves nothing. An approval that leaves one of its criteria
@@ -1005,14 +1044,22 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                         except criteria.IncompleteReview as exc:
                             raise AgentFailure(str(exc), "invalid_review") from exc
                         current = _check_test_context(state, cfg, workspace)
+                        # Each issue is recorded as a finding, or linked to one of an earlier review by a fixed rule.
+                        review = registry.settle(review, record) if registry is not None else findings.unlinked(review)
                         state["review"] = review
                         entry = _record_review(path, state, review, current, run_dir)
+                        if registry is not None:
+                            registry.observe(review, entry["id"], iteration, record)
+                        _keep_findings(state, registry)
                         _event(state, "review_completed", verdict=review["verdict"],
                                **({"reported": review["reported_verdict"]} if review.get("reported_verdict") else {}))
                     changed = bool(changes(workspace))
                     if review["verdict"] == "APPROVED" and _tests_green(state) and (changed or cfg["workflow"]["allow_no_changes"]):
                         if not reused:
                             record.approve_code(entry["id"], iteration)
+                            if registry is not None:
+                                registry.approved(entry["id"], iteration)  # pending a verification, never resolved
+                            _keep_findings(state, registry)
                         state["acceptance"] = record.dump()
                         record, _ = sync(current=current)
                         # Approved code is not a finished task: every required criterion needs its own evidence.

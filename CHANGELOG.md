@@ -9,6 +9,54 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Findings of a review keep their identity — October 17, 2026
+
+- **Each problem a reviewer reports gets an ID that it keeps across
+  iterations.** An issue lived only in the review that reported it, so a
+  problem reported again in other words could not be told from a new one.
+  Each issue of a validated review is now recorded as a finding
+  (`findings.py`), `RF-001`, `RF-002`, …, saved with the task under
+  `findings` in `state.json` with the checkpoint of the review, and the
+  `review` record of the evidence ledger names the findings of its issues. A
+  finding keeps its kind, file and criterion, its last severity and
+  description, who it is for, whether they could act on it, whether the task
+  needed a correction or a check for it to be done (a change the code needs,
+  or a check, a decision or an action for a required criterion that is not
+  verified), the iterations of its first and last report and the review
+  records that reported it. What it is about follows from the kind of the
+  issue and the plan of the task by fixed rules; the reviewer sets none of it.
+- **Links are explicit or word for word, and checked.** The reviewer is shown
+  the findings with their IDs, and the review schema gives each issue
+  `finding_id` and `criterion_id`, empty when there is none. An ID links an
+  issue to its finding only with the same kind, file (a line after it aside)
+  and criterion, once in a review; an issue without one is linked only when
+  exactly one finding has the same identity and the same words. Any other
+  issue is a new finding, which keeps the refused claim and its reason.
+  Nothing is matched by similarity, and the file and the words are compared
+  whole, through the SHA-256 of their normalized text: the copies kept to be
+  shown are shortened and never compared, and a finding whose copy may have
+  been shortened is never linked through it. A new finding is numbered past
+  every ID the task's findings or its ledgers ever named, a ledger put aside
+  as damaged included, so no ID is given twice, not even after a crash
+  between the ledger and the state.
+- **A finding a review leaves out is not resolved.** It stays as it was. A
+  review that approves the code makes the developer's findings it did not
+  report wait for a verification (`PENDING_VERIFICATION`, naming that
+  review); no finding becomes `RESOLVED`, because nothing yet verifies that
+  one problem is gone.
+- **The loop decides as before.** Findings decide nothing: the verdict, the
+  test gate and the criteria do. An answer without the new fields, or with
+  values the backend cannot use, is still a review. A saved record of
+  findings this version cannot read is never replaced: the review goes on
+  without findings, and the history records `findings_not_recorded`. A task
+  whose reviews reported no issue gets no record.
+- `tests/test_findings.py` covers the rules and the engine scenarios, among
+  them an interrupted review checkpoint, a crash after the review record,
+  the same crash followed by a ledger found damaged and started again, and a
+  scenario whose decisions were recorded with the sources from before
+  findings. Twenty-five mutation protections in `tools/recovery_checks.py`
+  remove one safeguard each.
+
 ### Saved criteria that cannot be read pause the task, and statuses are shown as the ledger has them — October 17, 2026
 
 - **A saved record of the criteria that this version cannot read is no longer

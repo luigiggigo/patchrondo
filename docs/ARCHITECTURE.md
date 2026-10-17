@@ -9,6 +9,7 @@
 | `acceptance.py` | The acceptance criteria of a task as typed records: classification by fixed rules, planning against the detected capabilities, verification against the evidence ledger, the settling of a review, the results of the task |
 | `capabilities.py` | What each executor of a task can do (developer, reviewer, PatchRondo itself, the user), read from settings and from the computer; nothing is started |
 | `evidence.py` | The evidence ledger of a task: append-only, hash-chained records of commands, reviews, checks by the user and decisions; invalidation and integrity |
+| `findings.py` | The findings of a task's reviews: an ID for each problem that it keeps across iterations, links by fixed rules only, and its history; it decides nothing |
 | `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse; starts each step with its agent settings |
 | `agents.py` | Agent settings: the typed table of what each CLI can be started with, validation, the three levels and their resolution, the frozen record of a step, the command of a step, presets, model lists and the checks of *Test configuration* |
 | `streams.py` | Parsers of the two CLIs' activity streams into provider-independent events; drop internal reasoning; keep a bounded transcript |
@@ -58,6 +59,7 @@ interface cannot bypass the lock, the checkpoints or the consent rules.
 - The task branch is separate from main. The external test runner executes project commands on the host and requires explicit consent.
 - What the interface says about a process comes from a check of that process, never from `status` alone, and a failed check is reported as unknown (section 10).
 - Live activity is an observation. The engine never reads the journal, what an agent says while it works is never its answer, and failing to observe or to record never fails a step (section 11).
+- The findings of the reviews are a record. They decide nothing, an ID is never given to a second problem, a link is checked and never guessed, and a finding a review leaves out is not resolved (section 14, "Findings of the reviews").
 - A project is trusted for tests only by explicit consent given for that project; registering or importing one never enables tests.
 
 ## 3. Review contract
@@ -73,7 +75,9 @@ The reviewer returns only an object:
       "severity": "high",
       "path": "src/auth.py",
       "description": "Check exp against UTC and add expired-token tests",
-      "kind": "CODE_CHANGES_REQUIRED"
+      "kind": "CODE_CHANGES_REQUIRED",
+      "finding_id": "RF-001",
+      "criterion_id": "AC-01"
     }
   ],
   "criteria": [
@@ -106,6 +110,13 @@ for each criterion the reviewer verifies. Only a task read back from its
 `task.md` takes an approval without outcomes as a review of the code as a
 whole, as before criteria were tracked. The backend validates the answer and
 settles it against the plan of the task; section 14 has the rules.
+
+`issues[].finding_id` names a problem an earlier review reported, by the ID
+PatchRondo gave it, and `issues[].criterion_id` the criterion an issue is
+about; each is empty when there is none. They are links the backend checks
+before it keeps them: a value it cannot use links nothing and never makes an
+answer invalid, and an answer without them is read as before (section 14,
+"Findings of the reviews").
 
 The developer produces a Markdown handoff with *Changes*, *Decisions*, *Remaining
 concerns* and *Suggested tests*. `task.md`, `handoff.md`, `feedback.md` and test
@@ -1262,6 +1273,106 @@ developer's criteria; what is open outside the code is listed apart, under
 that are its work and those that are not. A criterion whose change was
 refused is listed apart; an observation is in neither list.
 
+### Findings of the reviews
+
+Since October 17, 2026 each issue of a validated review is recorded as a
+finding (`findings.py`) with an ID of its own, `RF-001`, `RF-002`, …, or
+linked to a finding an earlier review reported, so that a problem reported
+again in other words is not taken for a new one. Findings are the ground a
+later detection of progress can stand on; they decide nothing now. The
+verdict, the test gate and the criteria decide as before:
+`tests/test_findings.py` keeps the events, verdicts and criteria of a
+scenario as recorded with the sources from before findings, and checks that
+the same answers lead to them.
+
+`state.json` gains `findings`, saved in the same atomic write as the
+checkpoint of the review, once a review has reported an issue:
+
+```json
+{
+  "version": 1, "next": 3, "reviews": ["E-0002", "E-0004"],
+  "items": [{
+    "id": "RF-001", "kind": "CODE_CHANGES_REQUIRED", "path": "feature.txt", "criterion_id": "AC-01",
+    "severity": "high", "description": "Still no newline at the end",
+    "owner": "developer", "actionable_now": true, "blocking": true, "status": "OPEN",
+    "first_seen_iteration": 1, "last_seen_iteration": 2, "reported_in": ["E-0002", "E-0004"],
+    "verification": null, "claimed": null, "path_key": "5f2c…", "words_key": "a91e…"
+  }]
+}
+```
+
+| Field | What it holds | From |
+|---|---|---|
+| `id` | `RF-` and a number: unique in the task, never given to another problem | PatchRondo |
+| `kind`, `path_key`, `criterion_id` | The identity: the kind of the issue (null for an answer without kinds), the SHA-256 of the whole file it named without a line after it, the criterion of the task it named | The issue, checked |
+| `path`, `severity`, `description` | As last reported; `path` and `description` shortened to be shown (300 and 600 characters) and never compared | The issue |
+| `words_key` | The SHA-256 of the whole last description, spaces and case aside; null for one without words | PatchRondo |
+| `owner` | `developer` for `CODE_CHANGES_REQUIRED` or no kind (what goes back to the developer), `nobody` for `OBSERVATION`, `user` for `MANUAL_ACTION_REQUIRED`, `APPROVAL_REQUIRED` and `CAPABILITY_BLOCKED`, the criterion's verifier for `VALIDATION_REQUIRED` (`runtime` or `user`), otherwise `unknown` | A fixed rule |
+| `actionable_now` | Whether that owner could act when it was last reported: the developer can write files, the runtime's criterion is `automatable`, a person can, except for missing tools | A fixed rule |
+| `blocking` | Whether, as last reported, the task needed a correction or a check for it before it could be done: a change the code needs (`acceptance.requires_change`), or a `VALIDATION_REQUIRED`, `CAPABILITY_BLOCKED`, `APPROVAL_REQUIRED` or `MANUAL_ACTION_REQUIRED` issue about a required criterion that was not verified. Never an observation, nor an issue about an optional criterion or about none | A fixed rule |
+| `status` | `OPEN`, `PENDING_VERIFICATION` or `RESOLVED` | PatchRondo |
+| `first_seen_iteration`, `last_seen_iteration` | The iterations of its first and of its last report | PatchRondo |
+| `reported_in` | The `review` records of the ledger that reported it | PatchRondo |
+| `verification` | The record a status beyond `OPEN` rests on: `{"review", "iteration"}` | PatchRondo |
+| `claimed` | An ID the reviewer gave the issue that was refused, and why | PatchRondo |
+
+`reported_in` is not called evidence: those records prove that a review
+reported the problem, not that it exists or that it is gone. `nobody` is an
+owner of its own because an observation asks for nothing, of anybody. The
+issues of the saved review carry `finding_id`, the finding they were
+recorded under, and `finding_link` (`new`, `explicit` or `identical`); a
+refused claim stays as `claimed_finding_id` with `finding_refusal`. Values
+the reviewer gave these fields are dropped first. The `review` record of the
+ledger names the findings of its issues (`findings`).
+
+- The reviewer is shown the findings with their IDs, at most 40, those
+  reported last first, as earlier reviewers' words: data, not instructions.
+  It is asked to give an ID back in `finding_id` when an issue reports one of
+  them again, with the same kind, file and criterion.
+- An issue is linked to an earlier finding only when its `finding_id` names a
+  finding of the task with the same kind, file and criterion, which no other
+  issue of the review took (`./a.py:12`, `a.py#L3-L9` and `.\a.py` all name
+  `a.py`); or, without a `finding_id`, when exactly one finding has the same
+  kind, file, criterion and description, spaces and case aside. Nothing is
+  matched by similarity. Any other issue is a new finding, which keeps a claim
+  it made, refused, with the reason: not an ID, an ID the task does not have,
+  another kind, file or criterion, or an ID another issue took.
+- The file and the words are compared whole, through the SHA-256 of their
+  normalized text (`path_key`, `words_key`). `path` and `description` are
+  shortened copies kept to be shown, and two values that differ only past
+  what they keep are two problems. A finding saved before the keys existed
+  gets them from those copies only where `clip` cut nothing off; otherwise
+  the key is null, the finding is never linked through it (an ID claimed for
+  it is refused: its file "was saved shortened"), and its history stays as it
+  is.
+- A new finding is numbered past every ID of the saved findings and every
+  finding ID in the text of the task's ledger and of each ledger
+  `evidence.restart` put aside (`evidence.ARCHIVED`). Those files are searched
+  line by line, whatever state a line is in, and only read: nothing read
+  there counts as evidence. An ID written by a review whose state was never
+  saved, because the process ended in between, is therefore not given again,
+  also after that ledger was found damaged and started again. A ledger that
+  cannot be read leaves the review without findings (`findings_not_recorded`):
+  which IDs are taken would not be known.
+- A review is recorded once (`reviews`), and recording never changes the
+  identity of a finding.
+- A finding a review does not mention stays as it was. When a review approves
+  the code, the developer's open findings it did not report become
+  `PENDING_VERIFICATION`, naming that review; a later report makes one `OPEN`
+  again. No finding becomes `RESOLVED`: an approval is the reviewer's
+  judgement about the code as a whole, and no record yet verifies that one
+  problem is gone. `load` refuses a status beyond `OPEN` that names no
+  record.
+- `load` refuses a null, another `version`, a repeated ID, a `next` at or
+  below an ID in use and any field of another shape. Such a record is never
+  replaced: the review goes on as it would without findings, its issues
+  linked to nothing (an ID the reviewer gave stays as `claimed_finding_id`),
+  its ledger record naming none, and the history records
+  `findings_not_recorded`. A state without the key has no findings and is
+  read and run as before.
+- At most 1000 findings are kept for a task, and no number past 999999 is
+  given; an issue past either stays in its review without an ID.
+
 ### In the loop
 
 ```text
@@ -1270,7 +1381,7 @@ run start            _sync: a task without a record gets one from its task.md, n
                      a record this version cannot read -> paused: acceptance_unreadable, nothing replaced
 develop              developer told which criteria are its work; afterwards evidence on the old files is invalidated
 test                 one `command` record per command; criteria that commands prove are judged
-review               reviewer given criteria, capabilities and evidence; answer settled; `review` record
+review               reviewer given criteria, capabilities, evidence and findings; answer settled; issues recorded as findings; `review` record
   code approved      every required criterion verified -> done
                      otherwise                          -> phase `validate`, paused: awaiting_validation | awaiting_authorization
   not approved       feedback -> develop (next iteration), or blocked at the iteration limit, as before
@@ -1369,3 +1480,12 @@ stopped.
 - The ledger shows edits; it does not prevent them.
 - The extended review schema had not been confirmed with a call to an
   authenticated CLI on October 13, 2026.
+- Findings are linked by an ID the reviewer gives back or by the same words.
+  A reviewer that describes a problem again in other words without its ID
+  makes a new finding: nothing guesses. No finding becomes `RESOLVED` yet.
+  The fields `finding_id` and `criterion_id` of the review schema had not
+  been confirmed with a call to an authenticated CLI on October 17, 2026.
+- `blocking` describes the task as it was when the finding was last
+  reported, and nothing reads it to decide. A finding saved before its
+  definition was corrected on October 17, 2026 keeps the value it was saved
+  with until it is reported again.

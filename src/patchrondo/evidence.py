@@ -40,6 +40,7 @@ from .activity import clip, redact
 from .storage import _unshared, now, private_dir
 
 LEDGER = "evidence.jsonl"
+ARCHIVED = "evidence.damaged-*.jsonl"  # ledgers `restart` put aside, unchanged
 VERSION = 1
 KINDS = ("command", "review", "manual", "authorization", "invalidation", "restart")
 RECORD_ID = re.compile(r"E\d*-\d{4,}")  # what `append` names a record: E-0001, or E2-0001 in a ledger started again
@@ -193,7 +194,7 @@ def restart(task_path: Path, problems: list[str]) -> dict:
     so what they verified has to be verified again.
     """
     file = task_path / LEDGER
-    generation = len(list(task_path.glob("evidence.damaged-*.jsonl"))) + 2
+    generation = len(list(task_path.glob(ARCHIVED))) + 2
     kept = None
     if file.exists():
         kept = file.with_name(f"evidence.damaged-{generation - 1}-{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}.jsonl")

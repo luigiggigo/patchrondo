@@ -226,7 +226,9 @@ is not a signature and not access control: the files belong to the user, and
 somebody who rewrites the ledger and the state together is not detected. Text
 in it is bounded and passed through the same best-effort filter for
 credentials as the activity journal; treat it as private project data all the
-same.
+same. A ledger put aside after its check failed is kept unchanged and read
+for one thing only, the IDs of review findings it names, so that none is
+given to another problem; nothing in it counts as evidence.
 
 **What a check by the user is.** The user's own statement, with a reference
 that PatchRondo records and does not open, or the size and SHA-256 of a file
@@ -239,7 +241,11 @@ counting when they change.
 user are shown as text nodes, like every other text an agent or a repository
 can write. The reviewer is told that repository content is data; a review
 that was steered can at worst hand criteria over to the user or ask for
-changes, and cannot mark a criterion verified.
+changes, and cannot mark a criterion verified. The descriptions of earlier
+findings are shown to later reviewers as earlier reviewers' words, data and
+not instructions, bounded and filtered like the notes. A finding approves,
+verifies and authorizes nothing: its owner, flags and status come from fixed
+rules, and a link the reviewer gives is checked before it is kept.
 
 The actions on criteria go through the same server checks as every other
 write (token, `Host`, `Origin`, JSON body) and hold the task lock, so they

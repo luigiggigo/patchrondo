@@ -14,7 +14,7 @@ to the code only for what the code can satisfy, and publication-status
 update: October 16, 2026. Criteria records kept when they cannot be read:
 October 16, 2026, validated on October 16 and 17, 2026. Saved criteria that
 cannot be read pause the task, and statuses shown as the ledger has them:
-October 17, 2026.
+October 17, 2026. Findings of a review keep their identity: October 17, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -95,6 +95,199 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Findings of a review keep their identity (October 17, 2026)
+
+This section covers changes on top of `d010809`: the new module
+`findings.py`, the review stage, `_record_review` and the reviewer's prompt in
+`core.py`, two fields of the review schema in `acceptance.py`,
+`tests/test_findings.py` and fourteen new mutation protections. The package
+version is unchanged, 0.2.1. The request was the second step of the user's
+plan for 0.3, "Structured Review Findings".
+
+**What existed.** The issues of a review were kept in `state["review"]` until
+the next review replaced them, in `feedback.md` and in each iteration's
+`reviewer.reply.md`; the `review` record of the ledger counted them
+(`issues`). Nothing tied an issue to one an earlier review had reported. The
+findings extend that path (`parse_review`, `settle_review`, `_record_review`)
+instead of adding a second review system, and live beside the `acceptance`
+record in `state.json`, so that a version without them keeps the key when it
+saves the state.
+
+**Changes.** Each issue of a validated review becomes a finding with an ID
+(`RF-001`), or is linked to an earlier one by an explicit `finding_id` whose
+kind, file and criterion match, or by identical words when exactly one
+finding matches. The record, the rules and what is refused are described in
+`docs/ARCHITECTURE.md`, section 14, "Findings of the reviews". The reviewer
+is shown the findings; the schema gives each issue `finding_id` and
+`criterion_id`; the ledger's `review` record names the findings of its
+issues.
+
+**Where this differs from the request, and why.**
+
+- `evidence_refs` is `reported_in`: the records it names prove that a review
+  reported the problem, not that it exists or is gone.
+- `owner` has a fifth value, `nobody`, for an observation, which asks for
+  nothing of anybody (`unknown` would say that someone has to act).
+- No finding becomes `RESOLVED`. Every confirmation available is a
+  reviewer's judgement, and an approval is about the code as a whole. A
+  review that approves the code makes the developer's findings it did not
+  report `PENDING_VERIFICATION`, naming that review, as the request allows.
+- `criterion_id` was added to the issues of the schema as well as
+  `finding_id`: the link of a finding to a criterion needs a source, and the
+  check of an explicit link compares it.
+- A second deterministic rule links an issue without an ID that repeats a
+  finding word for word, spaces and case aside, when exactly one finding has
+  its kind, file, criterion and words. Without it, a reviewer that ignores
+  the IDs would make a new finding at every iteration for the same report.
+
+**Tests.** `tests/test_findings.py`, 21 tests: the rules (new problem, the
+reviewer setting nothing, the fixed rules for owner and flags, explicit links
+through new words and other lines, each refused claim, identical words, a
+finding left out, an ID never given twice, a review recorded once, what
+`load` refuses, the prompt, the schema, a record that cannot be read) and
+the engine scenarios A to G of the request. F has two scenarios: a run
+interrupted after its review was recorded and resumed at the same
+checkpoint, and a process that ends after the review record is written and
+before the state is saved, after which the ID written to the ledger is not
+given again. The decisions of the G scenario (events, status, phase,
+iteration, pause, verdicts, approval and criteria) were recorded by a script
+that uses only helpers of `tests/test_acceptance.py`, run against the
+sources of `d010809`, and are equal, the time of the pause aside, with these
+changes. Against the sources of `d010809` the new module fails to import
+(one error): there was no `findings` module. Each of the fourteen new
+protections was run alone, on native Windows, before the full set, and
+detected. One reason was changed after that run: a claim of an ID with
+another file named first that another issue had taken it; it now names the
+file. The full set ran after that change.
+
+Validation on October 17, 2026, of these changes before the review below.
+In WSL2, `~/.local/bin` and `/usr/local/bin` were removed from `PATH`; on
+native Windows,
+`.local\bin`, the WinGet links and the folders of the VS Code extension were
+removed from `PATH` for reliability and the browser check. `shutil.which`
+found neither `claude` nor `codex` in either, and no new file appeared under
+`~/.claude/projects` or `~/.codex/sessions` after the WSL2 runs:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Unittest modules `test_findings`, `test_acceptance`, `test_criteria_ui`, `test_workflow`, `test_recovery_checks`, `test_agents`, `test_live_activity`, `test_ui`, `test_cli`, `test_frontend`, `test_integration_cli`, `test_environment`, `test_recovery` | Native Windows, Python 3.13.3 (the interpreter of `.build-venv`): 389 tests, 387 passed, 2 skipped, 258.523 s | 0 |
+| Unittest modules `test_findings`, `test_acceptance`, `test_criteria_ui`, `test_workflow`, `test_recovery_checks` | Native Windows, Python 3.11.3: 120 tests passed, 102.326 s | 0 |
+| Unittest module `test_findings` | Native Windows, the system Python 3.13.3: 21 tests passed | 0 |
+| Protections | WSL2, Python 3.12.3: 186 of 186 removed safeguards detected, 0 missed (fourteen of them new), 377 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.04 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed, 127 s | 0 |
+| Publication scanner | 120 files checked; five findings: `debug.log`, the three existing binary mascot assets, and `.claude`, an ignored folder whose `settings.local.json` sets a Claude Code environment variable and was written on October 17, 2026 outside these changes | 1 |
+
+The scanner is not a clean pass: `debug.log` and the images are the findings
+recorded before, and `.claude` is private local state that Git ignores.
+Every provider was scripted: no model was called. Under the rule of October
+17, 2026, the full unittest matrix, the package build and `twine check` were
+not run here. The opt-in tests in the real Codex sandbox were not run: the
+environment check did not change. `tests/test_browser_tools.py` was not run:
+`tools/ui_e2e.py` did not change.
+
+**Not verified.** The fields `finding_id` and `criterion_id` of the schema,
+and the list of findings in the prompt, had not been tried with an
+authenticated CLI: whether Claude Code and Codex fill them as asked is not
+known. A reviewer that describes a problem again in other words and gives no
+ID makes a new finding.
+
+**A review of these changes.** It found three problems, each reproduced:
+
+- **Links checked on shortened copies.** `_file` and `_description` cut the
+  file to 300 characters and the description to 600, and those copies were
+  compared. `clip` keeps the first characters and adds how many it cut off,
+  so two different values with the same beginning and the same length became
+  the same text: two different descriptions of 712 characters were recorded
+  under RF-001 (`identical`), and an explicit link was accepted for a finding
+  whose file, of 311 characters, was another one.
+- **An ID given again after the ledger was started again.** `findings.named`
+  read only the active ledger. After a process ended once the review record
+  naming RF-001 was written and before the state was saved, and the ledger
+  was then found damaged, the run put it aside, started a new one, and gave
+  RF-001 to another problem.
+- **What `blocking` meant.** It was `acceptance.requires_change`, what keeps
+  the code from being approved, where the request defines it as whether a
+  correction or a check is needed before the task can be done. A
+  `MANUAL_ACTION_REQUIRED` finding about a required criterion waiting for a
+  person (`AWAITING_MANUAL_VALIDATION`), owner `user`, had `blocking` false.
+
+**Changes.**
+
+- The file and the words are compared whole, through the SHA-256 of their
+  normalized text, saved as `path_key` and `words_key`. `path` and
+  `description` stay the shortened copies they were, kept to be shown and no
+  longer compared. A finding saved without the keys gets them from those
+  copies only where `clip` cut nothing off (a copy no longer than its limit);
+  otherwise the key is null, the finding is never linked through it, an ID
+  claimed for it is refused ("the file of that finding was saved shortened:
+  it cannot be compared"), and its history is left as it is.
+- `findings.named` takes the task's folder and searches, as text and line by
+  line, the active ledger and every ledger `evidence.restart` put aside
+  (`evidence.ARCHIVED`, now also what `restart` counts), for anything shaped
+  like a finding ID. Those files are only read, and nothing read there counts
+  as evidence: the restarted ledger still proves nothing. `Findings.reserve`
+  moves `next` past them, and `core._findings` does it under the task lock
+  before each review. A ledger that cannot be read leaves that review without
+  findings (`findings_not_recorded`), since which IDs are taken would not be
+  known. No number past 999999 is given.
+- `blocking` holds for a change the code needs (`requires_change`), and for a
+  `VALIDATION_REQUIRED`, `CAPABILITY_BLOCKED`, `APPROVAL_REQUIRED` or
+  `MANUAL_ACTION_REQUIRED` issue about a required criterion that is not
+  verified when the issue is reported. Never for an observation, an optional
+  criterion or no criterion. It describes; nothing reads it to decide. A
+  finding saved before keeps its value until it is reported again.
+
+**Tests of the review.** In `tests/test_findings.py`, five new tests:
+`test_identity_is_compared_in_full_and_not_on_the_shortened_text_that_is_kept`,
+`test_a_finding_saved_with_shortened_text_is_never_taken_for_a_match`,
+`test_blocking_says_whether_a_correction_or_a_check_is_needed_before_the_task_can_be_done`
+(13 cases: changes to the code, required checks, an optional criterion, a
+verified one, no criterion, observations, a value the reviewer gave),
+`test_a_crash_and_a_ledger_started_again_never_give_an_id_twice` (the ledger
+put aside is unchanged, and every record that counts for a criterion is of
+the new ledger) and `test_a_check_that_a_required_criterion_waits_for_is_blocking`
+(the case of the review, through the engine, which pauses at `validate` as
+before). `test_an_id_is_never_given_twice` also covers a ledger put aside, one
+that cannot be read and the last number, and the test of what `load` refuses
+covers two malformed keys. One test changed:
+`test_owner_actionable_and_blocking_follow_the_kind_and_the_plan` became
+`test_owner_and_actionable_follow_the_kind_and_the_plan`; `blocking` has its
+own test now, and three of its cases, `VALIDATION_REQUIRED` about a required
+criterion that is not verified, expected false where the corrected
+definition gives true. Run on native Windows with Python 3.13.3 against the
+code before the correction, the new tests failed with nine failures, each for
+the reason expected: the long description linked as `identical`, the
+shortened record accepting an `explicit` link, RF-001 given again after the
+restart, and `blocking` false in five required cases and in the engine
+scenario. The path collision, which that test reaches after the description,
+was confirmed apart: a claim for another file of 311 characters was linked
+(`RF-001`, `explicit`). The 21 tests from before passed on that code. After
+the correction each of the 25 protections of `test_findings`, twelve of them
+new and two changed, was run alone and detected.
+
+Validation on October 17, 2026, of that correction, with `PATH` filtered as
+above (`shutil.which` found neither CLI) and no new file under
+`~/.claude/projects` or `~/.codex/sessions` after the WSL2 runs:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| The thirteen unittest modules of the first table | Native Windows, the system Python 3.13.3: 394 tests, 392 passed, 2 skipped (an interrupt of a detached run and a change of the process time zone need POSIX), 256.825 s | 0 |
+| Unittest modules `test_findings`, `test_acceptance`, `test_criteria_ui`, `test_workflow`, `test_recovery_checks` | Native Windows, Python 3.11.3: 125 tests passed, 117.618 s | 0 |
+| Protections | WSL2, Python 3.12.3: 197 of 197 removed safeguards detected, 0 missed (twelve of them new), 413 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.05 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed, 128 s | 0 |
+| Publication scanner, after the documentation of this review | 120 files checked; the same five findings | 1 |
+
+What the paragraph after the first table says about the scanner, the
+scripted providers, the CI checks, the real Codex sandbox and
+`tests/test_browser_tools.py` holds for this run too, and so does "Not
+verified".
 
 ## Saved criteria that cannot be read pause the task, and statuses shown as the ledger has them (October 17, 2026)
 
