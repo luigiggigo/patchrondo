@@ -76,6 +76,11 @@ class EventTests(unittest.TestCase):
         self.assertLess(len(entry["message"]), history.TEXT_LIMIT + 40)
         self.assertEqual(entry["codes"], list(range(history.LIST_LIMIT)))
         self.assertEqual((entry["nested"], entry["where"], entry["ratio"]), ({"a": {"b": {"c": None}}}, "feature.txt", None))
+        # Nothing is cut without saying so: the path of each list or object cut, and how many entries it had.
+        self.assertEqual(entry["truncated"], {"codes": 500, "nested.a.b.c": 1})
+        wide = history.append(state, "x", rows=[list(range(150))], table={str(n): n for n in range(120)})
+        self.assertEqual(wide["truncated"], {"rows.0": 150, "table": 120})
+        self.assertNotIn("truncated", history.append(state, "x", codes=list(range(history.LIST_LIMIT))))
 
     def test_a_number_goes_past_every_id_and_the_length_of_the_history(self):
         """A, C: an older history is numbered past, an ID in the history is never given again, other values take no number."""
@@ -190,6 +195,24 @@ class EngineTests(Case):
         found = Findings.load(self.state(path)).get("RF-001")
         self.assertEqual((found.status, found.verification["review"]), ("PENDING_VERIFICATION", completed["evidence"]))
         self.assertNotIn("RESOLVED", json.dumps(self.history(path)))
+
+    def test_a_review_of_more_than_a_hundred_problems_says_which_lists_were_cut(self):
+        """D: 120 findings recorded; the event keeps 100 IDs of each list, and says that and how many there were."""
+        task_id, path, _ = self.task(GOOD)
+        many = [linked(f"Problem number {n}", path=f"module_{n:03d}.py") for n in range(1, 121)]
+        state = run_task(self.home, task_id, adapter=Agents([review("CHANGES_REQUESTED", many, AC01="CODE_CHANGES_REQUIRED")]))
+        self.assertEqual(state["status"], "done")
+        names = [f"RF-{n:03d}" for n in range(1, 121)]
+        self.assertEqual([item.id for item in Findings.load(self.state(path)).items], names)
+        self.assertEqual(self.reviews(path)[0]["findings"], names)  # the ledger record names them all
+        completed = self.named(path, "review_completed")[0]
+        self.assertEqual((completed["issues"], completed["unrecorded_issues"], completed["linked_findings"]), (120, 0, []))
+        self.assertEqual((completed["finding_ids"], completed["new_findings"]), (names[:100], names[:100]))
+        self.assertEqual(completed["truncated"], {"finding_ids": 120, "new_findings": 120})
+        # The approval that follows makes all 120 wait for a verification, and says so as well.
+        done = self.named(path, "task_completed")[0]
+        self.assertEqual((done["pending_verification"], done["truncated"]), (names[:100], {"pending_verification": 120}))
+        self.assertNotIn("truncated", self.named(path, "review_completed")[1])
 
     def test_issues_recorded_under_no_finding_are_counted(self):
         """D: saved findings that cannot be read leave a review without findings; its event says how many issues that left."""

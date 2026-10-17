@@ -17,7 +17,7 @@ cannot be read pause the task, and statuses shown as the ledger has them:
 October 17, 2026. Findings of a review keep their identity: October 17, 2026.
 Findings with a criterion the task does not have, and IDs kept from the
 findings field only: October 17, 2026. Versioned workflow events: October
-17, 2026.
+17, 2026. Workflow events that say what they cut: October 17, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -98,6 +98,61 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Workflow events that say what they cut (October 17, 2026)
+
+This section covers changes on top of `c27e61f`, which holds the versioned
+workflow events of the next section: `history.py`, `tests/test_history.py`
+and three new mutation protections. The package version is unchanged, 0.2.1.
+
+**The review of `c27e61f`.** It found one problem, reproduced against the
+sources of `c27e61f`: an event kept the first 100 entries of a list and did
+not say that it had cut one. A review of 120 problems recorded 120 findings,
+and its `review_completed` listed 100 of them in `finding_ids` and
+`new_findings` with `unrecorded_issues` 0, as if the review had recorded
+only those. The findings and the ledger's `review` record kept all 120.
+
+**Changes.** The limit of 100 entries stays. `history.append` notes each
+list or object it cuts, with its path (`finding_ids`, or `table.rows` inside
+a detail) and how many entries it had, and one past the third level that it
+drops. An event with such a cut carries them in `truncated`, a field that
+`append` sets and a detail cannot (it is reserved, like the other fields of
+the event). An event with nothing cut has no `truncated`, so events saved
+before are read as they are.
+
+**Tests.** In `tests/test_history.py`, a new engine test: a review of 120
+problems, whose `review_completed` keeps 100 IDs with `"truncated":
+{"finding_ids": 120, "new_findings": 120}`, while the findings and the
+ledger record keep 120, and whose approval puts all 120 in
+`pending_verification`, with `"truncated": {"pending_verification": 120}`.
+The test of the bounds checks the paths and lengths of a list, a list inside
+a list, an object and a value past the third level, and that a list of
+exactly 100 entries gets no `truncated`. Run on native Windows with Python
+3.13.3 against the `history.py` of `c27e61f`, both failed (`KeyError:
+'truncated'`). Each of the three new protections, and the protection whose
+pattern followed the changed line, was run alone on native Windows and
+detected.
+
+Validation on October 17, 2026, of these changes, with `PATH` filtered as
+in the next section; `shutil.which` found neither `claude` nor `codex`, and
+no new file appeared under `~/.claude/projects` or `~/.codex/sessions` after
+the WSL2 runs:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| The unittest modules of the next section | Native Windows, the system Python 3.13.3: 439 tests, 435 passed, 4 skipped, 473 s | 0 |
+| `test_history`, `test_findings`, `test_acceptance`, `test_criteria_ui`, `test_workflow`, `test_recovery`, `test_recovery_checks` | Native Windows, Python 3.11.3: 208 tests, 207 passed, 1 skipped, 217 s | 0 |
+| Protections | WSL2, Python 3.12.3: 216 of 216 removed safeguards detected, 0 missed (three of them new), 443 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.05 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed, 133 s | 0 |
+| Publication scanner | 122 files checked; the same five findings as in the next section | 1 |
+
+Every provider was scripted: no model was called. Under the rule of October
+17, 2026, the full unittest matrix, the package build and `twine check` were
+not run here; neither were the opt-in tests in the real Codex sandbox, since
+the environment check did not change.
 
 ## Versioned workflow events (October 17, 2026)
 

@@ -1544,14 +1544,20 @@ detection of progress can read it beside the other three.
 | `at` | When it was recorded: UTC, PatchRondo's clock, to the second, as before |
 | `iteration` | The iteration of the task, as before |
 | `phase` | The phase the task was at when the event was recorded (`complete` for `task_completed`) |
+| `truncated` | Only in an event a detail of which was cut: the path of each list or object cut (`finding_ids`, or `table.rows` inside a detail) and how many entries it had |
 
-`history.append` sets these seven from the state and the clock. A detail
-named like one of them raises `ValueError` and appends nothing: a mistake of
-the code that calls it. The details of each kind of event are those it had,
-with the references below. Text is cut at 600 characters and passed through
-`redact`; a list or an object keeps 100 entries over three levels; a value
-JSON cannot hold is written as text, and a number that is not finite as
-null. Both writers of the history call it, `core._event` and
+`history.append` sets these from the state and the clock. A detail named
+like one of them raises `ValueError` and appends nothing: a mistake of the
+code that calls it. The details of each kind of event are those it had, with
+the references below. Text is cut at 600 characters and passed through
+`redact`, and a text that was cut says so itself (`… [+N characters]`). A
+list or an object keeps its first 100 entries, over three levels, and is
+never cut without saying so: `truncated` names it with its whole length,
+and one past the third level, which keeps nothing, with the number of
+entries it had (since October 17, 2026; until then a list was cut without a
+mark). `truncated` names at most 100 paths. A value JSON cannot hold is
+written as text, and a number that is not finite as null. Both writers of
+the history call it, `core._event` and
 `recovery._audit`, so the events of quota recovery, `recovery_wait_started`
 of a waiting supervisor included, are numbered with those of the engine.
 
@@ -1624,5 +1630,9 @@ task with ten older events.
   the state, and nothing notices it.
 - `at` has a resolution of one second; the order of the list is the order of
   the events.
-- A list in an event stops at 100 entries; the counts beside it (`issues`,
-  `unrecorded_issues`, `records`) are complete.
+- A list in an event stops at 100 entries. A review of 120 problems lists
+  100 of them in `finding_ids` and `new_findings`, with `"truncated":
+  {"finding_ids": 120, "new_findings": 120}`; the ledger's `review` record
+  and the findings keep all 120. The whole length of a list is its entry in
+  `truncated` when there is one, otherwise its length. The counts beside the
+  lists (`issues`, `unrecorded_issues`, `records`) are never cut.

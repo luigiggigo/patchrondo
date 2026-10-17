@@ -9,6 +9,23 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Workflow events say what they cut — October 17, 2026
+
+- **A list cut short in an event is no longer taken for the whole of it.**
+  An event keeps the first 100 entries of a list, and said nothing when it
+  cut one: the `review_completed` of a review of 120 problems listed 100
+  findings in `finding_ids` with `unrecorded_issues` 0, as if the review had
+  recorded only those. The limit stays; an event a detail of which was cut
+  now carries `truncated`, the path of each list or object cut with how many
+  entries it had (`{"finding_ids": 120, "new_findings": 120}`), and so does a
+  `pending_verification` of more than 100 findings. The findings and the
+  ledger's `review` record kept all of them before and still do. Events
+  saved before stay as they were.
+- `tests/test_history.py` has a review of 120 problems and checks the paths
+  and lengths of lists and objects cut inside a detail. Three new mutation
+  protections remove the notice one way each, and the pattern of one
+  existing protection follows the changed line.
+
 ### Workflow events are versioned and identified — October 17, 2026
 
 - **Every event written to a task's history has an identity.** Besides
