@@ -377,12 +377,12 @@ def _record_review(path: Path, state: dict, review: dict, current: str, run_dir:
 
 
 def _findings(state: dict, path: Path) -> findings.Findings | None:
-    """The findings of the task's reviews, with every ID its ledgers ever named kept from new problems. Under the task lock.
+    """The findings of the task's reviews, with every ID the review records of its ledgers named kept from new problems.
 
-    None when the saved record cannot be read, or a ledger cannot be, since
-    then which IDs are taken is not known. The record is never replaced: the
-    review goes on as it would without findings, its issues linked to
-    nothing, and the history says so.
+    Called under the task lock. None when the saved record cannot be read,
+    or a ledger cannot be, since then which IDs are taken is not known. The
+    record is never replaced: the review goes on as it would without
+    findings, its issues linked to nothing, and the history says so.
     """
     try:
         registry = findings.Findings.load(state)

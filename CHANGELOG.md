@@ -9,6 +9,31 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Findings: a criterion the task does not have links nothing, and free text takes no ID — October 17, 2026
+
+- **A `criterion_id` the task does not have is no longer taken for none.**
+  An issue naming one (`AC-999` in a task with `AC-01` only) was compared as
+  an issue about no criterion, so a review could link it, by its ID or by
+  its words, to a finding about none. Such an issue is now linked to
+  nothing; a claim is refused ("the issue names a criterion this task does
+  not have"), and the finding it becomes keeps the value in
+  `unknown_criterion` and is never linked either. A missing, null or empty
+  value still names no criterion. A finding saved without a criterion before
+  this change may have come from such an issue, since both were saved the
+  same way: it is read with `unknown_criterion` `""`, is never linked again,
+  and its history stays as it is.
+- **Only the `findings` field of the ledgers' records keeps an ID from new
+  problems.** Every ID-shaped text of a ledger did, a summary the user typed
+  included, so a note quoting `RF-999999` used up the numbers and no new
+  finding got an ID afterwards. `findings.named` now reads the `findings`
+  field of each record, in the text of each line so that a record cut short
+  by a crash or damaged is read up to where its list or the line ends, in
+  the active ledger and in each ledger put aside. Inside a JSON string a
+  quote is always written `\"`, so text cannot pass for that field.
+- `tests/test_findings.py` has two new tests and two extended ones, and nine
+  new mutation protections in `tools/recovery_checks.py` remove one
+  safeguard each. Findings still decide nothing: the loop decides as before.
+
 ### Findings of a review keep their identity — October 17, 2026
 
 - **Each problem a reviewer reports gets an ID that it keeps across

@@ -15,6 +15,8 @@ update: October 16, 2026. Criteria records kept when they cannot be read:
 October 16, 2026, validated on October 16 and 17, 2026. Saved criteria that
 cannot be read pause the task, and statuses shown as the ledger has them:
 October 17, 2026. Findings of a review keep their identity: October 17, 2026.
+Findings with a criterion the task does not have, and IDs kept from the
+findings field only: October 17, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -95,6 +97,104 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Findings with a criterion the task does not have, and IDs kept from the findings field only (October 17, 2026)
+
+This section covers changes on top of `40c5e5c`, which holds the findings of
+the next section: `findings.py`, the docstring of `core._findings`,
+`tests/test_findings.py` and nine new mutation protections. The package
+version is unchanged, 0.2.1.
+
+**The review of `40c5e5c`.** It found two problems, both reproduced against
+the sources of `40c5e5c`:
+
+- **A criterion the task does not have was taken for none.** `_identity`
+  turned such a `criterion_id` into `None`, the value of an issue about no
+  criterion. In a task with `AC-01` only, an issue naming `AC-999` with
+  `finding_id` `RF-001`, a finding about no criterion with the same kind and
+  file, was linked to it (`explicit`).
+- **Free text could use up the numbers.** `findings.named` took anything
+  shaped like a finding ID anywhere in a ledger. A `manual` record whose
+  summary quoted `RF-999999` moved `next` past the last number, and no new
+  finding got an ID afterwards.
+
+**Changes.**
+
+- `_criterion` tells a criterion of the task, none (missing, null or empty)
+  and any other value apart. An issue with another value is linked to
+  nothing: a claim is refused ("the issue names a criterion this task does
+  not have"), and the rule of identical words passes it over. The finding it
+  becomes keeps the value, shortened, in a new field `unknown_criterion`,
+  and is never linked either: a claim for it is refused, the rule of
+  identical words passes it over, and `observe` records no issue under it.
+  The reviewer is shown such a finding with "(not a criterion of this task)"
+  and told that an issue naming a criterion the task does not have is
+  recorded as a new problem.
+- A finding saved before `unknown_criterion` existed, without a criterion,
+  may have come from such an issue: both were saved the same way. `load`
+  reads it with `unknown_criterion` `""`, which is saved back as such, so it
+  is never linked and its history stays as it is (a claim is refused: "that
+  finding was saved before a criterion the task does not have was kept").
+  One saved with a criterion of the task is unaffected. `load` refuses an
+  `unknown_criterion` that is not text, or one beside a `criterion_id`.
+- `findings.named` reads only the `findings` field of each record, in the
+  text of each line and up to where its list or the line ends, so a review
+  record cut short by a crash, or damaged, still keeps the IDs it shows. The
+  active ledger and each ledger put aside are read as before. Inside a JSON
+  string `json.dumps` always writes a quote as `\"`, so other text cannot
+  pass for that field, not even text that writes its key out.
+
+**Where this goes beyond the request, and why.** The request named the
+issue's side: refuse a link when the issue names a criterion that is not
+valid. Linking an issue about no criterion to a finding that came from such
+an issue is the same confusion the other way round, so that finding is never
+linked either. The rule for findings saved before follows the one for files
+saved shortened: a value that cannot be told apart is not presumed to match.
+
+**Tests.** In `tests/test_findings.py`, two new tests:
+`test_a_criterion_the_task_does_not_have_is_not_taken_for_none` (claims and
+identical words refused both ways, a value padded with spaces, one that is
+not text, an empty one that names none, the prompt, and `observe` refusing
+crafted links) and
+`test_a_finding_saved_without_a_criterion_before_unknown_ones_were_kept_is_never_linked`.
+`test_an_id_is_never_given_twice` now expects the IDs of the `findings`
+fields only: a summary quoting `RF-009`, `RF-999999` and the key of the
+field with `RF-999998`, a note and a line typed by hand take no number,
+while a review record cut short at the end of the active ledger and one in
+a ledger put aside keep theirs, and `core._findings` reserves up to
+`RF-021`. The test of what `load` refuses has two more cases. Run on native
+Windows with Python 3.13.3 against the sources of `40c5e5c`, with the new
+tests, they failed with four failures and one error, each for the reason
+expected: the issue naming `AC-999` was linked to `RF-001` (`explicit`);
+`named` also returned `RF-009` and `RF-999995` to `RF-999999`; the two new
+`load` cases were read; the test of a finding saved before stops with a
+`KeyError`, since that version saved no `unknown_criterion`. Each of the
+nine new protections was run alone on native Windows and detected. The
+decisions of the scenario recorded before findings (`DECIDED`) are
+unchanged.
+
+Validation on October 17, 2026, of these changes. In WSL2, `~/.local/bin`
+and `/usr/local/bin` were removed from `PATH`; on native Windows,
+`.local\bin` and the WinGet links. `shutil.which` found neither `claude` nor
+`codex` in either, and no new file appeared under `~/.claude/projects` or
+`~/.codex/sessions` after the WSL2 runs:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Unittest modules `test_findings`, `test_acceptance`, `test_criteria_ui`, `test_workflow`, `test_recovery_checks` | Native Windows, the system Python 3.13.3: 127 tests passed, 104 s | 0 |
+| The same modules | Native Windows, Python 3.11.3: 127 tests passed, 119 s | 0 |
+| Protections | WSL2, Python 3.12.3: 206 of 206 removed safeguards detected, 0 missed (nine of them new), 400 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.05 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed, 125 s | 0 |
+| Publication scanner | 120 files checked; the same five findings as in the next section | 1 |
+
+Every provider was scripted: no model was called. Under the rule of October
+17, 2026, the full unittest matrix, the package build and `twine check` were
+not run here. The opt-in tests in the real Codex sandbox were not run: the
+environment check did not change. What the next section says under "Not
+verified" holds for this change too.
 
 ## Findings of a review keep their identity (October 17, 2026)
 

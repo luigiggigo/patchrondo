@@ -18,6 +18,13 @@ two fixed rules only, never by similarity:
     identical   it gives no `finding_id`, and exactly one finding no other issue of the review
                 took has the same kind, file, criterion and description (spaces and case aside)
 
+A criterion is compared only when it is known. An issue whose `criterion_id`
+is not empty and not a criterion of the task is not taken for an issue about
+none: it is linked to nothing, and the finding it becomes keeps what it
+named (`unknown_criterion`) and is never linked again. So is a finding saved
+without a criterion before that was kept: whether it named another is not
+known.
+
 The file and the words are compared whole, through the SHA-256 of their
 normalized text (`path_key`, `words_key`); `path` and `description` are
 shortened copies kept to be shown, and are never compared. A finding saved
@@ -25,10 +32,12 @@ before the keys existed gets them only from a copy that nothing was cut
 from; otherwise it is never linked again, and its history stays as it is.
 
 Any other issue is a new finding; an ID it claimed is kept with it, refused,
-with the reason. A new finding takes a number past every ID the task's
-findings or any of its ledgers ever named, the ledgers put aside by
-`evidence.restart` included, so an ID never comes to mean another problem,
-not even after a crash between the ledger and the state.
+with the reason. A new finding takes a number past every ID of the task's
+findings and every ID the review records of any of its ledgers named, the
+ledgers put aside by `evidence.restart` included, so an ID never comes to
+mean another problem, not even after a crash between the ledger and the
+state. An ID quoted in other text of a ledger (a summary, a reason) takes no
+number: free text cannot use up the numbers.
 
 `owner`, `actionable_now` and `blocking` follow from the kind of the issue
 and the plan of the task by fixed rules: the reviewer sets none of them, nor
@@ -60,7 +69,10 @@ from .activity import clip, redact
 
 VERSION = 1
 FINDING_ID = re.compile(r"RF-(\d{3,6})")
-_NAMED = re.compile(r"(?<![A-Za-z0-9])RF-(\d{3,6})(?!\d)")  # a finding ID anywhere in the text of a ledger
+_NAMED = re.compile(r"(?<![A-Za-z0-9])RF-(\d{3,6})(?!\d)")  # a finding ID in the `findings` field of a ledger's record
+# That field in the text of a ledger, up to the end of its list or of its line. Inside a JSON string `json.dumps` always
+# writes a quote as `\"`, so a summary or a reason that quotes this key never matches: only a record's own key does.
+_FIELD = re.compile(r'[{,]"findings":\[([^\]\n]*)')
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 MAX_NUMBER = 999_999  # the last number an ID can have
 SEVERITIES = ("low", "medium", "high", "critical")
@@ -106,6 +118,8 @@ class Finding:
     claimed: dict | None = None       # an ID the reviewer gave this issue that was refused: {"id", "reason"}
     path_key: str | None = None       # SHA-256 of the whole file as compared; None: saved shortened, it compares with nothing
     words_key: str | None = None      # SHA-256 of the whole description as compared; None: none, or saved shortened
+    unknown_criterion: str | None = None  # a criterion it named that the task does not have, shortened; "": saved before
+                                          # this was kept, without a criterion. Either way it compares with nothing
 
     @property
     def identity(self) -> tuple:
@@ -118,10 +132,12 @@ class Finding:
         first, last, kind, criterion = (raw.get("first_seen_iteration"), raw.get("last_seen_iteration"), raw.get("kind"),
                                         raw.get("criterion_id"))
         reported, verified, claimed = raw.get("reported_in"), raw.get("verification"), raw.get("claimed")
+        unknown = raw.get("unknown_criterion")
         text = lambda value: isinstance(value, str)  # noqa: E731
         unread = [name for name, readable in (
             ("kind", kind is None or (text(kind) and kind in ISSUE_KINDS)),
             ("criterion", criterion is None or (text(criterion) and CRITERION_ID.fullmatch(criterion) is not None)),
+            ("unknown criterion", unknown is None or (text(unknown) and criterion is None)),
             ("text", text(raw.get("path")) and text(raw.get("description"))),
             ("severity", text(raw.get("severity")) and raw["severity"] in SEVERITIES),
             ("owner", text(raw.get("owner")) and raw["owner"] in OWNERS),
@@ -146,11 +162,16 @@ class Finding:
         path_key = raw["path_key"] if "path_key" in raw else _key(raw["path"]) if len(raw["path"]) <= PATH_LIMIT else None
         words_key = raw["words_key"] if "words_key" in raw \
             else _words_key(raw["description"]) if len(raw["description"]) <= TEXT_LIMIT else None
+        # Saved before a criterion the task does not have was kept apart from none: one saved without a criterion may
+        # have named such a criterion, so it is not presumed to have named none.
+        if "unknown_criterion" not in raw:
+            unknown = None if criterion is not None else ""
         return cls(id=raw["id"], kind=kind, path=raw["path"], criterion_id=criterion, severity=raw["severity"],
                    description=raw["description"], owner=raw["owner"], actionable_now=raw["actionable_now"],
                    blocking=raw["blocking"], status=raw["status"], first_seen_iteration=first, last_seen_iteration=last,
                    reported_in=list(reported), verification=dict(verified) if verified else None,
-                   claimed=dict(claimed) if claimed else None, path_key=path_key, words_key=words_key)
+                   claimed=dict(claimed) if claimed else None, path_key=path_key, words_key=words_key,
+                   unknown_criterion=unknown)
 
 
 def _number(name: str) -> int:
@@ -185,11 +206,28 @@ def _words_key(text: str) -> str | None:
     return _key(words) if words else None
 
 
-def _identity(issue: dict, known) -> tuple:
-    """Kind, file and criterion of an issue: what has to match before it is linked to a finding. The file is its key."""
-    kind, criterion = issue.get("kind"), issue.get("criterion_id")
-    criterion = criterion.strip() if isinstance(criterion, str) else None
-    return kind if kind in ISSUE_KINDS else None, _key(_file(issue.get("path"))), criterion if criterion in known else None
+def _criterion(issue: dict, known) -> tuple[str | None, str | None]:
+    """The criterion of the task an issue named, and what it named instead when the task has no such criterion.
+
+    A missing, null or empty `criterion_id` names none: (None, None). Any
+    other value that is not one of `known` is not taken for none: it comes
+    back, shortened, as the second item, and the issue is linked to nothing.
+    """
+    value = issue.get("criterion_id")
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None, None
+    value = value.strip() if isinstance(value, str) else str(value)
+    return (value, None) if value in known else (None, clip(redact(value), 40))
+
+
+def _identity(issue: dict, known) -> tuple[tuple, str | None]:
+    """Kind, file and criterion of an issue: what has to match before it is linked to a finding. The file is its key.
+
+    With it comes what the issue named as its criterion when the task has no
+    such criterion (`_criterion`): then nothing matches.
+    """
+    kind, (criterion, unknown) = issue.get("kind"), _criterion(issue, known)
+    return (kind if kind in ISSUE_KINDS else None, _key(_file(issue.get("path"))), criterion), unknown
 
 
 def _about(issue: dict, kind: str | None, criterion_id: str | None, plan) -> tuple[str, bool, bool]:
@@ -225,16 +263,17 @@ def _about(issue: dict, kind: str | None, criterion_id: str | None, plan) -> tup
 
 
 def named(task_path: Path) -> set[str]:
-    """Finding IDs that any ledger of the task ever named: none of them goes to a new problem.
+    """Finding IDs that the review records of any ledger of the task named: none of them goes to a new problem.
 
-    The active ledger and every ledger `evidence.restart` put aside are
-    searched as text, line by line and whatever state a line is in, for
-    anything shaped like a finding ID: a ledger put aside may hold the only
-    copy of a review record whose state was never saved. They are read only,
-    and nothing read here counts as evidence. An ID in other text (a summary
-    the user typed) is kept from new problems too, which costs a number.
-    Raises OSError when a ledger cannot be read: then which IDs are taken is
-    not known.
+    The active ledger and every ledger `evidence.restart` put aside are read
+    for the `findings` field of their records, in the text of each line and
+    whatever state a line is in: a ledger put aside may hold the only copy of
+    a review record whose state was never saved, and a line cut short by a
+    crash, or damaged, is read up to where its list or the line ends. Other
+    text (a summary the user typed, a reason) is not searched, so an ID
+    quoted there takes no number. The files are read only, and nothing read
+    here counts as evidence. Raises OSError when a ledger cannot be read:
+    then which IDs are taken is not known.
     """
     names = set()
     for file in (task_path / evidence.LEDGER, *sorted(task_path.glob(evidence.ARCHIVED))):
@@ -242,7 +281,8 @@ def named(task_path: Path) -> set[str]:
             data = file.read_bytes()
         except FileNotFoundError:
             continue
-        names.update(match.group(0) for match in _NAMED.finditer(data.decode("utf-8", "replace")))
+        names.update(match.group(0) for field in _FIELD.finditer(data.decode("utf-8", "replace"))
+                     for match in _NAMED.finditer(field.group(1)))
     return names
 
 
@@ -316,14 +356,14 @@ class Findings:
         room, used, issues = min(MAX_FINDINGS - len(self.items), MAX_NUMBER + 1 - number), set(), []
         for raw in review.get("issues") or []:
             issue = {key: value for key, value in raw.items() if key not in ANNOTATIONS}
-            identity = _identity(raw, known)
+            identity, unknown = _identity(raw, known)
             claim = raw["finding_id"].strip() if isinstance(raw.get("finding_id"), str) else ""
             refusal = None
             if claim:
-                found, refusal = self._claimed(claim, identity, used)
+                found, refusal = self._claimed(claim, identity, unknown, used)
                 link = "explicit"
             else:
-                found, link = self._identical(identity, _words_key(_description(raw)), used), "identical"
+                found, link = self._identical(identity, unknown, _words_key(_description(raw)), used), "identical"
             if found is not None:
                 issue.update(finding_id=found.id, finding_link=link)
             elif room > 0:
@@ -335,15 +375,20 @@ class Findings:
             issues.append(issue)
         return {**review, "issues": issues}
 
-    def _claimed(self, claim: str, identity: tuple, used: set) -> tuple[Finding | None, str | None]:
+    def _claimed(self, claim: str, identity: tuple, unknown: str | None, used: set) -> tuple[Finding | None, str | None]:
         """The finding an explicit `finding_id` links to, or why it links to none."""
         if not FINDING_ID.fullmatch(claim):
             return None, "it is not a finding ID"
+        if unknown is not None:
+            return None, "the issue names a criterion this task does not have"
         found = self.get(claim)
         if found is None:
             return None, "no finding of this task has that ID"
         if found.path_key is None:
             return None, "the file of that finding was saved shortened: it cannot be compared"
+        if found.unknown_criterion is not None:
+            return None, ("that finding names a criterion this task does not have: it cannot be compared" if found.unknown_criterion
+                          else "that finding was saved before a criterion the task does not have was kept: it cannot be compared")
         differs = [name for name, mine, theirs in zip(("kind", "file", "criterion"), found.identity, identity) if mine != theirs]
         if differs:
             return None, f"that finding has another {', '.join(differs)}"
@@ -351,10 +396,15 @@ class Findings:
             return None, "another issue of the same review was linked to it"
         return found, None
 
-    def _identical(self, identity: tuple, words: str | None, used: set) -> Finding | None:
-        """The one finding an issue without an ID repeats word for word; None when there is not exactly one."""
-        same = [item for item in self.items if item.id not in used and item.identity == identity
-                and words is not None and item.words_key == words]
+    def _identical(self, identity: tuple, unknown: str | None, words: str | None, used: set) -> Finding | None:
+        """The one finding an issue without an ID repeats word for word; None when there is not exactly one.
+
+        A criterion the task does not have, named by the issue or kept by a finding, matches nothing.
+        """
+        if unknown is not None:
+            return None
+        same = [item for item in self.items if item.id not in used and item.unknown_criterion is None
+                and item.identity == identity and words is not None and item.words_key == words]
         return same[0] if len(same) == 1 else None
 
     def observe(self, review: dict, record: str, iteration: int, plan) -> list[str]:
@@ -362,7 +412,8 @@ class Findings:
 
         A review already recorded is not recorded again. A finding is never
         given the identity of another: an issue whose kind, file or criterion
-        differs from the finding its ID names is left out.
+        differs from the finding its ID names is left out, and so is one where
+        either names a criterion the task does not have.
         """
         if record in self.reviews:
             return []
@@ -372,7 +423,7 @@ class Findings:
             name = issue.get("finding_id")
             if not isinstance(name, str) or not FINDING_ID.fullmatch(name) or name in recorded:
                 continue
-            identity = _identity(issue, known)
+            identity, unknown = _identity(issue, known)
             owner, actionable, blocking = _about(issue, identity[0], identity[2], plan)
             description = _description(issue)
             found = self.get(name)
@@ -383,11 +434,13 @@ class Findings:
                                 actionable_now=actionable, blocking=blocking, first_seen_iteration=iteration,
                                 last_seen_iteration=iteration,
                                 claimed={"id": claim, "reason": str(issue.get("finding_refusal") or "")} if claim else None,
-                                path_key=identity[1], words_key=_words_key(description))
+                                path_key=identity[1], words_key=_words_key(description), unknown_criterion=unknown)
                 self.items.append(found)
                 self.next = max(self.next, _number(name) + 1)
             elif found.identity != identity or issue.get("finding_link") == "new":
                 continue
+            elif unknown is not None or found.unknown_criterion is not None:
+                continue  # a criterion the task does not have: whether it is the same problem cannot be told
             else:
                 found.severity, found.description, found.owner = issue.get("severity"), clip(description, TEXT_LIMIT), owner
                 found.words_key, found.actionable_now, found.blocking = _words_key(description), actionable, blocking
@@ -415,8 +468,10 @@ class Findings:
     def brief(self) -> str:
         """The part of the reviewer's prompt with the findings of earlier reviews and how to name one again."""
         listed = sorted(self.items, key=lambda item: (item.last_seen_iteration, _number(item.id)), reverse=True)[:BRIEF_LIMIT]
+        about = lambda item: (f"{item.unknown_criterion} (not a criterion of this task)" if item.unknown_criterion  # noqa: E731
+                              else item.criterion_id or "no criterion")
         rows = [f"- {item.id} [{item.status}] {item.kind or 'no kind'} · {item.path or 'no file'} · "
-                f"{item.criterion_id or 'no criterion'} · iterations {item.first_seen_iteration}–{item.last_seen_iteration}: "
+                f"{about(item)} · iterations {item.first_seen_iteration}–{item.last_seen_iteration}: "
                 f"{clip(item.description, 300)}" for item in listed]
         more = [f"- … {len(self.items) - len(listed)} earlier findings are not listed"] if len(self.items) > len(listed) else []
         return "\n".join([
@@ -426,7 +481,8 @@ class Findings:
             "", "When an issue you report is one of these problems again, give its ID in `finding_id`, with the same `kind`, "
             "the same file in `path` and the same `criterion_id`; describe it in your own words. An ID given to an issue of "
             "another kind, file or criterion is not accepted, and the issue is recorded as a new problem. Leave `finding_id` "
-            "empty for any other problem. `criterion_id` is the criterion an issue is about (such as AC-01), or empty. Do not "
+            "empty for any other problem. `criterion_id` is the criterion an issue is about (such as AC-01), or empty; an issue "
+            "that names a criterion this task does not have is recorded as a new problem. Do not "
             "report a problem you found fixed: leaving it out is not taken as proof that it is fixed.",
         ]) + "\n"
 

@@ -1296,7 +1296,7 @@ checkpoint of the review, once a review has reported an issue:
     "severity": "high", "description": "Still no newline at the end",
     "owner": "developer", "actionable_now": true, "blocking": true, "status": "OPEN",
     "first_seen_iteration": 1, "last_seen_iteration": 2, "reported_in": ["E-0002", "E-0004"],
-    "verification": null, "claimed": null, "path_key": "5f2c…", "words_key": "a91e…"
+    "verification": null, "claimed": null, "path_key": "5f2c…", "words_key": "a91e…", "unknown_criterion": null
   }]
 }
 ```
@@ -1305,6 +1305,7 @@ checkpoint of the review, once a review has reported an issue:
 |---|---|---|
 | `id` | `RF-` and a number: unique in the task, never given to another problem | PatchRondo |
 | `kind`, `path_key`, `criterion_id` | The identity: the kind of the issue (null for an answer without kinds), the SHA-256 of the whole file it named without a line after it, the criterion of the task it named | The issue, checked |
+| `unknown_criterion` | What the issue gave as its criterion when the task has no such criterion, shortened; `""` for a finding saved without a criterion before this field existed. Either way the finding is never linked | The issue, checked |
 | `path`, `severity`, `description` | As last reported; `path` and `description` shortened to be shown (300 and 600 characters) and never compared | The issue |
 | `words_key` | The SHA-256 of the whole last description, spaces and case aside; null for one without words | PatchRondo |
 | `owner` | `developer` for `CODE_CHANGES_REQUIRED` or no kind (what goes back to the developer), `nobody` for `OBSERVATION`, `user` for `MANUAL_ACTION_REQUIRED`, `APPROVAL_REQUIRED` and `CAPABILITY_BLOCKED`, the criterion's verifier for `VALIDATION_REQUIRED` (`runtime` or `user`), otherwise `unknown` | A fixed rule |
@@ -1337,6 +1338,16 @@ ledger names the findings of its issues (`findings`).
   matched by similarity. Any other issue is a new finding, which keeps a claim
   it made, refused, with the reason: not an ID, an ID the task does not have,
   another kind, file or criterion, or an ID another issue took.
+- A criterion is compared only when it is known. A missing, null or empty
+  `criterion_id` names no criterion; any other value that is not a criterion
+  of the task (`AC-999` in a task with `AC-01` only, a number) is not taken
+  for none. Such an issue is linked to nothing, by its ID or by its words (a
+  claim is refused: "the issue names a criterion this task does not have"),
+  and the finding it becomes keeps the value in `unknown_criterion` and is
+  never linked either. A finding saved without a criterion before the field
+  existed may have come from such an issue, since both were saved as none:
+  it is read with `unknown_criterion` `""`, never linked, and its history
+  stays as it is.
 - The file and the words are compared whole, through the SHA-256 of their
   normalized text (`path_key`, `words_key`). `path` and `description` are
   shortened copies kept to be shown, and two values that differ only past
@@ -1346,9 +1357,14 @@ ledger names the findings of its issues (`findings`).
   it is refused: its file "was saved shortened"), and its history stays as it
   is.
 - A new finding is numbered past every ID of the saved findings and every
-  finding ID in the text of the task's ledger and of each ledger
-  `evidence.restart` put aside (`evidence.ARCHIVED`). Those files are searched
-  line by line, whatever state a line is in, and only read: nothing read
+  finding ID in the `findings` field of the records of the task's ledger and
+  of each ledger `evidence.restart` put aside (`evidence.ARCHIVED`). The
+  field is read in the text of each line, whatever state the line is in: a
+  record cut short by a crash, or damaged, is read up to where its list or
+  the line ends. Other text, a summary the user typed or a reason, is not
+  searched: inside a JSON string a quote is always written `\"`, so not even
+  the key of the field written out in a summary matches, and an ID quoted
+  there (`RF-999999`) takes no number. The files are only read: nothing read
   there counts as evidence. An ID written by a review whose state was never
   saved, because the process ended in between, is therefore not given again,
   also after that ledger was found damaged and started again. A ledger that

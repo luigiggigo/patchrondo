@@ -207,6 +207,55 @@ class FindingTests(unittest.TestCase):
                          [("RF-001", None), ("RF-002", "another issue of the same review was linked to it"), ("RF-003", None)])
         self.assertEqual((registry.get("RF-001").description, registry.get("RF-003").claimed), ("one", None))
 
+    def test_a_criterion_the_task_does_not_have_is_not_taken_for_none(self):
+        """An issue that names such a criterion links nothing, and the finding it becomes is never linked; an empty one names none."""
+        registry, criteria = Findings(), plan()  # AC-01 only
+        recorded(registry, [linked(NEWLINE)], "E-0002", 1, criteria)  # RF-001, about no criterion
+        before = registry.dump()["items"]
+        settled = recorded(registry, [linked("Still no newline", "RF-001", "AC-999"), linked(NEWLINE, criterion_id=" AC-999 "),
+                                      {**linked(NEWLINE), "criterion_id": 7}], "E-0003", 2, criteria)
+        self.assertEqual([(item["finding_id"], item["finding_link"], item.get("finding_refusal")) for item in settled["issues"]],
+                         [("RF-002", "new", "the issue names a criterion this task does not have"), ("RF-003", "new", None),
+                          ("RF-004", "new", None)])
+        self.assertEqual(registry.dump()["items"][:1], before)  # RF-001 is as it was
+        self.assertEqual([(registry.get(name).criterion_id, registry.get(name).unknown_criterion) for name in ("RF-002", "RF-003", "RF-004")],
+                         [(None, "AC-999"), (None, "AC-999"), (None, "7")])
+        self.assertEqual(registry.get("RF-002").claimed, {"id": "RF-001", "reason": "the issue names a criterion this task does not have"})
+        self.assertIn("- RF-002 [OPEN] CODE_CHANGES_REQUIRED · feature.txt · AC-999 (not a criterion of this task) · ", registry.brief())
+        settled = recorded(registry, [linked(NEWLINE, "RF-003", ""), linked(NEWLINE, "RF-002", "AC-999"),
+                                      linked(NEWLINE, criterion_id="AC-999"), linked(NEWLINE, criterion_id="  ")], "E-0004", 3, criteria)
+        self.assertEqual([(item["finding_id"], item["finding_link"], item.get("finding_refusal")) for item in settled["issues"]],
+                         [("RF-005", "new", "that finding names a criterion this task does not have: it cannot be compared"),
+                          ("RF-006", "new", "the issue names a criterion this task does not have"), ("RF-007", "new", None),
+                          ("RF-001", "identical", None)])
+        self.assertEqual([registry.get(name).reported_in for name in ("RF-001", "RF-002", "RF-003")], [["E-0002", "E-0004"], ["E-0003"], ["E-0003"]])
+        # Recording never puts such an issue under a finding, nor an issue under such a finding.
+        kept = registry.dump()["items"]
+        for crafted in ({**linked(NEWLINE, criterion_id="AC-999"), "finding_id": "RF-001", "finding_link": "identical"},
+                        {**linked(NEWLINE), "finding_id": "RF-002", "finding_link": "explicit"}):
+            with self.subTest(issue=crafted):
+                self.assertEqual(registry.observe(review("CHANGES_REQUESTED", [crafted]), "E-0009", 4, criteria), [])
+                self.assertEqual(registry.dump()["items"], kept)
+                registry.reviews.remove("E-0009")
+
+    def test_a_finding_saved_without_a_criterion_before_unknown_ones_were_kept_is_never_linked(self):
+        """Saved when an unknown criterion was also saved as none: whether it named one is not known, and it stays so."""
+        registry = Findings()
+        recorded(registry, [linked(NEWLINE), linked("README.md says nothing", criterion_id="AC-01", path="README.md")], "E-0002", 1)
+        saved = json.loads(json.dumps(registry.dump()))
+        for item in saved["items"]:
+            del item["unknown_criterion"]  # as saved before the correction
+        old = Findings.load({"findings": saved})
+        self.assertEqual([item.unknown_criterion for item in old.items], ["", None])
+        settled = recorded(old, [linked(NEWLINE, "RF-001", ""), linked(NEWLINE),
+                                 linked("Other words", "RF-002", "AC-01", path="README.md")], "E-0003", 2)
+        self.assertEqual([(item["finding_id"], item["finding_link"], item.get("finding_refusal")) for item in settled["issues"]],
+                         [("RF-003", "new", "that finding was saved before a criterion the task does not have was kept: it cannot be compared"),
+                          ("RF-004", "new", None), ("RF-002", "explicit", None)])
+        self.assertEqual({key: old.dump()["items"][0][key] for key in saved["items"][0]}, saved["items"][0])  # its history is untouched
+        self.assertIn("- RF-001 [OPEN] CODE_CHANGES_REQUIRED · feature.txt · no criterion · ", old.brief())
+        self.assertEqual(Findings.load({"findings": old.dump()}).get("RF-001").unknown_criterion, "")  # saved again, still not known
+
     def test_an_issue_repeated_word_for_word_is_linked_only_when_one_finding_matches(self):
         registry = Findings()
         recorded(registry, [linked("Missing   final newline", criterion_id="AC-01")], "E-0002", 1)
@@ -252,11 +301,21 @@ class FindingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             task = Path(folder)
             evidence.append(task, "review", findings=["RF-004", 3])
-            evidence.append(task, "manual", summary="Checked what RF-009 asked for")
-            # A ledger put aside is searched as text, whatever state its lines are in.
+            # Free text takes no number: neither an ID quoted in it nor the key of the field written out in it.
+            evidence.append(task, "manual", summary='Checked what RF-009 and RF-999999 asked for ","findings":["RF-999998"]')
+            evidence.append(task, "review", findings=["RF-020", "RF-021"])
+            ledger = task / evidence.LEDGER
+            data = ledger.read_bytes()
+            ledger.write_bytes(data[:data.rindex(b'"RF-021"') + len(b'"RF-021"')])  # its last record cut short by a crash
+            self.assertTrue(evidence.read(task).incomplete)
+            # A ledger put aside is read whatever state its lines are in, the field only.
             (task / "evidence.damaged-1-20261017T000000.jsonl").write_bytes(
-                b'{"kind":"review","findings":["RF-012"\n{"note": "RF-1234567 XRF-013 RF-12"}\n')
-            self.assertEqual(findings.named(task), {"RF-004", "RF-009", "RF-012"})
+                b'{"findings":["RF-1234567","XRF-013","RF-12","RF-014"],"kind":"review","summary":"RF-999997"}\n'
+                b'{"note": "RF-999996 in a note"}\nRF-999995 typed by hand\n{"kind":"review","findings":["RF-012","RF-0')
+            self.assertEqual(findings.named(task), {"RF-004", "RF-012", "RF-014", "RF-020", "RF-021"})
+            state = {"history": [], "iteration": 1}
+            self.assertEqual(core._findings(state, task).next, 22)  # what the engine reserves before a review
+            self.assertEqual(state["history"], [])
             (task / "evidence.damaged-2-20261017T000001.jsonl").mkdir()  # one that cannot be read
             with self.assertRaises(OSError):
                 findings.named(task)
@@ -305,7 +364,8 @@ class FindingTests(unittest.TestCase):
                     changed(first_seen_iteration=0), changed(first_seen_iteration=3), changed(last_seen_iteration=True),
                     changed(reported_in=["x"]), changed(reported_in="E-0002"), changed(verification={"review": "E-1", "iteration": 2}),
                     changed(verification={"review": "E-0003", "iteration": "2"}), changed(claimed={"id": 3, "reason": ""}),
-                    changed(path=None), changed(description=4), changed(path_key="feature.txt"), changed(words_key=5)):
+                    changed(path=None), changed(description=4), changed(path_key="feature.txt"), changed(words_key=5),
+                    changed(unknown_criterion=5), changed(unknown_criterion="AC-999")):  # the last one with a criterion of the task
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 Findings.load({"findings": bad})
 
