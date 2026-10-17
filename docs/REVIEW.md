@@ -30,9 +30,9 @@ working tree at its date.
 ## Current source and CI status (October 17, 2026)
 
 GitHub API and `gh run list` were checked for this alignment on October 17,
-2026. Remote `main` matches checkout `753d957f9a5d96d6169790dc9faadbeabfa1e314`,
-one commit after the requested baseline `15750e6`. The working tree was clean
-at the start. That commit implements the verification runner and corrects the
+2026. Remote `main` returned `753d957f9a5d96d6169790dc9faadbeabfa1e314`,
+one implementation commit after the requested baseline `15750e6`.
+That commit implements the verification runner and corrects the
 history-test import error. Package metadata remains 0.2.1; the implemented
 Phase 1 is now grouped under the 0.3.0 development series in the changelog.
 No version tags or GitHub Releases were returned.
