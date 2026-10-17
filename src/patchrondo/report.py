@@ -2,6 +2,7 @@
 from __future__ import annotations
 from pathlib import Path
 import subprocess
+from .acceptance import Acceptance
 from .activity import clip, redact
 from .gitops import changes, stat
 
@@ -99,6 +100,11 @@ def _acceptance_rows(block) -> list[str]:
     """
     if not isinstance(block, dict) or not isinstance(block.get("criteria"), list):
         return []
+    try:
+        Acceptance.load({"acceptance": block})
+    except ValueError as exc:
+        return ["", "## Acceptance criteria", "", "The saved criteria cannot be read by this version of PatchRondo, so nothing "
+                f"is said about them here: {clip(redact(str(exc)), 400)}"]
     code = block.get("code") if isinstance(block.get("code"), dict) else {}
     counts = block.get("summary") if isinstance(block.get("summary"), dict) else {}
     rows = ["", "## Acceptance criteria", "",

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from patchrondo import evidence
 from patchrondo.commands import join_command
-from patchrondo.core import run_task
+from patchrondo.core import attach_evidence, run_task
 from patchrondo.storage import read_json, save_json
 from support import ServerCase
 from test_acceptance import GOOD, MO2, Agents
@@ -63,6 +63,44 @@ class CriteriaApiTests(ServerCase):
         summary = self.get("/api/snapshot")[1]["tasks"][0]["acceptance"]
         self.assertEqual((summary["outcome"], summary["code"], summary["total"], summary["required"], summary["verified"], summary["results"]),
                          ("IN_PROGRESS", "PENDING", 2, 1, 0, []))
+
+    def test_what_is_shown_is_judged_against_the_ledger_as_it_is_now(self):
+        task_id, path, url = self.waiting(GOOD, MO2)
+        entry = attach_evidence(Path(self.project["home"]), task_id, "AC-02", summary="Loaded the mod and played",
+                                reference="session.log")["record"]
+        evidence.append(path, "invalidation", executor="runtime", result="invalidated", of=[entry["id"]], reason="Taken back")
+        saved = read_json(path / "state.json")["acceptance"]
+        self.assertEqual((saved["outcome"], [item["status"] for item in saved["criteria"]]), ("RELEASE_READY", ["VERIFIED", "VERIFIED"]))
+        shown = self.get(url)[1]["acceptance"]
+        self.assertEqual([(item["status"], item["saved_status"]) for item in shown["criteria"]],
+                         [("VERIFIED", "VERIFIED"), ("AWAITING_MANUAL_VALIDATION", "VERIFIED")])
+        self.assertEqual((shown["outcome"], shown["saved"]["outcome"]), ("AWAITING_VALIDATION", "RELEASE_READY"))
+        summary = next(item for item in self.get("/api/snapshot")[1]["tasks"] if item["id"] == task_id)["acceptance"]
+        self.assertEqual((summary["outcome"], summary["required_verified"], summary["results"]),
+                         ("AWAITING_VALIDATION", 1, ["CODE_APPROVED", "AWAITING_VALIDATION"]))
+        self.assertEqual(read_json(path / "state.json")["acceptance"], saved)  # nothing that was shown was written
+
+    def test_a_ledger_cut_short_after_the_last_save_confirms_nothing_on_the_page_or_in_the_list(self):
+        task_id, path, url = self.waiting(GOOD, MO2)
+        entry = attach_evidence(Path(self.project["home"]), task_id, "AC-02", summary="Loaded the mod and played",
+                                reference="session.log")["record"]
+        evidence.append(path, "invalidation", executor="runtime", result="invalidated", of=[entry["id"]], reason="Taken back")
+        self.assertEqual(self.post(f"{url}/criteria/check")[1]["acceptance"]["outcome"], "AWAITING_VALIDATION")
+        file = path / evidence.LEDGER
+        data = file.read_bytes()
+        file.write_bytes(data[:data.rstrip(b"\n").rfind(b"\n") + 1])  # the invalidation the state saw is gone
+        cut, saved = file.read_bytes(), read_json(path / "state.json")
+        shown = self.get(url)[1]["acceptance"]
+        self.assertEqual(shown["problems"], ["The evidence ledger no longer holds the records the task state had seen"])
+        self.assertEqual([(item["status"], item["saved_status"]) for item in shown["criteria"]],
+                         [("PENDING", "VERIFIED"), ("AWAITING_MANUAL_VALIDATION", "AWAITING_MANUAL_VALIDATION")])
+        self.assertEqual((shown["outcome"], shown["code"]["status"], shown["saved"]["outcome"]),
+                         ("IN_PROGRESS", "PENDING", "AWAITING_VALIDATION"))
+        self.assertEqual([(record["id"], record["trusted"], record["current"]) for record in shown["evidence"]],
+                         [("E-0001", False, False), ("E-0002", False, False), ("E-0003", False, False)])
+        summary = next(item for item in self.get("/api/snapshot")[1]["tasks"] if item["id"] == task_id)["acceptance"]
+        self.assertEqual((summary["outcome"], summary["verified"], summary["results"]), ("IN_PROGRESS", 0, []))
+        self.assertEqual((file.read_bytes(), read_json(path / "state.json")), (cut, saved))  # reading repairs nothing
 
     def test_the_preflight_is_shown_before_a_task_exists(self):
         response, shown = self.post(f"{self.base}/criteria/preview", {"developer": "claude", "reviewer": "codex", "acceptance": [
@@ -184,10 +222,15 @@ class CriteriaApiTests(ServerCase):
         shown = self.get(url)[1]["acceptance"]
         self.assertEqual(len(shown["problems"]), 1)
         self.assertIn("does not fit the records before it", shown["problems"][0])
+        # The state saw E-0002, which no longer fits: no record of this ledger counts, as the next run will find.
         self.assertEqual([(entry["id"], entry["trusted"], entry["current"]) for entry in shown["evidence"]],
-                         [("E-0001", True, True), ("E-0002", False, False)])
+                         [("E-0001", False, False), ("E-0002", False, False)])
         self.assertEqual(file.read_bytes(), damaged)  # a reader repairs nothing
-        self.assertEqual(json.loads(json.dumps(shown["criteria"][0]["status"])), "VERIFIED")  # as last judged, with the problem beside it
+        # Judged against the ledger as it reads now, the review that verified AC-01 does not count; what was saved is kept apart.
+        first = shown["criteria"][0]
+        self.assertEqual((first["status"], first["saved_status"]), ("PENDING", "VERIFIED"))
+        self.assertTrue(first["reason"].startswith("Saved as verified, but the evidence ledger does not confirm it now."))
+        self.assertEqual((shown["code"]["status"], shown["saved"]["code"]), ("PENDING", "APPROVED"))
         self.assertEqual(self.post(f"{url}/criteria/check")[1]["acceptance"]["verified"], 0)
         self.assertEqual(self.get(url)[1]["acceptance"]["problems"], [])
 

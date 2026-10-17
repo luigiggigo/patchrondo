@@ -112,23 +112,30 @@ def _print_tasks(home: Path) -> None:
 
 
 def _print_criteria(path: Path) -> None:
-    """The criteria of one task as saved, with the evidence that counts for each. Nothing is judged again here."""
-    record = acceptance.Acceptance.load(read_json(path / "state.json"))
+    """The criteria of one task judged against its evidence ledger as it is now, naming what was saved where it differs.
+
+    Nothing is written and nothing is run; `--check` judges them again with the files as they are and saves that.
+    """
+    state = read_json(path / "state.json")
+    record = acceptance.Acceptance.load(state)
     if record is None:
         print("This task was created before criteria were tracked. They are recorded, with nothing taken as verified, "
               "at its next run or with: patchrondo criteria TASK --check")
         return
+    ledger = evidence.read(path).for_state(record.ledger)  # with the problem of a ledger that lost what was saved
+    record, saved = acceptance.judged_now(record, ledger,
+                                          developing=state.get("status") == "running" and state.get("phase") == "develop")
     counts = record.summary()
     print(f"Code: {record.code.get('status')} · Overall: {record.outcome} · "
           f"{counts['required_verified']} of {counts['required']} required criteria verified")
     for criterion in record.criteria:
         kinds = ", ".join(criterion.categories) or "unclassified"
+        was = f" (saved as {saved[criterion.id]})" if saved[criterion.id] != criterion.status else ""
         print(f"{criterion.id} · {criterion.status:26} · {'required' if criterion.required else 'optional'} · {kinds} · "
-              f"done by {criterion.executor}, verified by {criterion.verifier}")
+              f"done by {criterion.executor}, verified by {criterion.verifier}{was}")
         print(f"    {criterion.text}")
         print(f"    {criterion.reason}" + (f" [{', '.join(criterion.evidence)}]" if criterion.evidence else ""))
-    problems = evidence.read(path).problems
-    for problem in problems:
+    for problem in ledger.problems:
         print(f"Warning: {problem}")
 
 

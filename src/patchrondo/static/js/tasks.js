@@ -71,6 +71,7 @@ export const ERRORS = {
   system_error: { title: "PatchRondo hit a system error", help: "A file or Git operation failed. Check the message, then resume." },
   awaiting_validation: { title: "The code is approved; some criteria still need verification", help: "What is left cannot be done by the developer or checked by the reviewer, so the task was not sent back to them. “Criteria and checks” shows what each criterion needs." },
   awaiting_authorization: { title: "The code is approved; some criteria need your authorization", help: "An operation such as a download or a publication is never done without your decision. Decide in “Criteria and checks”; nothing is run either way." },
+  acceptance_unreadable: { title: "The saved criteria cannot be read", help: "They were saved by another version of PatchRondo, or changed by hand. Nothing replaced them and no agent was called. Open the task with the version that saved them, or put back its state.json, then resume." },
   max_iterations_reached: { title: "Iteration limit reached", help: "The task used all its iterations without an approved review and passing tests. Review the feedback and create a follow-up task." },
   review_blocked: { title: "The reviewer blocked the task", help: "The reviewer judged that the task cannot proceed as specified. Read the review and create a new task." },
   review_not_approved: { title: "The review was not approved", help: "Read the review for what is missing." },
@@ -168,6 +169,7 @@ const PAUSE_REASONS = {
   sandbox_unavailable: "Codex could not start its protected environment", sandbox_git_failed: "Git does not work in the review environment",
   git_dubious_ownership: "Git does not trust the project folder", cli_missing: "an agent is not installed",
   awaiting_validation: "criteria wait for a verification", awaiting_authorization: "criteria wait for your authorization",
+  acceptance_unreadable: "the saved criteria cannot be read",
 };
 const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git trust for this project folder" };
 const REPAIR_OUTCOMES = { applied: ["Fixed", "ok"], unchanged: ["Already in place", "neutral"], rolled_back: ["Could not fix; put back as it was", "warn"],

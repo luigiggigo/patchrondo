@@ -9,6 +9,43 @@ records what was checked, where, and what was not. The engine keeps every
 state transition of 0.2.0; what is new runs before the first agent call and
 before each review.
 
+### Saved criteria that cannot be read pause the task, and statuses are shown as the ledger has them — October 17, 2026
+
+- **A saved record of the criteria that this version cannot read is no longer
+  replaced.** Since "Criteria records kept when they cannot be read" below,
+  such a record, one written with a later schema version included, was kept
+  aside in `acceptance.unread-<digest>.json` and then rebuilt from `task.md`,
+  and the run went on with the rebuilt record: the reviewer was called again,
+  criteria only a later version knew were left out, and what an author set
+  beyond the text (`required`, kinds, dependencies), which `task.md` does not
+  hold, was lost. The task now pauses with `acceptance_unreadable` before any
+  agent, environment check or project command. The record and the ledger stay
+  as they were, so nothing is kept aside any more; `report.md` says nothing
+  about criteria it cannot read; a Resume while the record still cannot be
+  read returns the saved state; and checking, attaching evidence and deciding
+  about a criterion are refused for such a task. A task created before
+  criteria were tracked, with no record at all, still gets its criteria from
+  `task.md`.
+- **What shows criteria shows them as the ledger has them now.** The task
+  page, the list of tasks and `patchrondo criteria` showed the statuses as
+  last saved, so a `VERIFIED` whose evidence the ledger had since invalidated,
+  or no longer held intact, was still shown as verified, and a task as
+  release-ready. They now judge a copy of the record in memory against the
+  ledger as it is (`acceptance.judged_now`) and write nothing; what was saved
+  is kept apart, as `saved_status` for each criterion and `saved` for the task
+  in the interface, and "(saved as …)" on the command line. A ledger that no
+  longer holds, unchanged, the records the saved record was judged from (one
+  removed from its end, or one changed) confirms nothing there
+  (`evidence.Ledger.for_state`): the record that is gone may be the
+  invalidation the last judgement counted, so none of its records counts, as
+  the next run, which starts the ledger again, will find. The file is not
+  touched.
+- In `tools/ui_e2e.py`, the `criteria` scenario waits until the page knows the
+  project it registered before it opens the form, and a press waits for its
+  button to be enabled: two races that made the scenario fail now and then.
+- Nine protections were added to `tools/recovery_checks.py`, and the one for
+  the copy kept aside was removed.
+
 ### Validation responsibilities — October 17, 2026
 
 - The full unittest matrix and package build/metadata checks belong to GitHub

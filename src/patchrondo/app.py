@@ -59,8 +59,6 @@ QUICK_TITLE = 80
 ENVIRONMENT_FIELDS = ("status", "stage", "error_kind", "cause", "message", "provider", "repair", "repair_available",
                       "repair_applied", "requires_user_action", "checked_at")
 CONFIRMABLE_REPAIRS = {"git_trust"}  # repairs that are a decision of the user and never run unattended
-ACCEPTANCE_FIELDS = ("total", "required", "verified", "required_verified", "failed", "blocked", "awaiting_authorization",
-                     "awaiting_manual", "unknown", "open")
 
 
 class RunsAtExit(NamedTuple):
@@ -318,6 +316,7 @@ class App:
         self.environment = environment.Manager()  # checks and repairs asked for from the interface
         self._cache_lock = threading.Lock()
         self._states: dict[Path, tuple] = {}
+        self._judged: dict[Path, tuple] = {}  # task folder: (signatures of state.json and the ledger, counts, settled)
         self._configs: dict[str, tuple] = {}
         self._repos: dict[str, tuple[float, dict]] = {}
         self._index_jobs: dict[str, dict] = {}
@@ -976,21 +975,37 @@ class App:
                 pass
         signature = _signature(path / RUN_LOG)
         item["log_size"] = signature[1] if signature else 0
-        item["acceptance"] = self._acceptance(state)
+        item["acceptance"] = self._acceptance(path, state)
         item["agents"] = self._used(state)
         item["runtime"] = runinfo.runtime(path, state, self._owned((project.id, path.name)))
         return item
 
-    @staticmethod
-    def _acceptance(state: dict) -> dict | None:
-        """Results and counts of a task's criteria, as the engine last saved them; None for a task without a record."""
-        block = state.get("acceptance")
-        counts = block.get("summary") if isinstance(block, dict) else None
-        if not isinstance(counts, dict):
+    def _acceptance(self, path: Path, state: dict) -> dict | None:
+        """Results and counts of a task's criteria, judged against its evidence ledger as it is now; None without a record.
+
+        A record this version cannot read gives None as well: the task page says
+        why. Nothing is written. The result is kept while state.json and the
+        ledger keep their signatures.
+        """
+        if not isinstance(state.get("acceptance"), dict):
             return None
-        code = block.get("code") if isinstance(block.get("code"), dict) else {}
-        return {"outcome": block.get("outcome"), "code": code.get("status"), "results": block.get("results") or [],
-                **{key: counts.get(key) for key in ACCEPTANCE_FIELDS}}
+        key = (_signature(path / "state.json"), _signature(path / evidence.LEDGER))
+        with self._cache_lock:
+            cached = self._judged.get(path)
+        if cached and cached[0] == key and cached[2]:
+            return cached[1]
+        try:
+            record = criteria.Acceptance.load(state)
+        except ValueError:
+            record = None
+        result = None
+        if record is not None:
+            developing = state.get("status") == "running" and state.get("phase") == "develop"
+            current, _ = criteria.judged_now(record, evidence.read(path), developing=developing)
+            result = current.compact()
+        with self._cache_lock:
+            self._judged[path] = (key, result, all(signature is None or _settled(signature) for signature in key))
+        return result
 
     def collect(self) -> dict:
         """Authoritative view of everything the interface lists: projects, task summaries, settings."""
@@ -1015,6 +1030,8 @@ class App:
         with self._cache_lock:
             for file in set(self._states) - seen:
                 del self._states[file]
+            for folder in set(self._judged) - {file.parent for file in seen}:
+                del self._judged[folder]
         return {"projects": projects, "tasks": tasks, "settings": settings, "error": error,
                 "providers": self.providers.view()}
 
@@ -1130,17 +1147,15 @@ class App:
 
     @staticmethod
     def _criteria(path: Path, state: dict) -> dict:
-        """The criteria of a task with their evidence, read only: nothing is judged again and nothing is written."""
+        """The criteria of a task with their evidence, judged in memory against its ledger as it is now; nothing is written."""
         problems = []
         try:
             record = criteria.Acceptance.load(state)
         except ValueError as exc:
             record, problems = None, [str(exc)]
-        ledger = evidence.read(path)
-        if record is not None and not ledger.problems and not ledger.anchored(record.ledger.get("count"), record.ledger.get("head")):
-            problems.append("The evidence ledger no longer holds the records the task state had seen")
         written = criteria.from_task_text(_text(path / DOCUMENTS["task"]) or "") if record is None else None
-        shown = criteria.view(record, ledger, pending=written)
+        shown = criteria.view(record, evidence.read(path), pending=written,
+                              developing=state.get("status") == "running" and state.get("phase") == "develop")
         shown["problems"] += problems
         return shown
 

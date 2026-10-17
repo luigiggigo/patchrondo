@@ -50,6 +50,7 @@ MAX_ARTIFACTS = 8
 MAX_ARTIFACT_BYTES = 8 * 1024 ** 3  # a file PatchRondo hashes for a manual check
 # Results that count as proof, per kind. Anything else is recorded and proves nothing.
 POSITIVE = {"command": "passed", "manual": "passed", "authorization": "granted"}
+UNANCHORED = "The evidence ledger no longer holds the records the task state had seen"
 
 
 def _canonical(record: dict) -> str:
@@ -101,6 +102,18 @@ class Ledger:
         if type(count) is not int or count <= 0:
             return True
         return len(self.records) >= count and self.records[count - 1].get("hash") == head and self.records[count - 1]["trusted"]
+
+    def for_state(self, seen: dict) -> Ledger:
+        """The ledger as proof for a task state that saw the records `seen` names (its `count` and `head`).
+
+        A ledger that no longer holds them unchanged trusts none of its
+        records: the one removed or changed may be the invalidation that made
+        another stop counting. A run starts such a ledger again; a reader,
+        which changes nothing, counts none of its records instead.
+        """
+        if self.anchored(seen.get("count"), seen.get("head")):
+            return self
+        return Ledger([{**record, "trusted": False} for record in self.records], self.problems or [UNANCHORED], "", self.incomplete)
 
 
 def read(task_path: Path) -> Ledger:

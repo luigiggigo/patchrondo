@@ -234,9 +234,14 @@ A task created before criteria were tracked keeps working. If it ended, it is
 shown as it was, with nothing said about each criterion; if it runs again,
 its criteria are read from its description with nothing taken as verified.
 A saved record of the criteria that this version cannot read, such as one
-written by a later version, is read again from the description the same way;
-the record is first kept unchanged in `acceptance.unread-<digest>.json` in the
-task folder.
+written by a later version, is never replaced: the task pauses with *the
+saved criteria cannot be read* and calls no agent. Open it with the version
+that saved it, or put back its `state.json`, and resume. The criteria shown
+on the task page, in the list and by `patchrondo criteria` are judged against
+the evidence ledger as it is when you look; a criterion saved as verified
+whose evidence no longer counts says so. A ledger that no longer holds what
+was saved, for example after a line was removed from it, counts for nothing
+there until the next run or *Check again* starts it again.
 
 ### Agents: models and options
 
@@ -797,7 +802,6 @@ now without automatic recovery stays possible in both cases.
                                 # settings ("agent_settings"), what each step was started with ("agent_runs")
                                 # and the criteria with their plan, status and results ("acceptance")
           evidence.jsonl        # evidence ledger: append-only, each record chained to the one before
-          acceptance.unread-<digest>.json  # only when a saved "acceptance" record could not be read: kept unchanged
           handoff.md
           feedback.md
           report.md

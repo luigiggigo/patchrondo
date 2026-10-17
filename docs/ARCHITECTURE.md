@@ -1066,8 +1066,9 @@ Criteria are `acceptance.Criterion` dataclasses and the block an
 does not know: another schema `version` (an integer, `acceptance.VERSION`),
 an unknown status or category, a repeated ID, or a criterion whose `evidence`
 names anything but IDs of ledger records (`E-0001`, `E2-0001`) or that is
-`VERIFIED` without naming any. `refresh` never carries a saved status over;
-the last rule keeps a status nobody judged from being shown either. IDs are
+`VERIFIED` without naming any. `refresh` never carries a saved status over,
+and what shows criteria judges them against the ledger first (see "Shown as
+the ledger has them"). IDs are
 `AC-01`, `AC-02`, … in the order the criteria were given, and never change.
 A task without criteria has one, about its description.
 
@@ -1259,6 +1260,7 @@ refused is listed apart; an observation is in neither list.
 ```text
 create_task          criteria classified, capabilities detected, plan saved (the preflight)
 run start            _sync: a task without a record gets one from its task.md, nothing verified
+                     a record this version cannot read -> paused: acceptance_unreadable, nothing replaced
 develop              developer told which criteria are its work; afterwards evidence on the old files is invalidated
 test                 one `command` record per command; criteria that commands prove are judged
 review               reviewer given criteria, capabilities and evidence; answer settled; `review` record
@@ -1297,6 +1299,30 @@ With `resume: true` the interface starts a run only when that run would
 complete the task without calling an agent (`completes`). The command line
 has the same three: `patchrondo criteria`, `evidence`, `authorize`.
 
+### Shown as the ledger has them
+
+The task page, the list of tasks and `patchrondo criteria` run no step, yet
+they show statuses. They judge a copy of the saved record in memory against
+the ledger as it is (`acceptance.judged_now`, `refresh` on a copy) and write
+nothing. A `VERIFIED` whose records were invalidated, or are no longer read
+intact, since the last save is therefore not shown as verified: its reason
+says it was saved as verified and the ledger does not confirm it now. What
+was saved is kept apart: `saved_status` for each criterion and `saved`
+(`outcome`, `code`, `updated_at`) in the view, "(saved as …)" on the command
+line. A ledger that no longer holds, unchanged, the records the saved record
+was judged from (`Ledger.anchored` against its `ledger` count and head: fewer
+records, or one of them changed) confirms nothing there. The record that is
+gone may be the invalidation the last judgement counted, so
+`evidence.Ledger.for_state` gives a copy in which no record is trusted, with
+the problem named; the page lists every record as not trusted, and the
+counts and results are those of a ledger with nothing in it. The next run or
+*Check again* starts the ledger again (see "Evidence"); reading it touches
+nothing. The list keeps its counts while `state.json` and the ledger keep their
+signatures. Evidence about files that changed is not invalidated there: that
+needs the fingerprint of the files, which a run or *Check again* takes and
+puts on record in the ledger. `report.md` shows the criteria as the engine
+judged them when it wrote the report.
+
 ### Older tasks
 
 A state without `acceptance` is a task created before criteria were tracked.
@@ -1307,13 +1333,18 @@ nothing verified: saved test results and a saved review were never evidence,
 so a review that was about to start waits for the tests to run again. Such a
 task keeps the answers from before outcomes (`explicit_outcomes` is false):
 an approval covers a criterion it did not list. The
-schema is versioned (`acceptance.VERSION`, `evidence.VERSION`); a block that
-cannot be read, one written with a later schema version included, is rebuilt
-the same way. Before it is replaced it is kept aside unchanged, with the task,
-the time and the reason, in `acceptance.unread-<digest>.json` next to the
-state (October 16, 2026); `acceptance_planned` names the file. The name comes
-from the block, so a run that stopped before saving the replacement does not
-keep it twice. Nothing is deleted, and nothing reads the kept file again.
+schema is versioned (`acceptance.VERSION`, `evidence.VERSION`). Only a task
+with no record at all is planned from its `task.md`. A record that `load`
+refuses, one written with a later schema version included, is never replaced
+(October 17, 2026): a later version may have criteria `task.md` does not
+list, and `task.md` never holds what an author set beyond the text. The run
+pauses with `acceptance_unreadable` before any agent, environment check or
+project command; the record and the ledger stay as they were, `report.md`
+says nothing about the criteria, and the three operations of the user are
+refused. A Resume while the record still cannot be read returns the saved
+state: no event, no check, no call. Opened with the version that saved it, or
+with the `state.json` that held it put back, the task goes on where it
+stopped.
 
 ### Limits
 

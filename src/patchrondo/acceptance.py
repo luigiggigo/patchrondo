@@ -2,8 +2,8 @@
 
 A task carries its criteria as structured records in `state.json`, under
 `acceptance`, saved in the same atomic write as every checkpoint. The record
-has a schema version (`VERSION`); one this version cannot read is kept aside
-unchanged before the engine rebuilds it (`core._acceptance`). For each
+has a schema version (`VERSION`); one this version cannot read is never
+replaced, and the engine pauses the task (`core._acceptance`). For each
 criterion this module answers three separate questions:
 
     classification   what kind of work or check it is (`categories`, `needs`), from fixed rules
@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from dataclasses import MISSING, asdict, dataclass, field, fields
 from enum import StrEnum
+import copy
 import json
 import re
 
@@ -545,7 +546,7 @@ class Acceptance:
         if raw is None:
             return None
         if isinstance(raw, dict) and (type(raw.get("version")) is not int or raw["version"] != VERSION):
-            # Written by another version of PatchRondo, or edited by hand: the engine keeps it aside before replacing it.
+            # Written by another version of PatchRondo, or edited by hand: the engine pauses the task and replaces nothing.
             raise ValueError(f"The acceptance record of the task has schema version {raw.get('version')!r:.20}; this "
                              f"version of PatchRondo reads version {VERSION}")
         if not isinstance(raw, dict) or not isinstance(raw.get("criteria"), list) or not raw["criteria"]:
@@ -1011,14 +1012,43 @@ def _labelled(detected: dict | None) -> dict | None:
         for name in caps.EXECUTORS]}
 
 
-def view(acceptance: Acceptance | None, ledger, *, pending: list[dict] | None = None) -> dict:
+def judged_now(acceptance: Acceptance, ledger, *, developing: bool = False) -> tuple[Acceptance, dict[str, str]]:
+    """A saved record judged again, in memory, against the ledger as it is now, and the status each criterion was saved with.
+
+    What shows criteria outside a run (the interface, the command line) shows
+    this judgement, so a VERIFIED that the ledger no longer confirms is never
+    shown as one. A ledger that no longer holds, unchanged, the records the
+    saved record was judged from confirms nothing (`evidence.Ledger.for_state`),
+    as the next run, which starts it again, will find. Nothing is written.
+    Evidence about files that changed is not invalidated here: that needs the
+    fingerprint of the files, which a run or a check takes, and is put on
+    record in the ledger.
+    """
+    saved = {criterion.id: str(criterion.status) for criterion in acceptance.criteria}
+    ledger = ledger.for_state(acceptance.ledger)  # a removed or changed record may have been an invalidation
+    current = copy.deepcopy(acceptance)
+    current.refresh(ledger, developing=developing)
+    current.updated_at = acceptance.updated_at  # when the engine last judged and saved it
+    for criterion in current.criteria:
+        if saved[criterion.id] == Status.VERIFIED and criterion.status != Status.VERIFIED:
+            criterion.reason = f"Saved as verified, but the evidence ledger does not confirm it now. {criterion.reason}"
+    return current, saved
+
+
+def view(acceptance: Acceptance | None, ledger, *, pending: list[dict] | None = None, developing: bool = False) -> dict:
     """Everything the interface and the command line show about the criteria of one task.
 
-    A task created before criteria were tracked has no record: its criteria
-    are listed as written (`pending`), with nothing said about them.
+    Statuses, results and counts are judged against the ledger as it is now
+    (`judged_now`), and so are the records listed; what was saved is kept
+    apart, in `saved_status` and `saved`. A task created before criteria were
+    tracked has no record: its criteria are listed as written (`pending`),
+    with nothing said about them.
     """
     if acceptance is None:
         return {"tracked": False, "criteria": [{"text": item["text"]} for item in pending or []], "problems": list(ledger.problems)}
+    saved_record = {"outcome": str(acceptance.outcome), "code": acceptance.code.get("status"), "updated_at": acceptance.updated_at}
+    ledger = ledger.for_state(acceptance.ledger)  # the records and problems shown are those `judged_now` judges from
+    acceptance, saved = judged_now(acceptance, ledger, developing=developing)
     proofs = _Proofs(ledger)
     run = {record["id"] for record in proofs.run}
     criteria = []
@@ -1029,12 +1059,12 @@ def view(acceptance: Acceptance | None, ledger, *, pending: list[dict] | None = 
                        and ("tests" in kinds or kinds & set(record.get("covers") or [])))]
         refusal = acceptance.manual_refusal(criterion)
         open_ = criterion.status != Status.VERIFIED
-        criteria.append({**asdict(criterion), "records": [record["id"] for record in records[-12:]],
+        criteria.append({**asdict(criterion), "saved_status": saved[criterion.id], "records": [record["id"] for record in records[-12:]],
                          "actions": {"evidence": open_ and refusal is None, "evidence_refusal": refusal if open_ else None,
                                      "authorize": criterion.authorization_required}})
     shown = [{key: value for key, value in record.items() if key not in {"prev", "hash"}} | {"current": ledger.counts(record)}
              for record in ledger.records]
     return {"tracked": True, "source": acceptance.source, "criteria": criteria, "capabilities": _labelled(acceptance.capabilities),
             "code": dict(acceptance.code), "outcome": str(acceptance.outcome), "results": acceptance.results(),
-            "summary": acceptance.summary(), "updated_at": acceptance.updated_at, "evidence": shown[-200:],
+            "summary": acceptance.summary(), "updated_at": acceptance.updated_at, "saved": saved_record, "evidence": shown[-200:],
             "problems": list(ledger.problems)}

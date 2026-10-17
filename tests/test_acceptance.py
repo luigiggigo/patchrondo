@@ -972,30 +972,110 @@ class EngineTests(Case):
         self.assertEqual(self.kinds(path), ["command", "review"])  # saved results were never turned into evidence
         self.assertEqual(self.statuses(path), {"AC-01": "VERIFIED", "AC-02": "VERIFIED"})
 
-    def test_a_record_that_cannot_be_read_is_kept_aside_and_rebuilt_with_nothing_verified(self):
+    def test_a_record_that_cannot_be_read_pauses_the_task_and_nothing_replaces_it(self):
+        later = {"id": "AC-03", "text": "Signed off by the release manager", "required": True}  # only a later version knows it
+        for change, reason in ((lambda block: block["criteria"][1].update(status="VERIFIED_BY_HAND"), "unknown category, need, proof or status"),
+                               (lambda block: (block.update(version=2), block["criteria"].append(later)), "has schema version 2")):
+            with self.subTest(reason=reason):
+                task_id, path, _ = self.task(GOOD, MO2)
+                run_task(self.home, task_id, adapter=Agents())
+                state = self.state(path)
+                saved = json.loads(json.dumps(state["acceptance"]))
+                change(state["acceptance"])
+                block = state["acceptance"]
+                save_json(path / "state.json", state)
+                ledger = (path / evidence.LEDGER).read_bytes()
+                agents = Agents()
+                paused = run_task(self.home, task_id, adapter=agents)
+                error = paused["last_error"]
+                self.assertEqual((paused["status"], paused["phase"], error["kind"], error["source"], agents.roles),
+                                 ("paused", "validate", "acceptance_unreadable", "acceptance", []))
+                self.assertIn(reason, error["message"])
+                # The record the task runs by is left as it was, and so is the ledger: this version decides nothing with it.
+                self.assertEqual((self.state(path)["acceptance"], (path / evidence.LEDGER).read_bytes()), (block, ledger))
+                self.assertEqual(self.events(path)[-2:], ["run_started", "task_paused"])
+                report = (path / "report.md").read_text(encoding="utf-8")
+                self.assertIn("The saved criteria cannot be read", report)
+                self.assertNotIn("**VERIFIED", report)
+                # While it still cannot be read, a Resume returns the saved state (no event, no agent) and nothing judges it.
+                self.assertEqual((run_task(self.home, task_id, adapter=agents), agents.roles), (paused, []))
+                for action in (lambda: recheck_acceptance(self.home, task_id),
+                               lambda: attach_evidence(self.home, task_id, "AC-02", summary="Loaded the mod and played",
+                                                       reference="session.log")):
+                    with self.assertRaisesRegex(AcceptanceRefused, "cannot be read by this version"):
+                        action()
+                self.assertEqual(self.state(path), paused)
+                # Put back as it was, the record is read again and the task waits where it stopped.
+                state = self.state(path)
+                state["acceptance"] = saved
+                save_json(path / "state.json", state)
+                again = run_task(self.home, task_id, adapter=agents)
+                self.assertEqual((again["status"], again["phase"], again["last_error"]["kind"], agents.roles),
+                                 ("paused", "validate", "awaiting_validation", []))
+
+    def test_what_shows_the_criteria_judges_them_against_the_ledger_as_it_is_now(self):
+        """A VERIFIED that was saved and that the ledger no longer confirms is not shown as one; what was saved is kept apart."""
         task_id, path, _ = self.task(GOOD, MO2)
         run_task(self.home, task_id, adapter=Agents())
-        recheck_acceptance(self.home, task_id)
-        self.assertEqual(list(path.glob("acceptance.unread-*.json")), [])  # a record this version reads is never copied
-        saved = self.state(path)["acceptance"]
-        edited = json.loads(json.dumps(saved))
-        edited["criteria"][1]["status"] = "VERIFIED_BY_HAND"
-        later = {**saved, "version": 2, "owner": {"written by": "a later version"}}  # a schema this version does not know
-        for block, reason in ((edited, "unknown category, need, proof or status"), (later, "has schema version 2")):
-            with self.subTest(reason=reason):
-                for _ in range(2):  # the same record again, as after a run that stopped before it saved what replaced it
-                    state = self.state(path)
-                    state["acceptance"] = block
-                    save_json(path / "state.json", state)
-                    recheck_acceptance(self.home, task_id)
-                    self.assertEqual((self.record(path).source, self.statuses(path)["AC-02"]),
-                                     ("task.md", "AWAITING_MANUAL_VALIDATION"))
-                planned = [e for e in self.state(path)["history"] if e["event"] == "acceptance_planned"][-1]
-                kept = read_json(path / planned["kept"])
-                self.assertIn(reason, planned["note"])
-                self.assertIn(reason, kept["reason"])
-                self.assertEqual((kept["task"], kept["acceptance"]), (task_id, block))  # as it was, with what this version ignores
-        self.assertEqual(len(list(path.glob("acceptance.unread-*.json"))), 2)  # one file per record, kept once, none deleted
+        manual = attach_evidence(self.home, task_id, "AC-02", summary="Loaded the mod and played", reference="session.log")["record"]
+        shown = acceptance.view(self.record(path), evidence.read(path))
+        self.assertEqual([(item["status"], item["saved_status"]) for item in shown["criteria"]], [("VERIFIED", "VERIFIED")] * 2)
+        # The check by the user stops counting in the ledger, and nothing has judged the criteria again since.
+        evidence.append(path, "invalidation", executor="runtime", result="invalidated", of=[manual["id"]], reason="Taken back")
+        before = self.state(path)
+        self.assertEqual((before["acceptance"]["outcome"], self.statuses(path)["AC-02"]), ("RELEASE_READY", "VERIFIED"))
+        shown = acceptance.view(self.record(path), evidence.read(path))
+        second = shown["criteria"][1]
+        self.assertEqual((second["status"], second["saved_status"], second["evidence"]), ("AWAITING_MANUAL_VALIDATION", "VERIFIED", []))
+        self.assertTrue(second["reason"].startswith("Saved as verified, but the evidence ledger does not confirm it now."))
+        self.assertEqual((shown["outcome"], shown["summary"]["required_verified"], shown["saved"]["outcome"]),
+                         ("AWAITING_VALIDATION", 1, "RELEASE_READY"))
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(main(["--home", str(self.home), "criteria", task_id]), 0)
+        self.assertIn("Overall: AWAITING_VALIDATION · 1 of 2 required criteria verified", out.getvalue())
+        self.assertIn("AC-02 · AWAITING_MANUAL_VALIDATION", out.getvalue())
+        self.assertIn("(saved as VERIFIED)", out.getvalue())
+        self.assertEqual(self.state(path), before)  # what shows them writes nothing
+
+    def test_a_ledger_that_lost_what_the_state_saw_confirms_nothing_where_criteria_are_shown(self):
+        """The record removed or changed may be the invalidation the last judgement counted: no record of that ledger counts."""
+        for damage in ("removed", "edited"):
+            with self.subTest(damage=damage):
+                task_id, path, _ = self.task(GOOD, MO2)
+                run_task(self.home, task_id, adapter=Agents())
+                manual = attach_evidence(self.home, task_id, "AC-02", summary="Loaded the mod and played",
+                                         reference="session.log")["record"]
+                evidence.append(path, "invalidation", executor="runtime", result="invalidated", of=[manual["id"]],
+                                reason="Taken back")
+                recheck_acceptance(self.home, task_id)  # the invalidation is judged and saved with the state
+                self.assertEqual((self.state(path)["acceptance"]["outcome"], self.statuses(path)),
+                                 ("AWAITING_VALIDATION", {"AC-01": "VERIFIED", "AC-02": "AWAITING_MANUAL_VALIDATION"}))
+                file = path / evidence.LEDGER
+                data = file.read_bytes()
+                # The invalidation is gone, or no longer fits the chain: either way E-0003 would count again.
+                file.write_bytes(data[:data.rstrip(b"\n").rfind(b"\n") + 1] if damage == "removed"
+                                 else data.replace(b'"reason":"Taken back"', b'"reason":"Kept"'))
+                damaged, before = file.read_bytes(), self.state(path)
+                self.assertEqual(evidence.read(path).problems == [], damage == "removed")  # what is left fits together
+                shown = acceptance.view(self.record(path), evidence.read(path))
+                self.assertEqual([(item["status"], item["saved_status"], item["evidence"]) for item in shown["criteria"]],
+                                 [("PENDING", "VERIFIED", []), ("AWAITING_MANUAL_VALIDATION", "AWAITING_MANUAL_VALIDATION", [])])
+                self.assertTrue(shown["criteria"][0]["reason"].startswith("Saved as verified, but the evidence ledger does not "
+                                                                          "confirm it now."))
+                self.assertEqual((shown["outcome"], shown["code"]["status"], shown["results"], shown["summary"]["verified"]),
+                                 ("IN_PROGRESS", "PENDING", [], 0))
+                self.assertEqual(len(shown["problems"]), 1)
+                if damage == "removed":
+                    self.assertEqual(shown["problems"], ["The evidence ledger no longer holds the records the task state had seen"])
+                self.assertFalse(any(record["trusted"] or record["current"] for record in shown["evidence"]))
+                with patch("sys.stdout", new_callable=io.StringIO) as out:
+                    self.assertEqual(main(["--home", str(self.home), "criteria", task_id]), 0)
+                self.assertIn("Code: PENDING · Overall: IN_PROGRESS · 0 of 2 required criteria verified", out.getvalue())
+                self.assertIn(f"Warning: {shown['problems'][0]}", out.getvalue())
+                self.assertEqual((file.read_bytes(), self.state(path)), (damaged, before))  # reading repairs nothing
+                # The next judgement under the lock agrees: it puts the file aside, unchanged, and starts the ledger again.
+                self.assertEqual(recheck_acceptance(self.home, task_id)["acceptance"]["outcome"], "IN_PROGRESS")
+                self.assertEqual([kept.read_bytes() for kept in path.glob("evidence.damaged-*.jsonl")], [damaged])
 
     def test_a_real_bug_goes_to_the_developer_and_the_external_check_stays_apart(self):
         """J: the bug returns to the developer; the external verification stays distinct; neither is lost or mixed."""

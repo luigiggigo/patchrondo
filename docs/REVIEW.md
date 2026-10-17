@@ -12,7 +12,9 @@ The review settled by the kind of an issue, with an outcome for each
 criterion: October 14, 2026, validated on October 14 and 15, 2026. A change
 to the code only for what the code can satisfy, and publication-status
 update: October 16, 2026. Criteria records kept when they cannot be read:
-October 16, 2026, validated on October 16 and 17, 2026.
+October 16, 2026, validated on October 16 and 17, 2026. Saved criteria that
+cannot be read pause the task, and statuses shown as the ledger has them:
+October 17, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -93,6 +95,163 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Saved criteria that cannot be read pause the task, and statuses shown as the ledger has them (October 17, 2026)
+
+This section covers changes on top of `d04ec84`, the commit that holds the
+change of the next section: `acceptance.py`, `evidence.py`, `core.py`,
+`app.py`, `cli.py`, `report.py` and `static/js/tasks.js`, with their tests,
+nine new mutation protections (and one removed) and two corrections of
+`tools/ui_e2e.py`. The package version is unchanged, 0.2.1.
+
+**The review of `d04ec84`.** It found two problems:
+
+- Keeping a copy protects the data, not the requirements in force. A record
+  written by a later version may hold required criteria that `task.md` does
+  not list, and `task.md` never holds what an author set beyond the text
+  (`required`, kinds, dependencies), so the rebuilt record could ask for
+  less. Run against the sources of `d04ec84`, the new test shows it: the
+  record was replaced, and the reviewer was called again.
+- `load` checks the shape of evidence references, not that the ledger still
+  holds them and counts them, and the task page, the list of tasks and
+  `patchrondo criteria` showed the statuses as saved. With the user's check
+  for a criterion invalidated in the ledger after the last save, the sources
+  of `d04ec84` showed that criterion `VERIFIED` and the task `RELEASE_READY`,
+  on the page and on the command line.
+
+**Changes.**
+
+- A record that `load` refuses is never replaced, and no copy of it is kept
+  any more: `core._keep_unread` is gone. The run pauses with
+  `acceptance_unreadable` (source `acceptance`) before any agent, environment
+  check or project command; the record and the ledger stay byte for byte as
+  they were, and `report.md` says nothing about criteria it cannot read.
+  While the record still cannot be read, a Resume returns the saved state
+  (no event, no check, no call), and checking, attaching evidence and
+  deciding about a criterion are refused. Only a task with no record at all
+  is planned from `task.md`, as before. The page names the pause.
+- What shows criteria outside a run judges a copy of the record in memory
+  against the ledger as it is (`acceptance.judged_now`, `refresh` on a copy)
+  and writes nothing. A saved `VERIFIED` the ledger does not confirm is shown
+  with the status the ledger gives, and a reason that says it was saved as
+  verified. What was saved is kept apart: `saved_status` for each criterion
+  and `saved` for the task in the interface, "(saved as …)" on the command
+  line. The list of tasks keeps the result while `state.json` and the ledger
+  keep their signatures; judging the 75 tasks of a home of the browser check
+  without that cache took 14 ms on native Windows. `app.ACCEPTANCE_FIELDS`,
+  no longer used, was removed.
+
+**Tests.** In `tests/test_acceptance.py`,
+`test_a_record_that_cannot_be_read_pauses_the_task_and_nothing_replaces_it`
+replaces `test_a_record_that_cannot_be_read_is_kept_aside_and_rebuilt_with_nothing_verified`
+(an edited record, and one of schema version 2 with a criterion only it
+knows: the pause, the record and the ledger unchanged, the report, the
+Resume, the refused actions, and the task going on once the record is put
+back), and
+`test_what_shows_the_criteria_judges_them_against_the_ledger_as_it_is_now`
+covers the view and the command line. In `tests/test_criteria_ui.py`,
+`test_what_is_shown_is_judged_against_the_ledger_as_it_is_now` covers the task
+page and the list of tasks, and one expectation changed:
+`test_a_ledger_that_was_edited_is_reported_and_reading_it_changes_nothing`
+expected the saved `VERIFIED` "as last judged" beside the problem, and now
+expects `PENDING` with `saved_status` `VERIFIED` and the approval of the code
+withdrawn in the view. Run on native Windows with Python 3.13.3 against the
+sources of `d04ec84`, and again against those of `d4c0ecd`, the pause test
+failed in both of its subtests (the task paused with `awaiting_validation`
+after a reviewer call) and the three tests of what is shown failed. Each of
+the five new protections was run alone before the full set and detected.
+
+**Two races of the browser check, corrected.** In its `criteria` scenario, two
+of three full runs of `tools/ui_e2e.py` failed before these corrections, at
+different steps, and the third passed every check. Once the form created the
+task in the project of the previous scenario: it takes the project named in
+its address only once the page knows that project, and the scenario opened it
+right after registering the project through the API. The other time the
+button of the last check was disabled when the tool pressed it: the task's
+lock, held by `attach_evidence` for the check just before, had reached the
+page, its release had not yet. The first of these failures happened on the
+code of `d04ec84`, before `app.py` had changed. The scenario now waits until
+the page shows the new project before it opens the form, and every press
+waits for its button to be enabled, as a person has to.
+
+Validation on October 17, 2026, of these changes before the review below.
+In WSL2, `~/.local/bin` and `/usr/local/bin` were removed from `PATH`, and
+`shutil.which` found neither `claude` nor `codex`:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Unittest modules `test_acceptance`, `test_criteria_ui`, `test_cli`, `test_ui`, `test_frontend`, `test_workflow`, `test_integration_cli` | Native Windows, Python 3.13.3: 166 tests, 165 passed, 1 skipped, 116.621 s | 0 |
+| `tests/test_browser_tools.py`, after the last change to `tools/ui_e2e.py` | Native Windows, Python 3.11.3: 5 tests passed | 0 |
+| Protections | WSL2, Python 3.12.3: 161 of 161 removed safeguards detected, 0 missed (five of them new) | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Browser, all twelve scenarios, three runs after the last change | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed, in each run | 0, 0, 0 |
+| Publication scanner | 118 files checked; four findings: `debug.log` and the three existing binary mascot assets | 1 |
+
+The scanner is not a clean pass: `debug.log` is an ignored one-line message
+of Chrome's crash reporter from October 8, 2026, and the images need manual
+review as before. Every provider was scripted: no model was called. Under the
+rule of October 17, 2026 (changelog, "Validation responsibilities"), the full
+unittest matrix, the package build and `twine check` were not run here. The
+opt-in tests in the real Codex sandbox were not run: the environment check
+did not change.
+
+**A review of these changes.** What shows criteria judged the ledger as it
+reads, without comparing it with the records the saved record had been
+judged from (`Ledger.anchored` against its `ledger` count and head). On
+these changes before the correction: once an invalidation of the user's
+check had been judged and saved, removing the last line of the ledger left
+three records that fit together, and the criterion went from
+`AWAITING_MANUAL_VALIDATION` to `VERIFIED` and the task from
+`AWAITING_VALIDATION` to `RELEASE_READY` on the page, in the list of tasks
+and on the command line, beside the warning that the ledger no longer held
+what the state had seen. Changing that line instead of removing it gave the
+same result: an invalidation that no longer fits the chain is not applied.
+
+- `evidence.Ledger.for_state` gives, for a ledger that no longer holds those
+  records unchanged, a copy in which no record is trusted, with the problem
+  named (`evidence.UNANCHORED`), and the ledger itself otherwise.
+  `judged_now` and `view` judge from that copy, so the statuses, the
+  results, the counts and the records listed are those the next run, which
+  starts the ledger again, will find. The file is not touched.
+- `app._criteria` no longer adds the problem itself: the view carries it.
+  `patchrondo criteria` prints it, and `core._ledger` uses the same text.
+
+**Tests of the review.** In `tests/test_acceptance.py`,
+`test_a_ledger_that_lost_what_the_state_saw_confirms_nothing_where_criteria_are_shown`
+removes the last record in one subtest and changes it in the other, and
+covers the view, the command line, that reading writes nothing, and that
+the next check agrees and keeps the file aside unchanged. In
+`tests/test_criteria_ui.py`,
+`test_a_ledger_cut_short_after_the_last_save_confirms_nothing_on_the_page_or_in_the_list`
+covers the task page and the list of tasks, and one expectation changed:
+`test_a_ledger_that_was_edited_is_reported_and_reading_it_changes_nothing`
+expected `E-0001`, the record before the changed one, trusted and counting;
+the state had seen the changed record, so no record counts now. Run on
+native Windows with Python 3.13.3 before the correction, both subtests and
+the page test failed. Each of the four new protections was run alone before
+the full set and detected.
+
+Validation on October 17, 2026, on the final code, with `PATH` in WSL2
+filtered as above (`shutil.which` found neither CLI) and no new file under
+`~/.claude/projects` or `~/.codex/sessions` after the WSL2 runs:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Unittest modules `test_acceptance`, `test_criteria_ui`, `test_cli`, `test_ui`, `test_frontend`, `test_workflow`, `test_integration_cli`, `test_recovery_checks` | Native Windows, Python 3.13.3: 170 tests, 169 passed, 1 skipped (an interrupt of a detached run needs POSIX), 157.244 s | 0 |
+| Unittest modules `test_acceptance`, `test_criteria_ui`, `test_cli` | Native Windows, Python 3.11.3: 76 tests passed, 77.429 s | 0 |
+| Protections | WSL2, Python 3.12.3: 165 of 165 removed safeguards detected, 0 missed (four of them new), 346 s | 0 |
+| Reliability, `--repeat 3` | Native Windows: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Reliability, `--repeat 3` | WSL2: 42 passed, 0 failed, 0 skipped | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Browser, all twelve scenarios, one run | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 353 passed, 0 failed | 0 |
+| Publication scanner | 118 files checked; the same four findings | 1 |
+
+`tools/ui_e2e.py` did not change after the table above, so
+`tests/test_browser_tools.py` was not run again. What the paragraph after
+the first table says about the scanner, the scripted providers, the CI
+checks and the real Codex sandbox holds for this run too.
 
 ## Criteria records kept when they cannot be read (October 16, 2026)
 

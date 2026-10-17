@@ -249,6 +249,14 @@ class ValidationPending(AgentFailure):
     """The code is approved, and required criteria still wait for something that is not development."""
 
 
+class AcceptanceUnreadable(AgentFailure):
+    """The task has a saved criteria record this version cannot read. Nothing replaces it: the task pauses."""
+
+
+UNREADABLE = ("The saved criteria of this task cannot be read by this version of PatchRondo: {}. Nothing replaced them and "
+              "no agent was called. Open the task with the version that saved them, or put back the state.json that held them")
+
+
 def _capabilities(root: Path, cfg: dict, state: dict, record: criteria.Acceptance) -> dict:
     """What the four executors of a task can do now. Reads settings and looks for programs on PATH; starts nothing."""
     provider = state.get("developer")
@@ -263,45 +271,38 @@ def _capabilities(root: Path, cfg: dict, state: dict, record: criteria.Acceptanc
 
 
 def _acceptance(path: Path, state: dict) -> criteria.Acceptance:
-    """The acceptance record of a task, read back from its task.md when the task has none this version can use.
+    """The acceptance record of a task, read back from its task.md when the task has none.
 
     A task created before criteria were tracked gets them here, at its first
     run, with nothing taken as verified: what its saved test results and its
     saved review say was never put on record as evidence. A review that was
     about to start therefore waits for the tests to run again.
 
-    A saved record this version cannot read, one written with a later schema
-    version included, is rebuilt the same way after it is kept aside
-    unchanged (`_keep_unread`): nothing of it is lost when it is replaced.
+    A saved record this version cannot read is never replaced: one written
+    with a later schema version may hold criteria that task.md does not, and
+    task.md never holds what an author set beyond the text (required, kinds,
+    dependencies). The task pauses with `acceptance_unreadable` instead.
     """
-    kept = None
     try:
-        record, why = criteria.Acceptance.load(state), "the task was created before criteria were tracked"
+        record = criteria.Acceptance.load(state)
     except ValueError as exc:
-        record, why = None, f"the saved record could not be used: {exc}"
-        kept = _keep_unread(path, state, why)
+        raise AcceptanceUnreadable(UNREADABLE.format(exc), "acceptance_unreadable") from exc
     if record is None:
         record = criteria.Acceptance.create(criteria.from_task_text(_read(path, "task.md", 400_000)), source="task.md")
-        _event(state, "acceptance_planned", source="task.md", note=why[:300], criteria=len(record.criteria),
-               **({"kept": kept} if kept else {}))
+        _event(state, "acceptance_planned", source="task.md", note="the task was created before criteria were tracked",
+               criteria=len(record.criteria))
         if state.get("phase") == "review":
             state["phase"] = "test"
     return record
 
 
-def _keep_unread(path: Path, state: dict, why: str) -> str:
-    """Put the saved acceptance record of a task aside, unchanged, before a record this version reads replaces it.
-
-    Returns the name of the file, in the task directory. The name comes from
-    the record itself, so a record kept by a run that stopped before it saved
-    the replacement is not kept twice. Nothing is deleted. Under the task lock.
-    """
-    block = state.get("acceptance")
-    digest = hashlib.sha256(json.dumps(block, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
-    file = path / f"acceptance.unread-{digest}.json"
-    if not file.exists():
-        save_json(file, {"task": state.get("id"), "kept_at": now(), "reason": why, "acceptance": block})
-    return file.name
+def _unreadable(state: dict) -> bool:
+    """Whether the task has a saved criteria record this version cannot read."""
+    try:
+        criteria.Acceptance.load(state)
+    except ValueError:
+        return True
+    return False
 
 
 def _ledger(path: Path, state: dict, record: criteria.Acceptance) -> evidence.Ledger:
@@ -309,7 +310,7 @@ def _ledger(path: Path, state: dict, record: criteria.Acceptance) -> evidence.Le
     ledger = evidence.read(path)
     problems = list(ledger.problems)
     if not problems and not ledger.anchored(record.ledger.get("count"), record.ledger.get("head")):
-        problems.append("The evidence ledger no longer holds the records the task state had seen")
+        problems.append(evidence.UNANCHORED)
     if problems:
         # Its records prove nothing any more: the file is kept aside, and what it verified has to be verified again.
         evidence.restart(path, problems)
@@ -762,7 +763,7 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
     error = {"kind": kind, "message": str(exc) or "Interrupted by the user", "at": recovery.stamp_up(at)}
     if isinstance(exc, EnvironmentBlocked):
         error["source"] = "environment"  # the details are in the task's `environment` record
-    if isinstance(exc, ValidationPending):
+    if isinstance(exc, (ValidationPending, AcceptanceUnreadable)):
         error["source"] = "acceptance"  # the details are in the task's `acceptance` record
     provider = getattr(exc, "provider", None)
     if kind == "quota":
@@ -906,6 +907,10 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
         if state["phase"] not in {"develop", "test", "review", "validate"}:
             raise ValueError(f"Invalid task phase: {state['phase']}")
         error = state.get("last_error")
+        if state["status"] == "paused" and isinstance(error, dict) and error.get("kind") == "acceptance_unreadable" \
+                and _unreadable(state):
+            # Idempotent Resume: while the saved criteria still cannot be read, a run may do nothing.
+            return state
         if (state["status"] == "paused" and isinstance(error, dict) and error.get("kind") in criteria.PAUSES.values()
                 and state["phase"] == "validate" and not _validation_moved(root, cfg, path, state, workspace)):
             # Idempotent Resume: while nothing was attached, decided or changed, a run has nothing to do.
@@ -1099,7 +1104,10 @@ def _on_criteria(home: Path, task_id: str, agents_root: Path | None, change=None
             raise AcceptanceRefused("The task worktree was not found")
         cfg = effective_config(config(home), state)
         current = fingerprint(workspace)
-        record, ledger = _sync(root, cfg, path, state, current=current)
+        try:
+            record, ledger = _sync(root, cfg, path, state, current=current)
+        except AcceptanceUnreadable as exc:
+            raise AcceptanceRefused(str(exc)) from exc  # nothing is judged, recorded or saved
         try:
             entry = change(record, ledger, state, path, current) if change is not None else None
         except LookupError as exc:

@@ -1541,9 +1541,17 @@ def scenario_criteria(env: Env) -> None:
         return f"qa('details.criterion')[{number - 1}]"
 
     def press(number: int, label: str) -> None:
-        page.js(f"([...{card(number)}.querySelectorAll('button')].find((b) => b.textContent.includes({json.dumps(label)})).click(), true)")
+        # The buttons of a card are disabled while the task's lock is held, also by the action just taken on another
+        # criterion, until the page hears that it was released. A person waits for that too.
+        found = (f"[...({card(number)} || document.createElement('div')).querySelectorAll('button')]"
+                 f".find((b) => b.textContent.includes({json.dumps(label)}) && !b.disabled)")
+        page.wait(f"Boolean({found})", 10, f"{label} on criterion {number}")
+        page.js(f"({found}.click(), true)")
 
-    # The form says, before the task exists, what each criterion will take and who can give it.
+    # The form says, before the task exists, what each criterion will take and who can give it. It takes the project named
+    # in its address only once the page knows that project: until then it falls back to its draft's project, here the one
+    # of the previous scenario. Wait for the project registered above to reach the page first.
+    page.wait("Boolean(q('.switcher-text')) && q('.switcher-text').innerText.startsWith('release')", 10, "the page to know the project")
     env.go(f"new?project={project['id']}")
     page.wait("Boolean(q('form.form'))", 8, "the new task form")
     page.fill("form.form input[type=text]", "Release 1.0")
