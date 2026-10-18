@@ -538,6 +538,11 @@ could leave what it started running unseen.
 
 ### CI duration — October 17, 2026
 
+Published on `main` in commit `533ba8a` on October 18, 2026 (11:14 +02:00),
+with the first three corrections of the next entry. Its CI run 39114549108
+failed in three test jobs, each with one error from the race of the test
+fixtures that the next entry corrects; every Windows shard passed.
+
 - **The Windows test jobs no longer have to fit the whole suite in 15
   minutes.** On GitHub the suite took 514 to 772 s in the `windows-latest`
   jobs that ended (runs read on October 17, 2026), and the runs of `3f284bf`
@@ -577,8 +582,9 @@ could leave what it started running unseen.
 
 ### CI duration: review corrections — October 18, 2026
 
-Three defects a review of the CI duration change found, each reproduced
-before it was corrected.
+Three defects a review of the CI duration change found, a fourth found while
+correcting them and a fifth the CI run of `533ba8a` showed. Each new test
+failed before its correction.
 
 - **Time outside tests includes collecting them.** `tools/run_tests.py`
   started its clock after collecting the tests, while its summary said the
@@ -603,9 +609,30 @@ before it was corrected.
   function of the same name, such as two that one factory returns, got the
   first one's folder. It now keeps it under the builder itself. Tested with
   two builders of one factory.
-- No runtime code changed. Apart from the three new tests, the suite
-  collects the same IDs in the same order, and the parts of 1, 2 and 4
-  shards hold the same tests. The checks are in
+- **A class stays in one shard whatever its method names hold.** The runner
+  took a test's class as everything before the last dot of its ID, so
+  `m.C.test_a.b` made a class `m.C.test_a` of its own and could go to
+  another shard than the rest of `m.C`. The class is now read from each
+  collected test (`class_of`) and given to `partition` with the IDs; each
+  test of the JSON report records it (`class`), and the seconds per class
+  (`classes`, `--write-timings`) are added up from it, so a class whose
+  `setUpClass` skipped no longer adds an entry named after its skip record.
+  Tested with a class whose method names hold dots, split into two shards.
+- **Nothing changes a repository while it is copied.** On GitHub's Ubuntu and
+  macOS runners (Git 2.55 and 2.56) the first copy of a repository just built
+  by `support.copied` failed once in each of three jobs of run 39114549108:
+  `.git/objects/maintenance.lock` went away while it was copied. A commit
+  ends by starting Git's automatic maintenance, detached (`GIT_TRACE` shows
+  `git maintenance run --auto --quiet --detach` with Git 2.50.1), which can
+  still be at work on the folder. `copied` now runs a builder's Git commands
+  with `maintenance.auto=false` and `gc.auto=0`, added through
+  `GIT_CONFIG_COUNT` after any settings already there and removed when the
+  build ends; the copies and the tests' own Git commands keep Git's
+  settings. Tested by a builder whose commit is traced: it starts no
+  maintenance, sees the settings already there, and leaves none behind.
+- No runtime code changed. Apart from the five new tests, the suite collects
+  the same IDs in the same order, and the parts of 1, 2 and 4 shards hold
+  each test once. The checks are in
   [the technical review](docs/REVIEW.md#ci-duration-review-corrections-october-18-2026).
 
 ## 0.2.1 — zero configuration and self-healing

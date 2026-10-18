@@ -21,7 +21,8 @@ findings field only: October 17, 2026. Versioned workflow events: October
 four records checked together: October 17, 2026. Checks PatchRondo runs
 itself, and publication-status update: October 17, 2026. CI duration, and
 publication-status update: October 17, 2026. Review corrections of the CI
-duration change: October 18, 2026.
+duration change, the CI run of `533ba8a`, a correction of the test fixtures
+it showed, and publication-status update: October 18, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -29,10 +30,27 @@ repository was present in those original directories. A local, ignored
 Each section below says which code it covers: a published commit or a local
 working tree at its date.
 
-## Current source and CI status (October 17, 2026)
+## Current source and CI status (October 18, 2026)
 
 GitHub API, `git ls-remote` and `gh run list` were checked again on October
-17, 2026 between 22:20 and 22:50 +02:00. Remote `main` returned
+18, 2026 between 12:58 and 13:18 +02:00. Remote `main` returned
+`533ba8a5e5832e7bce461b40e590448859eb36e9`, committed and pushed by the user
+on October 18, 2026 (11:14 +02:00): the CI duration change and the first
+three of its review corrections, on top of `fb6ecb1`. No version tags or
+GitHub Releases were returned, and `main` has no branch protection. Package
+metadata remains 0.2.1.
+
+| Commit | CI run | Observed status on October 18, 2026 |
+|---|---|---|
+| `533ba8a` | [39114549108](https://github.com/luigiggigo/patchrondo/actions/runs/39114549108) | FAILED, in 4 min 49 s: three test jobs had one error each, `shutil.Error` in the setup of a test, from the copy of a repository that Git's background maintenance was changing (Python 3.11 and 3.13 on `ubuntu-latest`, Python 3.13 on `macos-latest` part 1 of 2); no test failed an assertion. No job was cancelled or reached its time limit, `Collect tests` and the package check succeeded, and all eight `windows-latest` shards and the three other macOS shards passed. `CI result` failed for that reason only ("tests ended with failure") |
+
+The run of `533ba8a` is described in
+[CI duration: review corrections](#ci-duration-review-corrections-october-18-2026),
+with the correction of the fixture it showed. The runs below were read on
+October 17, 2026 and are kept as they were observed.
+
+The check before it, on October 17, 2026 between 22:20 and 22:50 +02:00,
+used the same GitHub API, `git ls-remote` and `gh run list`. Remote `main` returned
 `fb6ecb1f399ad05de4319a362a1e2b25bc44dfd8`. No version tags or GitHub
 Releases were returned. Package metadata remains 0.2.1; the implemented
 Phase 1 is grouped under the 0.3.0 development series in the changelog.
@@ -175,7 +193,9 @@ This section covers changes on top of the CI duration change below:
 `tools/run_tests.py`, `tests/support.py`, `tests/test_run_tests.py`,
 `tests/test_support.py`, TESTING, the changelog and this record. No runtime
 code changed: `git diff --stat fb6ecb1 -- src/` and `git status --short src/`
-print nothing. The package version is unchanged, 0.2.1.
+print nothing. The package version is unchanged, 0.2.1. A fourth correction,
+of the class a shard reads for a test, was asked for on October 18, 2026
+after the first three were validated; it has its own checks below.
 
 **Findings of the review, as received.** A review of the CI duration change
 on October 17, 2026 reported three defects, each with a reproduction. Before
@@ -232,15 +252,15 @@ it was, pipes escaped in the list as well, module names left as they were,
 the clock started after collection, timings written after an interrupt,
 builders told apart by name, a builder built again for every copy.
 
-**What the suite collects.** Through `--list` before and after the
-corrections, with Python 3.11.3 and 3.13.3 on native Windows and 3.12.3 under
-WSL2 (compared with the Windows list from before): the 711 IDs collected
-before are collected in the same order, with the three new ones; the parts of
-1, 2 and 4 shards hold the same tests as before, each new test in the part of
-its class. Four shards hold 233, 195, 173 and 113 tests.
+**What the suite collects.** Through `--list` before and after the first
+three corrections, with Python 3.11.3 and 3.13.3 on native Windows and 3.12.3
+under WSL2 (compared with the Windows list from before): the 711 IDs
+collected before are collected in the same order, with the three new ones;
+the parts of 1, 2 and 4 shards hold the same tests as before, each new test
+in the part of its class. Four shards hold 233, 195, 173 and 113 tests.
 
-Validation on October 18, 2026, with `PATH` filtered so that `shutil.which`
-found neither `claude` nor `codex` in any run:
+Validation of the first three corrections on October 18, 2026, with `PATH`
+filtered so that `shutil.which` found neither `claude` nor `codex` in any run:
 
 | Check | Platform and result | Exit status |
 |---|---|---|
@@ -270,18 +290,214 @@ rules for tables and code spans); macOS; the package build and `twine check`
 tests in the real Codex sandbox (no interface, checkpoint or environment
 check code changed); pytest's real-pytest test, skipped on both platforms.
 
+**The class of a test (fourth correction).** `run_tests.unit_of` took a
+test's class as everything before the last dot of its ID. unittest takes any
+method name, dots included, so `m.C.test_a` and `m.C.test_a.b`, two tests
+of `m.C`, made two units: with two shards a class could be split between
+jobs, its class fixtures run in both, while the shards still held every
+test once. It was found while correcting the three findings; before the
+correction the new test below failed on native Windows with Python 3.11.3
+and 3.13.3 (class `A` split, `test_a.b.c` in one part and `test_a` and
+`test_a.b` in the other; exit 1). `unit_of` is gone. `class_of` reads the
+class from the collected test (`module.Class`, as unittest writes it in
+IDs), and `partition` takes the class of every ID from a mapping built at
+collection (`--shard`, `--collect-only`); IDs stay as they are. Each record
+of the report holds its test's `class`, and the seconds per class
+(`classes`, `--write-timings`) are added up from it. A record without one,
+the skip of a class whose `setUpClass` raised `SkipTest`, no longer adds an
+entry named after it: the runner of before wrote `setUpClass (test_skip` in
+`classes` for such a class, checked on native Windows with Python 3.13.3.
+
+`RunnerTests.test_a_class_stays_in_one_part_whatever_its_method_names_hold`
+lists the two shards of a module whose class `A` has `test_a`, `test_a.b`
+and `test_a.b.c` beside a class `B`: `A` is in one part, in collection
+order, and the parts hold the five tests once each; its report records each
+test's class, and `classes` names `A` and `B` only. `PartitionTests` give
+`partition` the classes of their IDs, and the test of the committed timings
+reads them from the collected suite. Two more safeguards were removed in
+turn, the class read from the ID and the seconds of a class added up by its
+ID: the tests failed on both, and all 13 removals were detected on native
+Windows with Python 3.11.3 and 3.13.3 and under WSL2 with Python 3.12.3.
+
+For this suite the class read from each test is the one the split of its ID
+gave, for all 715 tests (native Windows, Python 3.13.3): with the same
+collection both give the same parts. The parts of 2 and 4 shards still
+changed with the new test. It is the eleventh test of `RunnerTests`, a
+class the timings file knows (1.55 s); its seconds per test fell below the median,
+which went from 0.1455 to 0.1385 s, and the median is the estimate of
+`WorkflowTests`, the one class the file does not know. That moved the
+classes of the greedy split: four shards now hold 175, 180, 225 and 135
+tests, estimated at 132.97 s each (132.97 to 132.98 s before). Every test is
+still in exactly one part.
+
+Validation of the fourth correction on October 18, 2026, with `PATH` filtered
+so that `shutil.which` found neither `claude` nor `codex` in any run:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| The new test, against the runner before the correction | Native Windows, Python 3.11.3 and 3.13.3: failed, class `A` split between the two parts | 1, twice |
+| `tests/test_run_tests.py` | Native Windows, Python 3.11.3 and 3.13.3, and WSL2, Python 3.12.3: 19 passed | 0 |
+| `tests/test_support.py` and the review's three reproductions | The same three: 3 and 3 passed | 0 |
+| Removed safeguards | The same three: 13 of 13 detected | 0 |
+| `py_compile` of the changed files | Native Windows, Python 3.11.3 and 3.13.3 | 0 |
+| `run_tests.py --collect-only --shard-counts 1,2,4` | Native Windows, Python 3.11.3 and 3.13.3, and WSL2, Python 3.12.3: 715 tests, none failed to import; 2 shards hold 326 and 389 tests, 4 shards 175, 180, 225 and 135 | 0 |
+| `--list` of every part of 1, 2 and 4 shards, against the lists before the four corrections | Native Windows, Python 3.11.3 and 3.13.3: the 711 IDs of before in the same order, four new ones; every count holds each test exactly once. WSL2, Python 3.12.3: the same SHA-256 of the IDs and of the four parts as on Windows | 0 |
+| Publication scanner | 129 files checked; the same five findings as above | 1 |
+| Documentation | Links and anchors of five documents resolved; changed files UTF-8 with LF and no BOM; `git diff --check` clean | 0 |
+
+`tools/run_tests.py` is run by the CI workflow and `tests/test_run_tests.py`
+only: protections run the test modules with `unittest` and reliability does
+not use the runner, so neither was run again for the fourth correction.
+
 **Limits that remain.** A line break in an ID is shown as `\n` in the
 summary, as a name that holds a backslash and an `n` would be; the JSON
-report keeps the difference. `run_tests.unit_of` takes a test's class as
-everything before its last dot, so a method whose name holds a dot (valid
-for unittest, absent from this suite) would make a class of its own and
-could be put in another shard than the rest of its class; the shards would
-still hold every test once. It was found while correcting the findings and
-is left as it is. The limits of the CI duration change below remain.
+report keeps the difference. Adding a test can move every class between
+shards when it moves the median per test that estimates the classes the
+timings file does not know; the parts stay complete and balanced by their
+estimates, and a refresh of the file with `--write-timings` removes the
+estimate. The limits of the CI duration change below remain.
 
-**Verdict: READY for these three corrections**, on the checks above. The
+**Verdict: READY for these four corrections**, on the checks above. The
 duration of CI on GitHub stays NOT_VERIFIED: only a run of a commit holding
 these corrections can measure it. This is not a release-readiness verdict.
+(Recorded before the CI run of `533ba8a` below was read.)
+
+**The CI run of `533ba8a`.** Read with `gh run view`, its full log and the
+jobs API on October 18, 2026 between 12:58 and 13:18 +02:00. Run 39114549108
+tested `533ba8a`, which holds the CI duration change and the first three
+corrections above, not the fourth or the fifth. Its 17 jobs completed: none
+was cancelled or reached its time limit, and no step failed outside the
+tests. `Collect tests` (6 s) and the package check (15 s) succeeded. The test
+step failed in three jobs, each with one error and no failed assertion, in
+the setup of the first test that copied a repository just built:
+`test_acceptance.EngineTests.test_a_build_command_that_fails_takes_the_approval_back`
+with Python 3.11 and 3.13 on `ubuntu-latest` (714 tests, 692 passed, 21
+skipped), and `test_agents.EngineTests.test_a_private_folder_cannot_be_opened_to_an_agent_by_editing_the_files`
+with Python 3.13 in part 1 of 2 on `macos-latest` (325 tests, 320 passed, 4
+skipped). Each was `shutil.Error` from `copied`:
+`<template>/.git/objects/maintenance.lock`, "No such file or directory".
+`CI result` failed because the test jobs did ("tests ended with failure").
+Git was 2.55.0 on Ubuntu, 2.56.0 on macOS and 2.56.0.windows.2 on Windows.
+
+Measured by `tools/run_tests.py` in each test job of `533ba8a` (714 tests;
+Windows parts of 233, 195, 173 and 113 tests), from the start of collection
+to the end of the last test:
+
+| Jobs | Measured seconds per part | Whole job |
+|---|---|---|
+| Python 3.11, `windows-latest` | 149.8, 193.7, 198.5, 210.7 | 2 min 51 s to 4 min 16 s |
+| Python 3.13, `windows-latest` | 175.4, 199.9, 133.3, 241.5 | 2 min 32 s to 4 min 41 s |
+| Python 3.11, `macos-latest` | 167.9, 204.6 | 3 min 1 s, 3 min 37 s |
+| Python 3.13, `macos-latest` | 163.2 (one error), 163.9 | 2 min 55 s each |
+| Python 3.11 and 3.13, `ubuntu-latest` | 136.5 and 138.3 (one error each) | 2 min 24 s, 2 min 28 s |
+
+The timings file estimated each of the four Windows parts of that commit at
+132.97 to 132.98 s, seconds of the Windows computer it was measured on. On
+the runners they took 133 to 242 s, 1.0 to 1.8 times their estimate, and not
+evenly: part 4 was the slowest with both Pythons. The run took 4 min 49 s,
+against the 4 to 4.5 minutes estimated on October 17, 2026, and no Windows
+job came near its 15-minute limit. These durations belong to `533ba8a` only.
+
+**Nothing changes a repository while it is copied (fifth correction).** A
+commit ends by starting Git's automatic maintenance: on native Windows with
+Git 2.50.1, `GIT_TRACE` shows `git maintenance run --auto --quiet --detach`,
+a process that goes on after the commit returned (under WSL2, Git 2.43.0
+runs `git maintenance run --auto --quiet` before it returns). That such a
+process held `.git/objects/maintenance.lock` while `copied` copied the
+template is read from the traceback, not observed: here 150 repositories
+built and copied at once, with maintenance on and with it off, gave no lock
+and no failed copy on native Windows (Git 2.50.1) or under WSL2 (Git 2.43.0).
+`copied` now runs a builder's Git commands with `maintenance.auto=false` and
+`gc.auto=0` (`_no_background_git`), given through `GIT_CONFIG_COUNT`,
+`GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` after any such settings
+already in the environment, and taken away when the build ends: nothing of
+them is in the template, the copies or the tests' own Git commands, which
+keep Git's behaviour of before the CI duration change. With these settings,
+the same trace shows no maintenance started.
+`CopiedRepositoryTests.test_a_folder_is_built_without_git_maintenance_left_running_on_it`
+builds with a traced commit, under a setting already in the environment: the
+builder sees that setting and both of the new ones, its commit starts no
+maintenance, the environment is as it was after the build, and the copy has
+none of them. Before the correction it failed on native Windows with Python
+3.11.3 and 3.13.3 (the build saw neither setting; exit 1). Four removals of
+this safeguard (no settings, `gc.auto` only, the settings already there
+replaced, the settings left in the environment) were detected, 17 of 17
+removals in all.
+
+**The shards, checked again.** On the tree with the five corrections (716
+tests, 101 classes; the timings file knows all but
+`test_run_tests.WorkflowTests`, estimated from the median test, 0.1385 s),
+for 1 to 6 shards: every test is in exactly one part, every class in one
+part, each part in collection order with each class's tests in their order,
+and partitioning again with the timings and classes in reverse order gives
+the same parts. `--list` of each part of 1, 2 and 4 shards gives what
+`partition` gives. Native Windows with Python 3.11.3 and 3.13.3 gave the
+same SHA-256 of the IDs and of the parts. Estimated seconds per part, from
+the timings file (not measured):
+
+| Shards | Tests per part | Estimated seconds per part |
+|---|---|---|
+| 1 | 716 | 531.88 |
+| 2 | 327, 389 | 265.94, 265.94 |
+| 3 | 249, 214, 253 | 177.29, 177.30, 177.29 |
+| 4 | 176, 180, 225, 135 | 132.97 each |
+| 5 | 101, 140, 195, 124, 156 | 106.37 to 106.38 |
+| 6 | 90, 120, 159, 123, 100, 124 | 88.64 to 88.65 |
+
+CI runs 1, 2 and 4. Against `533ba8a` the parts of 2 and 4 shards hold
+other classes (4 shards: 176, 180, 225 and 135 tests instead of 233, 195,
+173 and 113), because of the tests added since and of the median they moved.
+
+Validation of the fifth correction and of the shards on October 18, 2026,
+with `PATH` filtered so that `shutil.which` found neither `claude` nor
+`codex` in any run:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| The new test, before the correction | Native Windows, Python 3.11.3 and 3.13.3: failed, the build saw neither setting | 1, twice |
+| `GIT_TRACE` of a commit, maintenance on and off | Native Windows, Git 2.50.1: `git maintenance run --auto --quiet --detach` started, then nothing started; WSL2, Git 2.43.0: `git maintenance run --auto --quiet` started | 0 |
+| 150 builds copied at once, maintenance on and off | Native Windows, Python 3.13.3, Git 2.50.1, and WSL2, Python 3.12.3, Git 2.43.0: 0 failed copies, no lock seen; the race was not reproduced | 0 |
+| `py_compile` of the four changed Python files | Native Windows, Python 3.11.3 and 3.13.3 | 0 |
+| `tests/test_support.py` and `tests/test_run_tests.py` | Native Windows, Python 3.11.3 and 3.13.3, and WSL2, Python 3.12.3: 4 and 19 passed | 0 |
+| The review's three reproductions | The same three: 3 passed | 0 |
+| Removed safeguards | The same three: 17 of 17 detected | 0 |
+| The modules that copy repositories: `test_acceptance`, `test_agents`, `test_live_activity`, `test_recovery`, `test_verification`, `test_workflow` | Native Windows, Python 3.13.3 and 3.11.3: 64, 66, 25, 65 (1 skipped: POSIX `tzset`), 49 (3 skipped: POSIX permissions, signals, pytest not installed) and 23 tests; WSL2, Python 3.12.3: the same counts, 49 with 2 skipped (job objects of native Windows, pytest not installed) | 0, eighteen times |
+| `run_tests.py --collect-only --shard-counts 1,2,4` | Native Windows, Python 3.11.3 and 3.13.3, and WSL2, Python 3.12.3: 716 tests, none failed to import | 0 |
+| The shards of 1 to 6 parts, above | The same three: each test once, whole classes, collection order, the same parts again; the same SHA-256 of IDs and parts on all three | 0 |
+| Protections | WSL2, Python 3.12.3: 243 of 243 removed safeguards detected, 0 missed, 494.5 s | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.04 s after the planned time | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Publication scanner | 129 files checked; the same five findings as above, none written for this change | 1 |
+| Documentation | Links and anchors of nine documents resolved; changed files UTF-8 with LF and no BOM; `git diff --check` clean | 0 |
+
+Every provider was scripted: no model was called, and no new session file
+appeared under `~/.claude/projects` or `~/.codex/sessions` in WSL2 or under
+`~/.codex/sessions` on native Windows. Not run: macOS, Linux outside WSL2
+and Git 2.55 or 2.56, where the race was observed; the package build and
+`twine check` (CI's); the browser check, the crash test at every checkpoint
+and the opt-in tests in the real Codex sandbox (no interface, checkpoint or
+environment check code changed); pytest's real-pytest test.
+
+**Problems from before this change, kept apart.** The intermittent macOS
+failure of `test_a_timeout_stops_the_command_and_what_it_started`, described
+under CI duration below, did not occur in run 39114549108: that test passed
+in all six jobs that reached it. It remains open and unchanged. Nothing else
+in the run came from code older than the CI duration change.
+
+**Limits that remain.** The fifth correction is read from the CI traceback
+and from Git's trace, not from a reproduction: only a run on GitHub's
+runners shows whether the copies stay whole there. Git's maintenance still
+runs, as before the CI duration change, in the repositories the tests work
+in; no failure has come from it. The estimates of the parts are not
+durations: on GitHub the Windows parts of `533ba8a`, estimated equal, took
+from 133 to 242 s.
+
+**Verdict: READY for these five corrections**, on the checks above. The
+duration and the result of CI on GitHub for a commit that holds them stay
+NOT_VERIFIED until a run of that commit; the result of `533ba8a` is its own
+and is not carried to another commit. This is not a release-readiness
+verdict.
 
 ## CI duration (October 17, 2026)
 

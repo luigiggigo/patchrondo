@@ -76,7 +76,9 @@ PYTHONPATH=src python tools/run_tests.py --write-timings tools/test_timings.json
 ```
 
 `--shard I/N` runs the I-th of N parts. A part holds whole test classes, so a
-class keeps its fixtures and the order of its tests. The classes are spread by
+class keeps its fixtures and the order of its tests. The class of a test is
+read from the collected test, never from its ID, whose method name may hold
+dots; the JSON report records it with each test. The classes are spread by
 the seconds per class in `tools/test_timings.json`, longest first, each to the
 part with the least time so far: the same tests and the same file give the same
 parts everywhere. A class the file does not know is estimated from the median
@@ -87,6 +89,15 @@ every test of the run passed or was skipped. Refresh the file with
 `--write-timings` from a whole run on native Windows, where the suite is
 slowest, when the parts drift apart.
 
+Changing the suite can change which part holds a class, also a class the
+change did not touch: a test added, removed or moved changes the classes to
+spread, and the median test that estimates the classes the file does not
+know. On October 18, 2026 one test added to a class the file knew moved
+classes in the parts of 2 and 4 shards. The parts still hold whole classes,
+each test once, in collection order, and the same tests and file still give
+the same parts. Their seconds are estimates from the timings file, not
+durations of a run: GitHub's runners take longer, and unevenly.
+
 Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
@@ -95,8 +106,11 @@ inspection for a versioned release is described in [PUBLISHING.md](PUBLISHING.md
 Building a repository starts several Git processes, which is slow on Windows:
 most tests get a copy of one that `tests/support.py` builds with Git once per
 builder and test process (`copied`, `make_repo`). A builder is the function
-passed, never its name. Each copy is a repository of its own, with its own
-`.git`; only its first commit is the same as in other copies.
+passed, never its name. Its Git commands run with automatic maintenance
+turned off, so no Git process started in the background changes the folder
+while it is copied; the copies and the tests' own Git commands keep Git's
+settings. Each copy is a repository of its own, with its own `.git`; only
+its first commit is the same as in other copies.
 
 The preflight can be run in the real Codex sandbox on native Windows. It
 starts the installed CLI's sandbox self-check, sends no prompt and uses no

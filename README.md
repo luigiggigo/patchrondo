@@ -65,6 +65,10 @@ next phase. See the [record boundaries](docs/ARCHITECTURE.md#03-record-boundarie
 and [validation record](docs/REVIEW.md) for evidence and remaining limits.
 CI results are recorded per commit: the failed history import in `15750e6`
 is corrected in `753d957`; its newer run has its own status in that record.
+The run of `533ba8a` (October 18, 2026), the first with the test suite in
+shards, failed with three errors in Ubuntu and macOS jobs from a race of the
+test fixtures with Git's background maintenance, whose correction that record
+describes; its Windows shards passed.
 
 ## Requirements
 

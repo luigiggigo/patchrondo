@@ -13,9 +13,9 @@ October 9 and 10, 2026; the CI runs for those commits are recorded in
 **0.2.0** is published as source on `main`: the interface was pushed on
 October 10, 2026, live activity on October 11, 2026, in commit `c9f6e1e`, and
 the failure classification correction the same day in commit `6937d9f`.
-[REVIEW.md](REVIEW.md#current-source-and-ci-status-october-17-2026) records the
+[REVIEW.md](REVIEW.md#current-source-and-ci-status-october-18-2026) records the
 current commit's CI status and the dated local checks. The GitHub repository
-has no version tags or GitHub Releases as checked on October 17, 2026.
+has no version tags or GitHub Releases as checked on October 18, 2026.
 Source publication, a versioned release and publishing to PyPI are separate
 steps.
 
@@ -39,7 +39,7 @@ the review settled by kind (`b9e5283`, October 16), and the criteria
 records, review findings and workflow events of October 16 and 17 (`d4c0ecd`
 to `15750e6`, pushed on October 17, 2026 at 19:00 +02:00) keep the same
 package version. Their validation is recorded in [REVIEW.md](REVIEW.md); the
-[current status](REVIEW.md#current-source-and-ci-status-october-17-2026)
+[current status](REVIEW.md#current-source-and-ci-status-october-18-2026)
 lists the CI runs of these commits.
 
 The remote `main` was checked again on October 17, 2026 (22:20–22:50
@@ -50,12 +50,25 @@ runs of `3f284bf` and `fb6ecb1` had Windows jobs stopped at the 15-minute
 limit, and the run of `fb6ecb1` failed one macOS test. The failed run
 39051863842 belongs to `15750e6`, whose import error is corrected in
 `753d957`; do not carry a result of one commit forward to another.
+
+On October 18, 2026 (12:58–13:18 +02:00) the remote `main` was at
+`533ba8a`, pushed by the user at 11:14 +02:00 on top of `fb6ecb1`: the CI
+duration change, which runs the suite in shards, and the first three of its
+review corrections. Tags and GitHub Releases were still empty. Its CI run
+39114549108 failed in 4 min 49 s: three test jobs (Python 3.11 and 3.13 on
+Ubuntu, Python 3.13 in the first macOS shard) each had one error, a copy of a
+test repository that Git's background maintenance was changing; no assertion
+failed, no job was cancelled or reached its time limit, and every Windows
+shard passed. That result belongs to `533ba8a` only; the correction of the
+fixture is recorded in
+[REVIEW.md](REVIEW.md#ci-duration-review-corrections-october-18-2026).
+
 The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
 Workflow Events and their integration under **0.3.0 — Unreleased**, preserving
 all dated entries. This names a development series, not a new published
 package. The [roadmap](ROADMAP.md) keeps the separate 0.35 proposal distinct.
-See [REVIEW.md](REVIEW.md#current-source-and-ci-status-october-17-2026) for
-the CI result of that exact commit.
+See [REVIEW.md](REVIEW.md#current-source-and-ci-status-october-18-2026) for
+the CI result of each exact commit.
 
 The repository is already initialized and has an `origin` remote. Future updates
 do not require `git init` or creating another GitHub repository.

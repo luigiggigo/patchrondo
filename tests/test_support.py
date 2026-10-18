@@ -1,8 +1,10 @@
 """The shared fixtures of the tests: each test gets a repository of its own, even when it is copied."""
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from support import copied, make_repo
 
@@ -68,6 +70,40 @@ class CopiedRepositoryTests(unittest.TestCase):
         copies = [copied(build, self.root / f"copy-{n}") for n, build in enumerate((first, second, first, second))]
         self.assertEqual([(copy / "value.txt").read_text(encoding="utf-8") for copy in copies], ["A", "B", "A", "B"])
         self.assertEqual(calls, ["A", "B"])  # each built once, then copied
+
+    def test_a_folder_is_built_without_git_maintenance_left_running_on_it(self):
+        # A commit can start Git's maintenance in the background, still at work on the folder while it is copied:
+        # on GitHub's runners (Git 2.55 and 2.56) a copy met a lock file that went away under it.
+        seen = {}
+
+        def build(path: Path) -> None:
+            path.mkdir(parents=True)
+
+            def run(*args: str, **env: str) -> subprocess.CompletedProcess:
+                return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True,
+                                      env={**os.environ, **env})
+
+            run("init", "-q")
+            seen.update({name: run("config", "--get", name).stdout.strip()
+                         for name in ("user.name", "maintenance.auto", "gc.auto")})
+            (path / "file.txt").write_text("built", encoding="utf-8")
+            run("add", ".")
+            seen["commit"] = run("-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm",
+                                 "base", GIT_TRACE="1")
+
+        settings = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "Kept"}
+        with patch.dict(os.environ, settings):
+            copy = copied(build, self.root / "copy")
+            # What the build had is gone once it is built: a test's own Git commands run as they did before.
+            self.assertEqual({name: value for name, value in os.environ.items() if name.startswith("GIT_CONFIG")},
+                             settings)
+        self.assertEqual(seen["commit"].returncode, 0, seen["commit"].stderr)
+        self.assertEqual([seen["user.name"], seen["maintenance.auto"], seen["gc.auto"]], ["Kept", "false", "0"])
+        self.assertNotIn("maintenance run", seen["commit"].stderr)
+        self.assertNotIn("gc --auto", seen["commit"].stderr)
+        self.assertEqual(git(copy, "log", "--format=%an %s"), "Kept base")
+        self.assertEqual(subprocess.run(["git", "-C", str(copy), "config", "--local", "--get", "maintenance.auto"],
+                                        capture_output=True).returncode, 1)  # nothing of it is in the copy
 
 
 if __name__ == "__main__":

@@ -8,7 +8,9 @@ is reported once, as time outside tests, never added to a test. So is the time
 to collect the tests (importing their modules) and the runner's own.
 
 `--shard I/N` runs the I-th of N parts. A part is made of whole test classes,
-so a class keeps its fixtures and the order of its tests. Classes are spread
+so a class keeps its fixtures and the order of its tests. The class of a test
+is read from the collected test, never from its ID: a method name may hold
+dots, so no split of an ID can tell where its class ends. Classes are spread
 by measured duration (`--timings`), longest first, each to the part with the
 least time so far, ties to the lower part; a class the timings do not know is
 estimated from the median test. The same collected tests and the same timings
@@ -44,9 +46,12 @@ def flatten(suite) -> list[unittest.TestCase]:
     return [suite]
 
 
-def unit_of(test_id: str) -> str:
-    """The class of a test ID (`module.Class`): the smallest unit a shard holds."""
-    return test_id.rsplit(".", 1)[0]
+def class_of(test: unittest.TestCase) -> str:
+    """The class of a collected test (`module.Class`, as unittest writes it in IDs): the smallest unit a shard holds.
+
+    It comes from the test itself: `m.C.test_a.b` is a test of `m.C`, which no split of the ID can tell.
+    """
+    return f"{type(test).__module__}.{type(test).__qualname__}"
 
 
 def collect(start: str = "tests", pattern: str = "test*.py", top: str | None = None) -> list[unittest.TestCase]:
@@ -63,17 +68,21 @@ def load_timings(path: Path | None) -> dict[str, float]:
         return {str(name): float(seconds) for name, seconds in data["classes"].items()}
     classes: dict[str, float] = defaultdict(float)
     for record in data.get("tests", []):
-        classes[unit_of(record["id"])] += float(record["seconds"])
+        if "class" in record:  # a fixture's record has none
+            classes[record["class"]] += float(record["seconds"])
     return dict(classes)
 
 
-def partition(test_ids: list[str], shards: int, timings: dict[str, float]) -> list[list[str]]:
-    """Split test IDs into `shards` lists of whole classes, balanced by `timings`, each list in collection order."""
+def partition(test_ids: list[str], shards: int, timings: dict[str, float], classes: dict[str, str]) -> list[list[str]]:
+    """Split test IDs into `shards` lists of whole classes, balanced by `timings`, each list in collection order.
+
+    `classes` gives the class of every ID, as `class_of` read it from the collected test.
+    """
     if shards < 1:
         raise ValueError("the number of shards must be at least 1")
     units: dict[str, list[str]] = {}
     for test_id in test_ids:
-        units.setdefault(unit_of(test_id), []).append(test_id)
+        units.setdefault(classes[test_id], []).append(test_id)
     known = [timings[name] / len(units[name]) for name in units if name in timings and units[name]]
     per_test = statistics.median(known) if known else 1.0
     estimate = {name: timings.get(name, per_test * len(ids)) for name, ids in units.items()}
@@ -85,7 +94,7 @@ def partition(test_ids: list[str], shards: int, timings: dict[str, float]) -> li
         load[index] += estimate[name]
     parts: list[list[str]] = [[] for _ in range(shards)]
     for test_id in test_ids:
-        parts[owner[unit_of(test_id)]].append(test_id)
+        parts[owner[classes[test_id]]].append(test_id)
     return parts
 
 
@@ -137,7 +146,7 @@ class TimedResult(unittest.TextTestResult):
         if isinstance(sys.exc_info()[1], KeyboardInterrupt):
             # unittest stops a test in a `finally`: one cut short by an interrupt has neither passed nor failed.
             self._outcome, self.interrupted = "interrupted", test.id()
-        record = {"id": test.id(), "seconds": round(seconds, 4), "outcome": self._outcome}
+        record = {"id": test.id(), "class": class_of(test), "seconds": round(seconds, 4), "outcome": self._outcome}
         if self._detail:
             record["detail"] = self._detail
         self.records.append(record)
@@ -192,7 +201,8 @@ def summarize(records: list[dict], wall: float, label: str, slowest: int = SLOWE
     classes: dict[str, float] = defaultdict(float)
     modules: dict[str, float] = defaultdict(float)
     for record in tests:
-        classes[unit_of(record["id"])] += record["seconds"]
+        if "class" in record:  # a class whose setUpClass skipped has a record of its own, without one
+            classes[record["class"]] += record["seconds"]
         modules[record["id"].split(".", 1)[0]] += record["seconds"]
     counts: dict[str, int] = defaultdict(int)
     for record in records:
@@ -277,8 +287,9 @@ def collect_only(tests: list[unittest.TestCase], counts: list[int], timings: dic
     for test in failed:
         print(f"cannot import {test.id().rsplit('.', 1)[-1]}:\n{test._exception}", file=sys.stderr)
     ids = [test.id() for test in tests]
+    classes = {test.id(): class_of(test) for test in tests}
     for count in counts:
-        parts = partition(ids, count, timings)
+        parts = partition(ids, count, timings, classes)
         check_partition(ids, parts)
         if not all(parts):
             print(f"{count} shards would leave a part without tests", file=sys.stderr)
@@ -318,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     label = "all tests"
     if args.shard is not None:
         index, total = args.shard
-        parts = partition(ids, total, load_timings(args.timings))
+        parts = partition(ids, total, load_timings(args.timings), {test.id(): class_of(test) for test in tests})
         check_partition(ids, parts)
         wanted = set(parts[index - 1])
         tests = [test for test in tests if test.id() in wanted]

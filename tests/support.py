@@ -1,6 +1,7 @@
 """Shared fixtures for the interface tests: temporary repositories and a served application."""
 import http.client
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -33,6 +34,20 @@ _BUILT: dict[int, tuple[object, Path]] = {}
 _TEMPLATES: list[tempfile.TemporaryDirectory] = []
 
 
+def _no_background_git() -> dict[str, str]:
+    """Git settings, through the environment and after any already there, that start no maintenance on a commit.
+
+    A commit ends with `git maintenance run --auto` (detached, as `GIT_TRACE` shows with Git 2.50.1), which can
+    still be at work on the folder while it is copied: on GitHub's runners (Git 2.55 and 2.56, October 18, 2026)
+    a copy met `.git/objects/maintenance.lock` and lost it under it.
+    """
+    count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+    settings = {"GIT_CONFIG_COUNT": str(count + 2)}
+    for index, (key, value) in enumerate((("maintenance.auto", "false"), ("gc.auto", "0")), count):
+        settings[f"GIT_CONFIG_KEY_{index}"], settings[f"GIT_CONFIG_VALUE_{index}"] = key, value
+    return settings
+
+
 def copied(build, path: Path) -> Path:
     """`path` holding a copy of the folder `build(folder)` makes, which is built once per builder and test process.
 
@@ -43,14 +58,18 @@ def copied(build, path: Path) -> Path:
     or another test's copy. Only the commit is the same in every copy.
     `build` must make the same folder whenever it is called. A builder is the
     object passed, never its name: two functions of one name, such as two
-    that one factory returned, are two builders with a folder each.
+    that one factory returned, are two builders with a folder each. Its Git
+    commands start no maintenance in the background (`_no_background_git`),
+    so nothing changes the folder while it is copied; the setting is neither
+    kept in the folder nor in the environment after the build.
     """
     entry = _BUILT.get(id(build))
     if entry is None:
         if not _TEMPLATES:
             _TEMPLATES.append(tempfile.TemporaryDirectory(prefix="patchrondo-test-templates-", ignore_cleanup_errors=True))
         folder = Path(_TEMPLATES[0].name) / str(len(_BUILT))
-        build(folder)
+        with patch.dict(os.environ, _no_background_git()):
+            build(folder)
         entry = _BUILT[id(build)] = (build, folder)
     shutil.copytree(entry[1], path, symlinks=True)
     return path.resolve()
