@@ -10,10 +10,11 @@ import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from patchrondo import acceptance, evidence, process, verification
+from patchrondo import acceptance, activity, evidence, process, verification
 from patchrondo.core import config, create_task, initialize, run_task, validate_config
 from patchrondo.providers import AgentFailure, AgentReply
 from patchrondo.storage import private_dir, read_json, save_json
@@ -785,6 +786,44 @@ class EngineTests(Case):
         self.assertRegex(record["log"], r"\Aiteration-001/[0-9a-f]{8}-test-01\.log\Z")
         self.assertEqual((record["check"]["id"], record["result"], record["covers"]), ("command-1", "passed", legacy_record["covers"]))
         self.assertEqual(set(legacy["tests"][0]) - set(current["tests"][0]), set())  # what was there is still there
+
+    def test_a_test_command_whose_group_refused_its_last_signal_says_so(self):
+        """The test stage before checks (switch 0) and the runner (1): a timeout all the same, and with `kill_refused` the
+        saved pause and result, the log and the journal say what may still be running; without it, all as before."""
+        self.configure([], commands=[[sys.executable, "-c", "print('ok')"]])
+        cases = (("0", "refused", process.Result(124, "partial\n", "", timed_out=True, kill_refused=True)),
+                 ("0", "not refused", process.Result(124, "partial\n", "", timed_out=True)),
+                 ("0", "absent", SimpleNamespace(returncode=124, stdout="partial\n", stderr="", timed_out=True)),
+                 ("1", "refused", process.Result(124, "partial\n", "", timed_out=True, kill_refused=True)),
+                 ("1", "not refused", process.Result(124, "partial\n", "", timed_out=True)))
+        events = {}
+        for switch, label, ran in cases:
+            refused = label == "refused"
+            with self.subTest(switch=switch, flag=label), patch.dict(os.environ, {verification.SWITCH: switch}), \
+                    patch("patchrondo.core.execute", return_value=ran):
+                task_id, _ = self.task()
+                agents = Agents()
+                run_task(self.home, task_id, adapter=agents)
+                path = self.home / "tasks" / task_id
+                saved = read_json(path / "state.json")
+                self.assertEqual((saved["status"], saved["phase"], saved["last_error"]["kind"], agents.roles),
+                                 ("paused", "test", "timeout", ["developer"]))
+                self.assertEqual(saved["last_error"]["message"], "Tests timed out; check the logs before resuming"
+                                 + (f". {process.KILL_REFUSED}" if refused else ""))
+                [entry] = saved["tests"]
+                self.assertEqual((entry["status"], entry.get("kill_refused")), ("timeout", True if refused else None))
+                self.assertEqual(process.KILL_REFUSED in entry.get("message", ""), refused)
+                self.assertEqual(Path(entry["log_file"]).read_text(encoding="utf-8").endswith(f"\n[PatchRondo] {process.KILL_REFUSED}.\n"),
+                                 refused and switch == "0")  # the runner's log is the output; its reason says it
+                if switch == "0":
+                    journal = [json.loads(line) for line in (path / activity.JOURNAL).read_text(encoding="utf-8").splitlines()[1:]]
+                    [test] = [event for event in journal if event["type"] == "test" and event["status"] == "timeout"]
+                    self.assertEqual(test.get("text"), process.KILL_REFUSED if refused else None)
+                events[switch, label] = [item["event"] for item in saved["history"]]
+        # The loop decided the same with and without the flag: the same events, the same pause.
+        self.assertEqual(events["0", "refused"], events["0", "not refused"])
+        self.assertEqual(events["0", "absent"], events["0", "not refused"])
+        self.assertEqual(events["1", "refused"], events["1", "not refused"])
 
     def test_a_task_saved_before_the_runner_resumes_unchanged(self):
         self.configure([], commands=[[sys.executable, "-c", "print('ok')"]])

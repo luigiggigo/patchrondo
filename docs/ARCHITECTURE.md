@@ -1795,7 +1795,9 @@ pass, as before. For each check the runner:
    `process.GROUP_SECONDS` (2 s). A group still refused then is a timeout
    all the same, never a refused start: `process.Result.kill_refused`, kept
    as `check.kill_refused`, and its reason says that what it started may
-   still be running;
+   still be running. Its result in the task state carries `kill_refused`
+   too, so the message of the pause (`Tests timed out; ...`) adds the same
+   sentence (`process.KILL_REFUSED`);
 4. writes its output to `runs/iteration-NNN/<run>-test-NN.log` after
    masking the values of this process's variables named like secrets
    (`known_secrets`) and what `activity.redact` recognizes; the task state
@@ -1914,7 +1916,14 @@ on the same records.
 `PATCHRONDO_VERIFICATION=0` runs `tests.commands` as the versions before
 this one did, and records them after the last one ends; the
 `verification` section is then not run, and a task that has nothing else
-pauses with `configuration`.
+pauses with `configuration`. A command it stopped whose group the system
+refused the last signal (`process.stop_refused`) says so, with the sentence
+of `process.KILL_REFUSED`, on a last line of its log marked `[PatchRondo]`,
+in the text of its journal event, in its saved result (`message`,
+`kill_refused`) and in the message of the pause. An agent step stopped that
+way says it in the message of its timeout and on a last line of
+`<role>.stderr.log`. The kind of the failure (`timeout`), the checkpoint and
+the events stay those of any timeout; without the flag nothing changes.
 
 ### Limits
 
@@ -1946,7 +1955,9 @@ pauses with `configuration`.
   (`kill_refused`). A refusal that lasts beyond `GROUP_SECONDS`, such as a
   zombie that macOS reaps later, is reported as one too, although nothing
   may be left running. Agent steps and the test stage before checks
-  (`PATCHRONDO_VERIFICATION=0`) receive `kill_refused` and do not report it.
+  (`PATCHRONDO_VERIFICATION=0`) report it too (October 18, 2026). The test
+  call of a model (`OfficialCLI.verify`) and the probes of `doctor` and of
+  the environment check do not.
 - The runner is not a sandbox. A check runs on the host with the user's
   rights: it can read and write what the user's account can, use the
   network, and find credentials on disk or in the user's tool

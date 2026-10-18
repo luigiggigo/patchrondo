@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -19,7 +20,7 @@ from patchrondo import agents, doctor, providers, recovery
 from patchrondo.cli import main
 from patchrondo.commands import join_command, split_command
 from patchrondo.core import create_task, refresh_agent_settings, run_task
-from patchrondo.process import Result
+from patchrondo.process import KILL_REFUSED, Result
 from patchrondo.providers import AgentFailure, AgentReply, OfficialCLI
 from patchrondo.storage import read_json, save_json
 from support import ServerCase, outcomes
@@ -563,6 +564,26 @@ class AdapterTests(unittest.TestCase):
         failure, _ = self.invoke(Result(1, "", "Not logged in. The model is not available."), provider="codex")
         self.assertEqual(failure.kind, "authentication")
 
+    def test_a_step_whose_group_refused_its_last_signal_says_so_in_its_message_and_log(self):
+        """A timeout all the same; with `kill_refused` its message and its stderr log say what may still be running.
+        Without the flag, or from an `execute` whose result has no such field, both are as before."""
+        cases = {"refused": Result(124, "", "partial\n", timed_out=True, kill_refused=True),
+                 "not refused": Result(124, "", "partial\n", timed_out=True),
+                 "absent": SimpleNamespace(returncode=124, stdout="", stderr="partial\n", timed_out=True)}
+        for provider in ("claude", "codex"):
+            for label, result in cases.items():
+                with self.subTest(provider=provider, flag=label):
+                    failure, _ = self.invoke(result, provider=provider)
+                    self.assertIsInstance(failure, AgentFailure)
+                    self.assertEqual((failure.kind, failure.provider), ("timeout", provider))
+                    shown = f"Timeout after 600s for {provider}/developer"
+                    log = (self.runs / "developer.stderr.log").read_text(encoding="utf-8")
+                    if label == "refused":
+                        self.assertEqual(str(failure), f"{shown}. {KILL_REFUSED}")
+                        self.assertEqual(log, f"partial\n[PatchRondo] {KILL_REFUSED}.\n")
+                    else:
+                        self.assertEqual((str(failure), log), (shown, "partial\n"))
+
     def test_a_folder_that_is_gone_stops_the_step_before_the_cli_is_started(self):
         missing = str((self.path / "gone").resolve())
         failure, call = self.invoke(Result(0, "", ""), settings={"add_dirs": [missing], agents.ACK: True})
@@ -590,6 +611,29 @@ class AdapterTests(unittest.TestCase):
                 self.assertEqual((answer["ok"], answer["kind"]), (False, kind))
         with patch("patchrondo.providers.execute", side_effect=FileNotFoundError()):
             self.assertEqual(adapter.verify("claude", "x", None, folder)["kind"], "configuration")
+
+
+class StoppedStepTests(EngineCase):
+    """A whole task whose developer step is stopped at its time limit and its group refused the last signal."""
+
+    def test_the_saved_pause_and_the_logs_say_what_may_still_be_running(self):
+        outcomes_of = {}
+        for refused in (True, False):
+            with self.subTest(refused=refused), patch("patchrondo.providers.execute",
+                                                      return_value=Result(124, "", "", timed_out=True, kill_refused=refused)):
+                task_id, path = self.task()
+                state = run_task(self.home, task_id)
+                saved = read_json(path / "state.json")
+                self.assertEqual((saved["status"], saved["phase"], saved["iteration"], saved["last_error"]["kind"]),
+                                 ("paused", "develop", 1, "timeout"))
+                message = "Timeout after 60s for claude/developer" + (f". {KILL_REFUSED}" if refused else "")
+                self.assertEqual((saved["last_error"]["message"], state["last_error"]["message"]), (message, message))
+                log = (path / "runs" / "iteration-001" / "developer.stderr.log").read_text(encoding="utf-8")
+                self.assertEqual(log, f"[PatchRondo] {KILL_REFUSED}.\n" if refused else "")
+                errors = [event["text"] for event in self.events(path) if event["type"] == "error"]
+                self.assertEqual(errors, [message])  # the attempt in the activity journal ends with it
+                outcomes_of[refused] = [entry["event"] for entry in saved["history"]]
+        self.assertEqual(outcomes_of[True], outcomes_of[False])  # the same events: the loop decided the same
 
 
 class FakeClock:

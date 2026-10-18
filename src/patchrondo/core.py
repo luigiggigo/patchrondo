@@ -15,7 +15,7 @@ import uuid
 
 from .storage import private_dir, save_json, read_json, atomic_text, now, TaskLock
 from .gitops import repo_root, create_worktree, changes, stat, fingerprint
-from .process import execute, short_log
+from .process import KILL_REFUSED, execute, short_log, stop_refused, with_refusal
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
 from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery
@@ -626,12 +626,18 @@ def _run_tests(cfg: dict, workspace: Path, run_dir: Path, journal) -> list[dict]
                              pid_file=run_dir / f"test-{index:02d}.active-process.json")
         except FileNotFoundError as exc:
             raise AgentFailure(f"Test command not found: {cmd[0]}", "configuration") from exc
-        atomic_text(run_dir / f"test-{index:02d}.log", short_log(result.stdout + "\n" + result.stderr))
+        refused = stop_refused(result)  # stopped, and the system refused its group the last signal
+        output = short_log(result.stdout + "\n" + result.stderr)
+        atomic_text(run_dir / f"test-{index:02d}.log", with_refusal(output) if refused else output)
         status = "timeout" if result.timed_out else "passed" if result.returncode == 0 else "failed"
-        journal.emit("test", status=status, index=index, command=shown, exit_code=result.returncode)
-        results.append({"command": cmd, "status": status, "returncode": result.returncode,
-                        "log_file": str(run_dir / f"test-{index:02d}.log"),
-                        "output_tail": short_log((result.stdout + "\n" + result.stderr)[-6000:])})
+        journal.emit("test", status=status, index=index, command=shown, exit_code=result.returncode,
+                     text=KILL_REFUSED if refused else None)
+        entry = {"command": cmd, "status": status, "returncode": result.returncode,
+                 "log_file": str(run_dir / f"test-{index:02d}.log"),
+                 "output_tail": short_log((result.stdout + "\n" + result.stderr)[-6000:])}
+        if refused:
+            entry.update(message=KILL_REFUSED, kill_refused=True)
+        results.append(entry)
         if status != "passed":
             break  # avoid running dependent tests after first failure
     return results
@@ -713,7 +719,9 @@ def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path, reviewer_ch
         raise AgentFailure("Configure tests and set trust_acknowledged=true, then run resume", "tests_disabled")
     if any(x["status"] == "timeout" for x in results):
         _save(path, state)
-        raise AgentFailure("Tests timed out; check the logs before resuming", "timeout")
+        refused = any(x["status"] == "timeout" and x.get("kill_refused") is True for x in results)
+        raise AgentFailure("Tests timed out; check the logs before resuming" + (f". {KILL_REFUSED}" if refused else ""),
+                           "timeout")
     unsettled = next((x for x in results if x["status"] in verification.UNSETTLED), None)
     if unsettled is not None:
         _save(path, state)

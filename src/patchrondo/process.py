@@ -36,6 +36,25 @@ class Result:
     kill_refused: bool = False  # POSIX: stopping it, the system refused to the end to signal what was left of its group
 
 
+# What the message and the log of a stopped command say when the system refused its group the last signal.
+KILL_REFUSED = ("The system refused to signal what was left of its process group, so nothing says that the processes "
+                "it started were stopped: they may still be running")
+
+
+def stop_refused(result) -> bool:
+    """Whether a command stopped at its time limit has a group the system refused the last signal (`kill_refused`).
+
+    False for a command that ended by itself, and for a result without the
+    field, such as one a caller's own `execute` returns.
+    """
+    return getattr(result, "timed_out", False) is True and getattr(result, "kill_refused", False) is True
+
+
+def with_refusal(log: str) -> str:
+    """`log` followed by `KILL_REFUSED` on a line of its own, marked as PatchRondo's, not the command's."""
+    return log + ("" if not log or log.endswith("\n") else "\n") + f"[PatchRondo] {KILL_REFUSED}.\n"
+
+
 def safe_env() -> dict[str, str]:
     env = os.environ.copy()
     # Prevent silently charging API accounts instead of subscribed CLIs.

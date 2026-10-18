@@ -528,7 +528,11 @@ could leave what it started running unseen.
 From the failure of Python 3.11 on `macos-latest` in CI runs 39064594210
 (`fb6ecb1`) and 39135998928 (`eb295cc`): a check stopped at its time limit
 was recorded as `blocked`, `permission_denied`, as if its program had been
-refused at the start.
+refused at the start. Published in `b962214` (October 18, 2026, 19:24
++02:00); its CI run 39149471702 passed in every job, and on `macos-latest`
+(macOS 26.6.2, Python 3.11 and 3.13) the test that asks the real system
+passed, which there requires EPERM for a group left with a zombie while the
+zombie is held, and ESRCH once it is reaped.
 
 - **Cause.** After a timeout, `process._terminate` ended with one
   `os.killpg(..., SIGKILL)` to the group and caught only
@@ -565,6 +569,36 @@ refused at the start.
   start (a folder), on every system. Five new mutation protections. The
   checks that were run are recorded in
   [the technical review](docs/REVIEW.md#a-timeout-is-not-a-refused-start-october-18-2026).
+
+#### A refused stop is said by agent steps and the earlier test stage — October 18, 2026
+
+The entry above made the runner say when the system refused the last signal
+to a stopped command's group (`kill_refused`). Agent steps and the test stage
+before checks (`PATCHRONDO_VERIFICATION=0`) received the flag and said
+nothing, and the pause of a timed-out check said only "Tests timed out".
+
+- **Agent steps.** A step stopped at its time limit whose group the system
+  refused adds `process.KILL_REFUSED` to its message, `Timeout after Ns for
+  provider/role`, which is saved as `last_error.message` and ends the attempt
+  in the activity journal, and to a last line of `<role>.stderr.log`, marked
+  `[PatchRondo]` so that it is not read as the CLI's.
+- **The test stage before checks.** The stopped command's log ends with the
+  same marked line; its journal event has the sentence as text; its saved
+  result has it as `message`, with `kill_refused: true`; and the message of
+  the pause, `Tests timed out; check the logs before resuming`, adds it.
+- **The pause of a timed-out check** adds it too: the runner's result in the
+  task state now carries `kill_refused` when it is true.
+- Unchanged: the kind of the failure (`timeout`), the checkpoint, the
+  events, every decision of the loop, the ledger records of the earlier test
+  stage, and everything when the flag is false or a result has no such field
+  (`process.stop_refused`). The test call of a model and the probes of
+  `doctor` and of the environment check do not report it.
+- Three new tests with scripted results, on every system: an agent step
+  (Claude and Codex) and a whole task paused by its developer step, and both
+  test stages; each with the flag, without it and, except for the whole
+  task, with a result that has no such field. Eight new mutation
+  protections. The checks that were run are recorded in
+  [the technical review](docs/REVIEW.md#a-refused-stop-is-said-by-agent-steps-and-the-earlier-test-stage-october-18-2026).
 
 ### Documentation alignment — October 17, 2026
 

@@ -23,7 +23,9 @@ itself, and publication-status update: October 17, 2026. CI duration, and
 publication-status update: October 17, 2026. Review corrections of the CI
 duration change, the CI run of `533ba8a`, a correction of the test fixtures
 it showed, and publication-status update: October 18, 2026. A timeout is
-not a refused start, and publication-status update: October 18, 2026.
+not a refused start, and publication-status update: October 18, 2026. A
+refused stop said by agent steps and the earlier test stage, and
+publication-status update: October 18, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -34,21 +36,34 @@ working tree at its date.
 ## Current source and CI status (October 18, 2026)
 
 GitHub API, `git ls-remote` and `gh run list` were checked again on October
-18, 2026 at 17:13 +02:00. Remote `main` returned
-`eb295cc26ff4c40c8cae7d9bf58e68e66bf07073`, committed by the user on October
-18, 2026 at 16:26 +02:00 (its CI run started at 16:26:32 +02:00): the fourth
-and fifth corrections of the CI duration change, on top of `533ba8a`. It
-changes tests, tools and documentation only. No version tags or GitHub
-Releases were returned, and `main` has no branch protection. Package
-metadata remains 0.2.1.
+18, 2026 between 19:29 and 19:47 +02:00. Remote `main` returned
+`b9622146dba9186b42f950f1bc7b3446d954df3a`, committed by the user on October
+18, 2026 at 19:24 +02:00 (its CI run started at 19:24:54 +02:00): the
+correction of [A timeout is not a refused start](#a-timeout-is-not-a-refused-start-october-18-2026),
+on top of `eb295cc`. No version tags or GitHub Releases were returned, and
+`main` has no branch protection (that request timed out once and answered on
+the second try). Package metadata remains 0.2.1.
 
 | Commit | CI run | Observed status on October 18, 2026 |
 |---|---|---|
+| `b962214` | [39149471702](https://github.com/luigiggigo/patchrondo/actions/runs/39149471702) | SUCCESS, in 4 min 9 s: all 17 jobs succeeded, none cancelled or at its time limit. On `macos-latest` (macOS 26.6.2) the four parts with Python 3.11 and 3.13 passed `test_a_timeout_stops_the_command_and_what_it_started` and the new tests, among them `test_a_group_left_with_a_zombie_is_stopped_as_the_system_answers` |
 | `eb295cc` | [39135998928](https://github.com/luigiggigo/patchrondo/actions/runs/39135998928) | FAILED, in 3 min 59 s: Python 3.11 on `macos-latest` part 1 of 2 failed one test, `test_verification.RunnerTests.test_a_timeout_stops_the_command_and_what_it_started` (`blocked`, `permission_denied` instead of `timeout`; the part ran 327 tests: 1 failed, 322 passed, 4 skipped). The 13 other test jobs, `Collect tests` and the package check succeeded; no job was cancelled or reached its time limit. `CI result` failed for that reason only ("tests ended with failure") |
 | `533ba8a` | [39114549108](https://github.com/luigiggigo/patchrondo/actions/runs/39114549108) | FAILED, in 4 min 49 s: three test jobs had one error each, `shutil.Error` in the setup of a test, from the copy of a repository that Git's background maintenance was changing (Python 3.11 and 3.13 on `ubuntu-latest`, Python 3.13 on `macos-latest` part 1 of 2); no test failed an assertion. No job was cancelled or reached its time limit, `Collect tests` and the package check succeeded, and all eight `windows-latest` shards and the three other macOS shards passed. `CI result` failed for that reason only ("tests ended with failure") |
 
-The failure of `eb295cc` is the defect of the runtime first seen on
-`fb6ecb1`; its cause and its correction are in
+The run of `b962214` covers that commit only. The timeout test had passed
+on macOS before and failed intermittently, so one green run does not show
+that the race cannot come back; the test that asks the real system is
+deterministic, and on macOS it passes only if the system answers EPERM for
+a group left with a zombie while the zombie is held, and ESRCH once it is
+reaped.
+
+The check before it, at 17:13 +02:00 the same day, found remote `main` at
+`eb295cc26ff4c40c8cae7d9bf58e68e66bf07073`, committed by the user at 16:26
++02:00: the fourth and fifth corrections of the CI duration change, on top
+of `533ba8a`, changing tests, tools and documentation only; no version
+tags, no GitHub Releases and no branch protection. The failure of `eb295cc`
+is the defect of the runtime first seen on `fb6ecb1`; its cause and its
+correction are in
 [A timeout is not a refused start](#a-timeout-is-not-a-refused-start-october-18-2026).
 In that run no job failed in the copy of a repository that `support.copied`
 builds, the error of three jobs of `533ba8a`: one run, which does not show
@@ -202,6 +217,96 @@ and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
 
+## A refused stop is said by agent steps and the earlier test stage (October 18, 2026)
+
+This section covers changes on top of `b962214`: `process.py`
+(`KILL_REFUSED`, `stop_refused`, `with_refusal`), `providers.py`, `core.py`
+and `verification.py`; three new tests in `tests/test_agents.py` and
+`tests/test_verification.py`; eight new mutation protections; and
+ARCHITECTURE section 16, SECURITY, USAGE, TESTING, the changelog and the
+publication status. The package version is unchanged, 0.2.1.
+
+**Asked for.** Agent timeouts and the test stage before checks
+(`PATCHRONDO_VERIFICATION=0`) had to keep, when `kill_refused` is true, a
+warning in their logs and in the saved message, with the classification of
+a timeout, the checkpoints, the decisions of the loop and the behavior
+without the flag unchanged.
+
+**Before.** Read in the code of `b962214`: `OfficialCLI._step` raised
+`Timeout after Ns for provider/role` and wrote `<role>.stderr.log` from the
+CLI's output alone; `core._run_tests` wrote `test-NN.log`, its journal event
+and its result without any trace of the flag; and `core._test_stage` paused
+any timed-out test, from either stage, with `Tests timed out; check the logs
+before resuming`. The runner's own reason said it, but not the pause.
+
+**Decisions.**
+
+- One sentence, `process.KILL_REFUSED`, the one the runner already wrote,
+  and one test, `process.stop_refused`: a timed-out result whose
+  `kill_refused` is `True`. A result without the field, such as one a
+  caller's own `execute` returns, is not refused.
+- The sentence is added to the message of the timeout, which `_failure`
+  saves as `last_error.message`, and on a last line of the log marked
+  `[PatchRondo]`, after the bounded output, so that it is never cut and
+  never read as the command's. The earlier stage also gives it as the text
+  of its journal event and in its saved result (`message`, `kill_refused`),
+  which the page and `report.md` show; an agent's attempt in the journal
+  already ends with its message.
+- The runner's result carries `kill_refused` in the task state when it is
+  true, so the pause of a timed-out check says it too: both stages share
+  that pause.
+- Nothing else changes: the kind stays `timeout`, no event, checkpoint or
+  decision is added or moved, the ledger records of the earlier stage keep
+  their fields (their `log_sha256` covers the log as written), and without
+  the flag every message, log, event and result is what it was.
+
+**Checked against the change.** The new tests were run on native Windows
+(Python 3.13.3) against the sources of `b962214`, to which only
+`KILL_REFUSED` was added, with the wording `verification.py` already used,
+so that the tests could import it. All three failed, each on its missing
+warning: the message of an agent step (Claude and Codex), the saved pause
+of a task stopped in its developer step, and the saved pause of both test
+stages. Their subtests without the flag and with a result that has no such
+field passed there as they pass now: what they check is the behavior of
+before. Each of the eight new mutations was detected by its own failures.
+
+Validation on October 18, 2026, with `PATH` filtered so that `shutil.which`
+found neither `claude` nor `codex`, on the final sources:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| `test_agents`, `test_live_activity`, `test_workflow`, `test_recovery_checks` | Native Windows, Python 3.13.3 and 3.11.3: 68, 25, 23 and 2 tests passed | 0 |
+| `test_agents`, `test_live_activity`, `test_workflow`, `test_recovery_checks` | WSL2, Python 3.12.3: 68, 25, 23 and 2 tests passed | 0 |
+| `test_verification` | Native Windows, Python 3.13.3 and 3.11.3: 52 tests, 48 passed, 4 skipped (POSIX only, and real pytest) | 0 |
+| `test_verification` | WSL2, Python 3.12.3: 52 tests, 50 passed, 2 skipped (job objects; real pytest) | 0 |
+| `test_process` | Native Windows, Python 3.13.3 and 3.11.3: 21 tests, 15 passed, 6 skipped (POSIX process groups); WSL2: 20 passed, 1 skipped | 0 |
+| Protections | WSL2, Python 3.12.3: 256 of 256 removed safeguards detected, 0 missed (8 of them new), 623 s | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.04 s after the planned time | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Browser, all twelve scenarios | Native Windows, Python 3.13.3, Chrome 155.0.8059.82 headless: 355 passed, 0 failed | 0 |
+| Publication scanner | 129 files checked; the five findings of the section below, unchanged: three images (binary, unchanged), and `.claude/` and `debug.log`, both ignored by Git and not written for this change | 1 |
+| Python 3.11 compile of the changed sources, tests and tool | Native Windows, Python 3.11.3: 7 files | 0 |
+
+Every provider was scripted: no model was called, and no file of either CLI
+was written during the WSL2 runs. Not run: anything on macOS (the change
+has nothing specific to it; CI runs it there); the whole suite, the package
+build and `twine check` (CI's under the rule of October 17, 2026); the
+crash test at every checkpoint (no checkpoint moved, and no findings,
+history or ledger code changed); the opt-in tests in the real Codex sandbox
+(the environment check did not change); the real pytest test (pytest is
+not installed). The browser scenarios have no task whose stop was refused:
+the page shows `last_error.message` and a test's `message` as text, as for
+any other.
+
+**Limits that remain.** The test call of a model (`OfficialCLI.verify`) and
+the probes of `doctor` and of the environment check do not say it. The
+ledger records of the earlier test stage have no `kill_refused` field;
+their log says it. The limits of the section below remain.
+
+**Verdict: READY for this change**, on the checks above. This is not a
+release-readiness verdict.
+
 ## A timeout is not a refused start (October 18, 2026)
 
 This section covers changes on top of `eb295cc`: `process.py`,
@@ -240,7 +345,11 @@ interval the last SIGKILL is answered EPERM, the `PermissionError` leaves
 `process.execute`, and `verification.Runner` reads every `PermissionError`
 of `execute` as a refusal to start the program. That the macOS runner
 answered EPERM there was not observed: the log does not show the
-exception, and no macOS was available.
+exception, and no macOS was available. (Later the same day, in CI run
+39149471702 of `b962214`, the test that asks the real system passed on
+macOS 26.6.2 with Python 3.11 and 3.13: macOS does answer EPERM for a group
+left with a zombie, as its sources say. The failed runs still show no
+exception of their own.)
 
 **Reproduced on Linux.** A scratch script replaced `os.killpg` with a model
 of `killpg1` that reads the state of each member of the group from `/proc`
@@ -287,6 +396,8 @@ of 3), which the CI test refuses, as it should.
 - Agent steps and the test stage before checks receive `kill_refused` and do
   not report it; before the correction they could get the `PermissionError`.
   Making them report it would change their messages, which was not asked.
+  (Asked for afterwards: see
+  [A refused stop is said by agent steps and the earlier test stage](#a-refused-stop-is-said-by-agent-steps-and-the-earlier-test-stage-october-18-2026).)
 
 **Checked against the change.** The new tests were run on WSL2 (Python
 3.12.3) against the sources of `eb295cc`, to which only an unused
@@ -344,7 +455,8 @@ the test stage before checks do not report `kill_refused`.
 
 **Verdict: READY for this correction**, on the checks above. That CI
 passes on macOS is not shown by them: it needs the next run on GitHub. This
-is not a release-readiness verdict.
+is not a release-readiness verdict. (Run 39149471702 of `b962214` then
+passed in every job.)
 
 ## CI duration: review corrections (October 18, 2026)
 

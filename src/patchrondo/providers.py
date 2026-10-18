@@ -9,7 +9,7 @@ import json
 import re
 
 from . import acceptance, agents, streams
-from .process import Result, execute, short_log
+from .process import KILL_REFUSED, Result, execute, short_log, stop_refused, with_refusal
 from .storage import atomic_text
 
 
@@ -381,9 +381,12 @@ class OfficialCLI:
         stdout = stream.transcript.text() if observed else result.stdout
         # These logs live outside the repository in a private directory.
         atomic_text(run_dir / f"{role}.stdout.log", short_log(stdout))
-        atomic_text(run_dir / f"{role}.stderr.log", short_log(result.stderr))
+        refused = stop_refused(result)  # stopped, and the system refused its group the last signal
+        errors = short_log(result.stderr)
+        atomic_text(run_dir / f"{role}.stderr.log", with_refusal(errors) if refused else errors)
         if result.timed_out:
-            raise AgentFailure(f"Timeout after {timeout}s for {provider}/{role}", "timeout", provider=provider)
+            raise AgentFailure(f"Timeout after {timeout}s for {provider}/{role}" + (f". {KILL_REFUSED}" if refused else ""),
+                               "timeout", provider=provider)
         turn_limit = None
         if provider == "claude" and _claude_subtype(stream.result if stream is not None else result.stdout) == CLAUDE_TURN_LIMIT \
                 and _classify_error(result.stderr) == "agent_error":

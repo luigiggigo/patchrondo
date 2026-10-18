@@ -144,7 +144,12 @@ On POSIX, `RefusedGroupTests` and one runner test answer the last SIGKILL of
 a stopped group with EPERM, as macOS does while what is left of the group
 has exited and is not yet reaped (`support.refusing`); one more test asks
 the real system about a group left with a zombie, and expects macOS to
-refuse and Linux to signal it. Only a macOS run checks the macOS answer. One
+refuse and Linux to signal it. Only a macOS run checks the macOS answer.
+`tests/test_agents.py` and `tests/test_verification.py` also give an agent
+step and both test stages a scripted result of a timeout with and without
+`kill_refused` (and one without the field): on every system, they check
+the saved message, the log and the journal, and that the loop decides the
+same either way. One
 test runs the real pytest and is skipped where pytest is not installed, as on
 CI; a skip is not a pass.
 

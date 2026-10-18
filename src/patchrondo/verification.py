@@ -619,6 +619,8 @@ class Result:
             found["message"] = self.reason
         if self.report and self.report.get("counts"):
             found["counts"] = self.report["counts"]
+        if self.kill_refused:
+            found["kill_refused"] = True  # the pause of a timeout says it too (`core._test_stage`)
         return found
 
 
@@ -737,8 +739,7 @@ class Runner:
                 result.reason += (". No job object held the processes it started: they were not stopped with it and "
                                   "may still be running")
             if result.kill_refused:
-                result.reason += (". The system refused to signal what was left of its process group, so nothing says "
-                                  "that the processes it started were stopped: they may still be running")
+                result.reason += f". {process.KILL_REFUSED}"
             result.error = {"kind": "timeout"}
             return
         if ran.returncode < 0:

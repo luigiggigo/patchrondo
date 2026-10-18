@@ -9,8 +9,8 @@
 | 0.35 | Separate Evidence Engine proposal | Verification runner step implemented in `753d957`; remaining proposal not completed |
 
 No stable release is established by the available publication record. On
-October 18, 2026, GitHub `main` was checked at `533ba8a`, then at `eb295cc`,
-with no version tags or GitHub Releases (on October 17 it had been checked at
+October 18, 2026, GitHub `main` was checked at `533ba8a`, then at `eb295cc`
+and at `b962214`, with no version tags or GitHub Releases (on October 17 it had been checked at
 `753d957`, then at `fb6ecb1`). Source publication is distinct from a versioned release
 and a package publication. Package metadata remains 0.2.1; do not infer release
 readiness from it. See [publication status](PUBLISHING.md#current-publication-status)

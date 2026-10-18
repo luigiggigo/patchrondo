@@ -74,6 +74,12 @@ package check passed, none was cancelled or reached its time limit, and
 `CI result` failed for that job only. The cause, in the runtime, is in
 [REVIEW.md](REVIEW.md#a-timeout-is-not-a-refused-start-october-18-2026).
 
+Between 19:29 and 19:47 +02:00 the same day the remote `main` was at
+`b962214`, committed by the user at 19:24 +02:00 on top of `eb295cc`: the
+correction of that cause. Tags and GitHub Releases were still empty. Its CI
+run 39149471702 succeeded in all 17 jobs in 4 min 9 s, none cancelled or at
+its time limit. That result belongs to `b962214` only.
+
 The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
 Workflow Events and their integration under **0.3.0 — Unreleased**, preserving
 all dated entries. This names a development series, not a new published
