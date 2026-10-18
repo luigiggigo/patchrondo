@@ -523,6 +523,49 @@ could leave what it started running unseen.
   were run are recorded in
   [the technical review](docs/REVIEW.md#a-check-no-job-object-holds-says-so-october-17-2026).
 
+#### A timeout is not a refused start — October 18, 2026
+
+From the failure of Python 3.11 on `macos-latest` in CI runs 39064594210
+(`fb6ecb1`) and 39135998928 (`eb295cc`): a check stopped at its time limit
+was recorded as `blocked`, `permission_denied`, as if its program had been
+refused at the start.
+
+- **Cause.** After a timeout, `process._terminate` ended with one
+  `os.killpg(..., SIGKILL)` to the group and caught only
+  `ProcessLookupError`. macOS answers that call with EPERM while the only
+  members left in the group are zombies not yet reaped (XNU's `killpg1`
+  skips zombies and answers EPERM when it finds no other member), which is
+  what a check leaves when the child it started dies with it and launchd has
+  not reaped it yet. The `PermissionError` left `process.execute`, and
+  `verification.Runner` reads a `PermissionError` of `execute` as a refusal
+  to start the program. With that answer modelled on Linux and the orphan
+  reaped 200 ms after it died, the CI test failed 5 times out of 5 with the
+  message of the CI runs, each time from that call; with the orphan reaped
+  by Linux's init, it passed 10 times out of 10. Nothing was run on macOS.
+  Agent steps and the test stage before checks could get the same
+  exception after a timeout.
+- **The last signal is settled by the system only.** The final SIGKILL
+  (`process._kill_group`) ends when it reaches the group or when the system
+  answers ESRCH (no such group is left). EPERM settles nothing: the call is
+  repeated for `process.GROUP_SECONDS` (2 s). It is never taken for a
+  stopped group, and no other error of the call is caught.
+- **A refusal to the end is said, not raised.** A group still refused after
+  that is a timeout all the same. `process.Result.kill_refused` says so, the
+  record of the check keeps it as `check.kill_refused` (records written
+  before have no such field), and the timeout's reason says that what the
+  check started may still be running. A timeout is still an error that
+  pauses the task at `test`: no result, pause or decision of the loop
+  changes. An interruption is raised again, never replaced by the refusal.
+- Six new tests, five of them on POSIX: the macOS answer scripted
+  (`support.refusing`) for a refusal that ends, with a child that ignores
+  TERM and is still stopped, for one that lasts, and for an interruption,
+  each with and without observers; a check whose group refuses its last
+  signal; the real answer of the system for a group left with a zombie
+  (macOS refuses it, Linux signals it); and a program the system refuses to
+  start (a folder), on every system. Five new mutation protections. The
+  checks that were run are recorded in
+  [the technical review](docs/REVIEW.md#a-timeout-is-not-a-refused-start-october-18-2026).
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,
@@ -584,7 +627,10 @@ fixtures that the next entry corrects; every Windows shard passed.
 
 Three defects a review of the CI duration change found, a fourth found while
 correcting them and a fifth the CI run of `533ba8a` showed. Each new test
-failed before its correction.
+failed before its correction. The first three were published in `533ba8a`,
+the fourth and the fifth in `eb295cc` (October 18, 2026, 16:26 +02:00),
+whose CI run 39135998928 failed in one job only, from the defect of the
+runtime corrected in "A timeout is not a refused start" above.
 
 - **Time outside tests includes collecting them.** `tools/run_tests.py`
   started its clock after collecting the tests, while its summary said the

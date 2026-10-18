@@ -303,7 +303,11 @@ proposal in [the roadmap](docs/ROADMAP.md), not implemented.
 job object on native Windows, with everything the check started. When
 Windows refuses to put the check in a job object, it still runs but is
 stopped alone: its record says `child_only`, and a timeout says that what
-it started may still be running.
+it started may still be running. On POSIX, when the system refuses the last
+signal to the group for two seconds (macOS refuses it while what is left of
+the group has exited and is not yet reaped), the check is still a timeout,
+its record says `kill_refused`, and the timeout says that what it started
+may still be running. A process that leaves the group is not stopped.
 
 **What a result is worth.** Code under test can print anything and can write a report that says what it
 likes. The runner refuses a report that was there before the run, a report

@@ -604,6 +604,7 @@ class Result:
     evidence: str | None = None       # ID of the ledger record
     lines: frozenset = field(default_factory=frozenset, repr=False)  # Git's status lines after the check
     process_tree: str | None = None   # `process.Result.process_tree`: None when the command did not start
+    kill_refused: bool = False        # `process.Result.kill_refused`
 
     @property
     def passed(self) -> bool:
@@ -723,6 +724,7 @@ class Runner:
             result.finished_at = _stamp()
         result.exit_code = ran.returncode
         result.process_tree = getattr(ran, "process_tree", None)
+        result.kill_refused = getattr(ran, "kill_refused", False) is True
         output = scrub(ran.stdout + "\n" + ran.stderr, self.secrets)
         result.log = self.run_dir / f"{name}.log"
         atomic_text(result.log, output)
@@ -734,6 +736,9 @@ class Runner:
             if result.process_tree == process.CHILD:
                 result.reason += (". No job object held the processes it started: they were not stopped with it and "
                                   "may still be running")
+            if result.kill_refused:
+                result.reason += (". The system refused to signal what was left of its process group, so nothing says "
+                                  "that the processes it started were stopped: they may still be running")
             result.error = {"kind": "timeout"}
             return
         if ran.returncode < 0:
@@ -841,6 +846,7 @@ class Runner:
                    "cwd": check.cwd, "timeout_seconds": check.timeout, "started_at": result.started_at,
                    "finished_at": result.finished_at, "duration_ms": result.duration_ms, "environment": environment(),
                    "process_tree": result.process_tree,
+                   "kill_refused": result.kill_refused,
                    "snapshot": {"before": result.before, "after": result.after, "changed": result.changed},
                    "report": result.report, "reason": evidence.text(result.reason), "error": result.error})
         result.evidence = entry["id"]

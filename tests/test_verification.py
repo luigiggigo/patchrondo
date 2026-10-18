@@ -19,7 +19,7 @@ from patchrondo.providers import AgentFailure, AgentReply
 from patchrondo.storage import private_dir, read_json, save_json
 from patchrondo.verification import Runner, Status, judge_report, parse_check, parse_junit
 
-from support import copied, make_repo, one_commit, outcomes
+from support import copied, make_repo, one_commit, outcomes, refusing
 
 # A stand-in for a test tool: it does what behaviour.json says, then writes the report it was told to write.
 TOOL = r'''import json, pathlib, subprocess, sys, time
@@ -350,6 +350,49 @@ class RunnerTests(Case):
         self.assertEqual((result.status, result.process_tree), ("timeout", process.CHILD))
         self.assertIn("may still be running", result.reason)
         self.assertEqual(self.records()[0]["check"]["process_tree"], process.CHILD)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX process groups")
+    def test_a_group_that_refuses_its_last_signal_is_still_a_timeout(self):
+        """macOS refuses (EPERM) the last SIGKILL of a group while what is left of it are zombies (CI run 39135998928):
+        a timeout all the same, never a refused start; one refused to the end says what may still be running."""
+        pid = self.tools / "child.pid"
+        self.behave(child=30, marker=str(self.tools / "unused"), pid=str(pid), sleep=30, report=GREEN)
+        for times in (2, None):
+            killpg, answers = refusing(times)
+            # A refusal to the end is waited for 0.3 s only; after two, the real answer gets the whole time, since a
+            # macOS that is still reaping the child refuses too.
+            with self.subTest(times=times), patch("patchrondo.process.os.killpg", killpg), \
+                    patch("patchrondo.process.GROUP_SECONDS", 0.3 if times is None else process.GROUP_SECONDS):
+                pid.unlink(missing_ok=True)
+                result = self.run_one(self.check(timeout_seconds=1))
+                self.assertEqual((result.status, verification.status_of(result.status), result.error["kind"]),
+                                 ("timeout", Status.ERROR, "timeout"))
+                self.assertIn("EPERM", answers)
+                self.assertEqual(result.kill_refused, times is None)
+                self.assertEqual("may still be running" in result.reason, times is None)
+                if times is None:
+                    self.assertIn("refused to signal what was left of its process group", result.entry()["message"])
+                # What the check started is stopped by the TERM sent to its group, refused or not.
+                child, deadline = int(pid.read_text()), time.monotonic() + 10
+                while time.monotonic() < deadline:
+                    try:
+                        os.kill(child, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("the child of the check outlived it")
+        self.assertEqual([(record["result"], record["check"]["kill_refused"], "may still be running" in record["check"]["reason"])
+                          for record in self.records()], [("timeout", False, False), ("timeout", True, True)])
+
+    def test_a_program_the_system_refuses_to_start_is_blocked(self):
+        """A real refusal, on every system: a folder cannot be started. Nothing ran, so there is no exit code or log."""
+        result = self.run_one(parse_check({"id": "x", "type": "build", "command": [str(self.tools)]}, default_timeout=60))
+        self.assertEqual((result.status, result.error["kind"], result.exit_code, result.log, result.process_tree,
+                          result.kill_refused), ("blocked", "permission_denied", None, None, None, False))
+        [record] = self.records()
+        self.assertEqual((record["result"], record["check"]["process_tree"], record["check"]["kill_refused"]),
+                         ("blocked", None, False))
 
     def test_a_program_that_is_not_there_is_blocked(self):
         check = parse_check({"id": "lint", "type": "static_analysis", "command": ["patchrondo-no-such-program-0f3a"]}, default_timeout=60)

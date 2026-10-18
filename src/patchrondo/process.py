@@ -16,6 +16,8 @@ LINE_BYTES = 2_000_000  # one line of streamed output; a longer one is dropped w
 # After the process has exited its pipes are read to the end. A descendant that kept them
 # open could delay that forever, so reading stops this long after the exit.
 DRAIN_SECONDS = 2.0
+# How long the last SIGKILL of a stopped command's process group is repeated while the system refuses it (`_kill_group`).
+GROUP_SECONDS = 2.0
 
 
 # How the processes a command starts are held, so that stopping it stops them too (`Result.process_tree`).
@@ -31,6 +33,7 @@ class Result:
     stderr: str
     timed_out: bool = False
     process_tree: str | None = None  # GROUP, JOB or CHILD; None from a caller's own `execute`
+    kill_refused: bool = False  # POSIX: stopping it, the system refused to the end to signal what was left of its group
 
 
 def safe_env() -> dict[str, str]:
@@ -103,11 +106,38 @@ def _job(proc: subprocess.Popen, tree: bool) -> tuple[_Job | None, str]:
         return None, CHILD  # the command still runs; stopping it stops it alone, and the result says so
 
 
-def _terminate(proc: subprocess.Popen, job: _Job | None = None) -> None:
+def _kill_group(pgid: int) -> bool:
+    """SIGKILL what is left of a process group. True when the system still refused it after `GROUP_SECONDS`.
+
+    The signal reaching the group, or ESRCH (no such group: none of its
+    processes is left, zombies included), settles it. EPERM settles nothing:
+    macOS answers it while the only members left are zombies not yet reaped
+    (XNU's `killpg1` skips zombies and answers EPERM when it finds no other
+    member: bsd/kern/kern_sig.c of apple-oss-distributions/xnu, read on
+    October 18, 2026), and any system answers it when no member may be
+    signalled by this user. So the call is repeated until it settles; a group
+    still refused at the end is said to be, never taken for one that stopped.
+    """
+    deadline = time.monotonic() + GROUP_SECONDS
+    while True:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return False
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                return True
+        time.sleep(0.02)
+
+
+def _terminate(proc: subprocess.Popen, job: _Job | None = None) -> bool:
+    """Stop the command and what it started. True when the system refused the last signal to its group (`_kill_group`)."""
     if job is not None:
         job.kill()  # the child and what it started; what follows waits for the child and reaps it
     if os.name != "posix" and proc.poll() is not None:
-        return
+        return False
+    refused = False
     try:
         if os.name == "posix":
             os.killpg(proc.pid, signal.SIGTERM)
@@ -126,10 +156,8 @@ def _terminate(proc: subprocess.Popen, job: _Job | None = None) -> None:
     finally:
         if os.name == "posix":
             # The group may outlive its leader or contain children ignoring TERM.
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            refused = _kill_group(proc.pid)
+    return refused
 
 
 def _captured(stream, limit: int = 60000) -> str:
@@ -157,6 +185,10 @@ def execute(argv: list[str], cwd: Path, *, stdin: str = "", timeout: int = 600,
     it is stopped (`_Job`); on POSIX the process group always does.
     `Result.process_tree` says which of the two held them, or `CHILD` when
     neither did: stopping the command then stops it alone.
+    `Result.kill_refused` says that, stopping it on POSIX, the system never
+    confirmed that its group was signalled or gone: nothing then says that
+    what it started was stopped. Either way it is a result, never an error
+    of the start, which is raised only by starting the program.
     """
     if not argv or not all(isinstance(x, str) and x for x in argv):
         raise ValueError("Invalid command: expected a list of nonempty arguments")
@@ -182,9 +214,10 @@ def _execute(argv, cwd, *, stdin, timeout, pid_file, output, errors, tree=False)
         proc.communicate(input=stdin, timeout=timeout)
         return Result(proc.returncode, _captured(output), _captured(errors), process_tree=held)
     except subprocess.TimeoutExpired:
-        _terminate(proc, job)
+        refused = _terminate(proc, job)
         proc.communicate()
-        return Result(proc.returncode or 124, _captured(output), _captured(errors), timed_out=True, process_tree=held)
+        return Result(proc.returncode or 124, _captured(output), _captured(errors), timed_out=True, process_tree=held,
+                      kill_refused=refused)
     except BaseException:
         _terminate(proc, job)
         raise
@@ -257,12 +290,13 @@ def _observed(argv, cwd, *, stdin, timeout, pid_file, output, errors, observers,
                                                     ("stderr", proc.stderr, errors, observers[1]))]
     writer = threading.Thread(target=_feed, args=(proc.stdin, stdin), daemon=True, name="patchrondo-write-stdin")
 
-    def captured(timed_out: bool) -> Result:
+    def captured(timed_out: bool, refused: bool = False) -> Result:
         _drain(readers, DRAIN_SECONDS)
         with capture.lock:
             capture.closed = True  # a reader still blocked on a descendant's pipe writes nothing more
             code = (proc.returncode or 124) if timed_out else proc.returncode
-            return Result(code, _captured(output), _captured(errors), timed_out=timed_out, process_tree=held)
+            return Result(code, _captured(output), _captured(errors), timed_out=timed_out, process_tree=held,
+                          kill_refused=refused)
 
     try:
         if pid_file is not None:
@@ -273,9 +307,9 @@ def _observed(argv, cwd, *, stdin, timeout, pid_file, output, errors, observers,
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            _terminate(proc, job)
+            refused = _terminate(proc, job)
             proc.wait()
-            return captured(True)
+            return captured(True, refused)
         return captured(False)
     except BaseException:
         _terminate(proc, job)

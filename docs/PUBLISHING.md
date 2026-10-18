@@ -63,6 +63,17 @@ shard passed. That result belongs to `533ba8a` only; the correction of the
 fixture is recorded in
 [REVIEW.md](REVIEW.md#ci-duration-review-corrections-october-18-2026).
 
+At 17:13 +02:00 the same day the remote `main` was at `eb295cc`, committed by
+the user at 16:26 +02:00 on top of `533ba8a`: the last two corrections of the
+CI duration change, in tests, tools and documentation. Tags and GitHub
+Releases were still empty. Its CI run 39135998928 failed in 3 min 59 s in
+one job, Python 3.11 in the first macOS shard, where
+`test_a_timeout_stops_the_command_and_what_it_started` recorded a refused
+start instead of a timeout; the 13 other test jobs, the collection and the
+package check passed, none was cancelled or reached its time limit, and
+`CI result` failed for that job only. The cause, in the runtime, is in
+[REVIEW.md](REVIEW.md#a-timeout-is-not-a-refused-start-october-18-2026).
+
 The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
 Workflow Events and their integration under **0.3.0 — Unreleased**, preserving
 all dated entries. This names a development series, not a new published

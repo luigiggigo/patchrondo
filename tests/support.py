@@ -1,10 +1,12 @@
 """Shared fixtures for the interface tests: temporary repositories and a served application."""
+import errno
 import http.client
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -27,6 +29,28 @@ CRITERION_ROW = re.compile(r'"id": "(AC-\d{2,4})"')
 def outcomes(prompt: str, outcome: str = "SATISFIED") -> list[dict]:
     """The `criteria` of an approval bound to the review schema: an outcome for each criterion the prompt lists."""
     return [{"id": name, "outcome": outcome, "note": ""} for name in dict.fromkeys(CRITERION_ROW.findall(prompt))]
+
+
+def refusing(times=None):
+    """`os.killpg` (POSIX) that answers EPERM to the first `times` SIGKILLs (all of them with None), as macOS does
+    while what is left of a group are zombies not yet reaped, and really signals otherwise.
+
+    Returns it and the answers it gave: "sent", "EPERM" or "ESRCH".
+    """
+    real, answers = os.killpg, []
+
+    def killpg(pgid, sig):
+        if sig == signal.SIGKILL and (times is None or answers.count("EPERM") < times):
+            answers.append("EPERM")
+            raise PermissionError(errno.EPERM, os.strerror(errno.EPERM))
+        try:
+            real(pgid, sig)
+        except ProcessLookupError:
+            answers.append("ESRCH")
+            raise
+        answers.append("sent")
+
+    return killpg, answers
 
 
 # id(build) -> (build, the folder it made): the entry keeps the builder alive, so its id is never given to another.

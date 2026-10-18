@@ -1,3 +1,4 @@
+import errno
 import os
 from pathlib import Path
 import signal
@@ -11,6 +12,8 @@ from unittest.mock import patch
 
 from patchrondo import process
 from patchrondo.process import LineReader, execute
+
+from support import refusing
 
 
 class ProcessTests(unittest.TestCase):
@@ -81,6 +84,151 @@ class ProcessTreeTests(unittest.TestCase):
             self.assertEqual((result.returncode, result.timed_out, result.process_tree), (0, False, process.CHILD))
         for result in stopped:
             self.assertEqual((result.timed_out, result.process_tree), (True, process.CHILD))
+
+
+# A child that ignores TERM, so that only the last SIGKILL of its group stops it; it says it started.
+STUBBORN = ("import os, pathlib, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "pathlib.Path('child.pid').write_text(str(os.getpid())); time.sleep(2); pathlib.Path('leaked').write_text('alive')")
+# A leader whose group keeps one zombie once it is gone: a holder in a group of its own starts a member of the
+# leader's group and reaps it `hold` seconds after the leader went (argv: folder, hold, holder code).
+LEADER = """
+import os, pathlib, subprocess, sys, time
+subprocess.Popen([sys.executable, "-c", sys.argv[3], str(os.getpgrp()), sys.argv[1], sys.argv[2]], process_group=0)
+while not pathlib.Path(sys.argv[1], "ready").exists():
+    time.sleep(0.01)
+time.sleep(60)
+"""
+HOLDER = """
+import os, pathlib, subprocess, sys, time
+group, folder, hold = int(sys.argv[1]), pathlib.Path(sys.argv[2]), float(sys.argv[3])
+(folder / "holder.pid").write_text(str(os.getpid()))
+member = subprocess.Popen([sys.executable, "-c", "pass"], process_group=group, stdout=subprocess.PIPE)
+member.stdout.read()  # the end of its output: it has exited, and nothing reaps it yet
+(folder / "ready").write_text(str(member.pid))
+parent = os.getppid()
+while os.getppid() == parent:
+    time.sleep(0.01)
+time.sleep(hold)
+member.wait()
+time.sleep(60)
+"""
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX process groups")
+class RefusedGroupTests(unittest.TestCase):
+    """The last SIGKILL of a stopped command's group can be refused (EPERM): macOS answers so while what is left of the
+    group are zombies not yet reaped (CI run 39135998928). A refusal is no error of the command, is never taken for a
+    stopped group, and never takes the place of an interruption."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.path = Path(folder.name)
+
+    def run_in(self, folder, code, observed, **options):
+        folder.mkdir()
+        return execute([sys.executable, "-c", code], folder, **({"on_stdout": lambda chunk: None} if observed else {}),
+                       **options)
+
+    def test_a_refusal_that_ends_is_waited_for_and_what_was_started_is_stopped(self):
+        parent = f"import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', {STUBBORN!r}]); time.sleep(30)"
+        for observed in (False, True):
+            folder = self.path / f"observed-{observed}"
+            killpg, answers = refusing(2)
+            with self.subTest(observed=observed), patch("patchrondo.process.os.killpg", killpg):
+                result = self.run_in(folder, parent, observed, timeout=1)
+                self.assertEqual((result.timed_out, result.kill_refused), (True, False))
+                self.assertEqual(answers, ["sent", "EPERM", "EPERM", "sent"])  # TERM, refused twice, then KILL sent
+                self.assertTrue((folder / "child.pid").exists())
+        time.sleep(2.5)  # each child would have written its marker by now
+        for observed in (False, True):
+            self.assertFalse((self.path / f"observed-{observed}" / "leaked").exists(), "a child outlived its group")
+
+    def test_a_refusal_to_the_end_is_said_and_is_no_error_of_the_command(self):
+        for observed in (False, True):
+            folder, killpg, answers = self.path / f"observed-{observed}", *refusing()
+            marker = self.path / f"active-process-{observed}.json"
+            started = time.monotonic()
+            with self.subTest(observed=observed), patch("patchrondo.process.os.killpg", killpg), \
+                    patch("patchrondo.process.GROUP_SECONDS", 0.3):
+                result = self.run_in(folder, "import time; time.sleep(30)", observed, timeout=0.5, pid_file=marker)
+                self.assertEqual((result.timed_out, result.kill_refused, result.process_tree), (True, True, process.GROUP))
+                self.assertGreater(answers.count("EPERM"), 2)  # asked again until the time ran out
+                self.assertEqual(answers[0], "sent")  # the leader was signalled, and stopped
+                self.assertLess(time.monotonic() - started, 10)
+                self.assertFalse(marker.exists())
+
+    def test_an_interruption_is_raised_again_whatever_the_group_answers(self):
+        real_wait, real_communicate = subprocess.Popen.wait, subprocess.Popen.communicate
+        code = "import os, pathlib, time\npathlib.Path('pid').write_text(str(os.getpid()))\ntime.sleep(60)"
+
+        def ready(folder):
+            deadline = time.monotonic() + 20
+            while not (folder / "pid").exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        def waited(proc, timeout=None):
+            if timeout == 77:  # the wait of `execute` itself, with observers: the user presses Ctrl+C
+                ready(self.folder)
+                raise KeyboardInterrupt
+            return real_wait(proc, timeout)
+
+        def communicated(proc, input=None, timeout=None):
+            if timeout == 77:  # the same without observers, once the (empty) input was written and closed
+                proc.stdin.close()
+                ready(self.folder)
+                raise KeyboardInterrupt
+            return real_communicate(proc, input, timeout)
+
+        for observed in (False, True):
+            self.folder, (killpg, answers) = self.path / f"observed-{observed}", refusing()
+            marker = self.path / f"active-process-{observed}.json"
+            with self.subTest(observed=observed), patch("patchrondo.process.os.killpg", killpg), \
+                    patch("patchrondo.process.GROUP_SECONDS", 0.3), patch.object(subprocess.Popen, "wait", waited), \
+                    patch.object(subprocess.Popen, "communicate", communicated):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.run_in(self.folder, code, observed, timeout=77, pid_file=marker)
+                self.assertIn("EPERM", answers)
+                self.assertFalse(marker.exists())  # the process ended: the marker went with it
+
+    @unittest.skipUnless(sys.platform == "darwin" or sys.platform.startswith("linux"), "the answer of macOS or Linux")
+    def test_a_group_left_with_a_zombie_is_stopped_as_the_system_answers(self):
+        """No replaced call: what the system answers for a group whose last member is a zombie that is not reaped.
+
+        macOS refuses (EPERM) until the zombie is reaped, then says the group is
+        gone (ESRCH); Linux signals the zombie. Either way nothing is raised.
+        """
+        real = os.killpg
+        for hold, refused in ((0.3, False), (60, sys.platform == "darwin")):
+            folder, answers = self.path / f"hold-{hold}", []
+            folder.mkdir()
+
+            def killpg(pgid, sig):
+                try:
+                    real(pgid, sig)
+                except OSError as exc:
+                    answers.append(errno.errorcode.get(exc.errno, str(exc.errno)))
+                    raise
+                answers.append("sent")
+
+            try:
+                with self.subTest(hold=hold), patch("patchrondo.process.os.killpg", killpg), \
+                        patch("patchrondo.process.GROUP_SECONDS", 1.5):
+                    result = execute([sys.executable, "-c", LEADER, str(folder), str(hold), HOLDER], folder, timeout=2)
+                    self.assertTrue((folder / "ready").exists(), "the zombie was not there before the time limit")
+                    self.assertEqual((result.timed_out, result.kill_refused), (True, refused), answers)
+                    self.assertEqual(answers[0], "sent", answers)  # TERM, while the leader was there
+                    if sys.platform == "darwin":
+                        self.assertEqual(answers[-1], "EPERM" if refused else "ESRCH", answers)
+                    elif hold == 60:
+                        self.assertEqual(answers, ["sent", "sent"])
+                    else:  # the holder may have reaped it already
+                        self.assertIn(answers[1:], (["sent"], ["ESRCH"]))
+            finally:
+                try:
+                    os.kill(int((folder / "holder.pid").read_text()), signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
 
 
 SLOW_WRITER = """

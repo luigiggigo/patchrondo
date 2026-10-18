@@ -68,7 +68,9 @@ is corrected in `753d957`; its newer run has its own status in that record.
 The run of `533ba8a` (October 18, 2026), the first with the test suite in
 shards, failed with three errors in Ubuntu and macOS jobs from a race of the
 test fixtures with Git's background maintenance, whose correction that record
-describes; its Windows shards passed.
+describes; its Windows shards passed. The run of `eb295cc`, which publishes
+that correction, failed one test with Python 3.11 on macOS: a timeout read as
+a refused start, a defect of the runtime that the same record explains.
 
 ## Requirements
 

@@ -1787,7 +1787,15 @@ pass, as before. For each check the runner:
    `check.process_tree`. When Windows refuses to put the child in a job
    object, the check still runs and is judged as before, but as
    `child_only`: stopping it stops it alone, and the reason of a timeout
-   says that what it started was not stopped and may still be running;
+   says that what it started was not stopped and may still be running.
+   On POSIX the last SIGKILL to the group (`process._kill_group`) is
+   settled only by the system: the signal reaching the group, or ESRCH (no
+   such group is left). EPERM settles nothing, since macOS answers it while
+   the last members are zombies not yet reaped, so the call is repeated for
+   `process.GROUP_SECONDS` (2 s). A group still refused then is a timeout
+   all the same, never a refused start: `process.Result.kill_refused`, kept
+   as `check.kill_refused`, and its reason says that what it started may
+   still be running;
 4. writes its output to `runs/iteration-NNN/<run>-test-NN.log` after
    masking the values of this process's variables named like secrets
    (`known_secrets`) and what `activity.redact` recognizes; the task state
@@ -1805,7 +1813,7 @@ pass, as before. For each check the runner:
 | Suites that declare more failures or errors than their test cases show; another number of tests while none fails; exit 0 with failing cases; a nonzero exit with none | `error` | `report_inconsistent` |
 | Failing test cases and a nonzero exit; fewer than `min_tests`; a required test absent or without a pass; an artifact pattern that matches nothing; a nonzero exit without a report | `failed` | |
 | Everything else | `passed` | |
-| The program is not there, or the system refused to start it | `blocked` | `not_found`, `permission_denied` |
+| The program is not there, or the system refused to start it (never a refusal to stop it) | `blocked` | `not_found`, `permission_denied` |
 | A start that failed otherwise | `error` | `start_failed` |
 
 `parse_junit` reads the report with `xml.parsers.expat` and refuses a
@@ -1862,6 +1870,7 @@ hold.
 | `started_at`, `finished_at`, `duration_ms` | In `check`, to the millisecond, UTC |
 | `environment_id` | `check.environment.id`: a digest of the system, the interpreter and the computer's name, which is not kept |
 | (not asked for) | `check.process_tree`: `process_group`, `job_object` or `child_only`; absent from records written before it, `null` when the command never started |
+| (not asked for) | `check.kill_refused`: `true` when, stopping the check on POSIX, the system refused the last SIGKILL to its group until the end; absent from records written before October 18, 2026 |
 | `artifacts`, `error` | `log`, `log_sha256`, `artifacts`, `check.report`; `check.error.kind` and `check.reason` |
 
 `stale` is reserved in `verification.STALE`: no version writes it, and
@@ -1931,6 +1940,13 @@ pauses with `configuration`.
   and a timeout's reason says that what it started may still be running. An
   interruption records nothing, so it cannot say so. Agent CLIs are still
   stopped alone, as before.
+- On POSIX a process that leaves the command's process group is not
+  stopped with it. A member the user may not signal is not either: the
+  system reports it only when no member at all could be signalled
+  (`kill_refused`). A refusal that lasts beyond `GROUP_SECONDS`, such as a
+  zombie that macOS reaps later, is reported as one too, although nothing
+  may be left running. Agent steps and the test stage before checks
+  (`PATCHRONDO_VERIFICATION=0`) receive `kill_refused` and do not report it.
 - The runner is not a sandbox. A check runs on the host with the user's
   rights: it can read and write what the user's account can, use the
   network, and find credentials on disk or in the user's tool
