@@ -10,7 +10,7 @@ from patchrondo.core import initialize, create_task, run_task, parse_review, con
 from patchrondo.providers import AgentReply, AgentFailure
 from patchrondo.storage import read_json, save_json
 
-from support import outcomes
+from support import copied, initial_repo, outcomes
 
 
 class FakeProvider:
@@ -40,14 +40,8 @@ class WorkflowTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.repo = root / "repo"
-        self.repo.mkdir()
         self.home = root / "state"
-        self._git("init", "-q", cwd=self.repo)
-        self._git("config", "user.name", "Test Runner", cwd=self.repo)
-        self._git("config", "user.email", "tester@example.com", cwd=self.repo)
-        (self.repo / "README.md").write_text("Initial repo\n", encoding="utf-8")
-        self._git("add", "README.md", cwd=self.repo)
-        self._git("commit", "-qm", "initial", cwd=self.repo)
+        copied(initial_repo, self.repo)  # README.md committed by Test Runner, in a repository of this test's own
         initialize(self.home, self.repo)
         cfg = read_json(self.home / "config.json")
         cfg["tests"] = {"enabled": True, "trust_acknowledged": True,
@@ -58,9 +52,6 @@ class WorkflowTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
-
-    def _git(self, *args, cwd):
-        subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
 
     def _task(self, dev="claude", rev="codex"):
         return create_task(self.home, title="Implement feature", description="Write feature.txt with 'good'",

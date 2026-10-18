@@ -536,6 +536,78 @@ could leave what it started running unseen.
 - No orchestration runtime changes. Documentation and publication checks
   are recorded in [the technical review](docs/REVIEW.md#documentation-alignment-october-17-2026).
 
+### CI duration — October 17, 2026
+
+- **The Windows test jobs no longer have to fit the whole suite in 15
+  minutes.** On GitHub the suite took 514 to 772 s in the `windows-latest`
+  jobs that ended (runs read on October 17, 2026), and the runs of `3f284bf`
+  and `fb6ecb1` stopped
+  Windows jobs at the 15-minute limit before the end. The test jobs now run
+  it in shards: one job on Linux, two on macOS, four on Windows, for Python
+  3.11 and 3.13 each. Every test still runs on every OS and Python, once.
+- **`tools/run_tests.py`** runs the unittest suite as `unittest discover`
+  does, measures each test from its start to its stop, and prints the
+  slowest tests and modules, in GitHub Actions also on the job's page.
+  `--shard I/N` splits it into parts of whole test classes, balanced by the
+  seconds per class in `tools/test_timings.json`; every shard checks that the
+  parts hold each collected test exactly once, and a part without tests
+  fails. When a job is stopped from outside, it says which test was running
+  and what took the time until then, and never counts that test as passed.
+  `tools/test_timings.json` is in the source package with the tool. Tested
+  by `tests/test_run_tests.py`, which also checks that the matrix of the
+  workflow lists every shard of each system.
+- **A first job compiles and collects every test** with Python 3.11 and
+  3.13: a syntax error or a module that cannot be imported, such as the one
+  of `15750e6`, fails in about a minute. The package check has a job of its
+  own. **`CI result`** succeeds only when every job did; its name does not
+  depend on the shards. A job stopped at its time limit ends as cancelled
+  and fails `CI result` with that reason, never as a failed test; a run
+  cancelled by a newer push skips it. The job names changed: no branch
+  protection required the old ones.
+- **Test repositories are copied, not built.** A trace of the processes the
+  suite starts found 14,867 on native Windows, 83% of its time spent waiting
+  for them; about 2,070 of them built the Git repositories of the tests. On
+  native Windows the suite of `fb6ecb1` took 12.9% less time with copies.
+  `tests/support.py` now builds each kind of repository with the same Git
+  commands once per test process and copies it for each test (`copied`,
+  `make_repo`): a repository of its own, with its own `.git`. Tested by
+  `tests/test_support.py`.
+- No runtime code changed. The engine's own Git commands, the larger part of
+  the suite's time, are unchanged: the tests exercise them.
+
+### CI duration: review corrections — October 18, 2026
+
+Three defects a review of the CI duration change found, each reproduced
+before it was corrected.
+
+- **Time outside tests includes collecting them.** `tools/run_tests.py`
+  started its clock after collecting the tests, while its summary said the
+  time outside tests included collection: a test module that took 1.2 s to
+  import was reported with 0.0 s outside tests. The clock now starts before
+  collection. Each test is still measured from its start to its stop, and
+  class and module fixtures stay outside tests; an interrupted run still
+  reports what ran and leaves `--write-timings` unchanged. Tested with a
+  module that sleeps 0.5 s when it is imported.
+- **Test IDs stay whole in the GitHub summary.** IDs went between single
+  backticks as they were: a valid test method named with a backtick and a
+  pipe added a cell to the table of slowest tests. In the Markdown summary
+  every test ID and module name (the slowest tests and modules, the tests
+  that did not pass, a class fixture that failed, the test an interruption
+  stopped) is now one code span on one line: a fence longer than any run of
+  backticks in it, line breaks shown as `\n` and `\r`, pipes escaped in table
+  cells. The JSON report and `--list` keep the IDs as unittest gives them.
+  Tested with names unittest collects from a module whose classes and
+  methods hold backticks, pipes, line breaks and table rows.
+- **Two builders of one name keep their own repository.** `support.copied`
+  kept a built folder under the builder's module and name, so a second
+  function of the same name, such as two that one factory returns, got the
+  first one's folder. It now keeps it under the builder itself. Tested with
+  two builders of one factory.
+- No runtime code changed. Apart from the three new tests, the suite
+  collects the same IDs in the same order, and the parts of 1, 2 and 4
+  shards hold the same tests. The checks are in
+  [the technical review](docs/REVIEW.md#ci-duration-review-corrections-october-18-2026).
+
 ## 0.2.1 — zero configuration and self-healing
 
 Source published on `main` in commit `624f60e` on October 12, 2026 (00:30

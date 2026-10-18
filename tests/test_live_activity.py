@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 import tempfile
 import threading
@@ -23,7 +22,7 @@ from patchrondo.process import Result
 from patchrondo.providers import AgentFailure, OfficialCLI
 from patchrondo.storage import read_json, save_json
 
-from support import ScriptedCLI
+from support import ScriptedCLI, make_repo
 
 OBSERVED = datetime(2026, 10, 11, 9, 0, tzinfo=timezone.utc)
 APPROVED = {"verdict": "APPROVED", "summary": "ok", "issues": []}
@@ -295,13 +294,7 @@ class EngineCase(unittest.TestCase):
         self.addCleanup(folder.cleanup)
         root = Path(folder.name).resolve()
         self.repo, self.home = root / "repo", root / "state"
-        self.repo.mkdir()
-        for args in (["init", "-q"], ["config", "user.name", "T"], ["config", "user.email", "t@example.invalid"],
-                     ["config", "commit.gpgsign", "false"]):
-            subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True)
-        (self.repo / "README.md").write_text("# Test\n", encoding="utf-8", newline="\n")
-        for args in (["add", "."], ["commit", "-qm", "base"]):
-            subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True)
+        make_repo(self.repo)
         initialize(self.home, self.repo)
         cfg = read_json(self.home / "config.json")
         cfg["tests"] = {"enabled": True, "trust_acknowledged": True, "commands": [[

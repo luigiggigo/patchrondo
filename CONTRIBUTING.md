@@ -23,7 +23,9 @@ Test quota recovery with an injected clock and scripted providers, as
 `tests/test_recovery.py` does: no test may wait in real time or reach a provider CLI.
 The [CI workflow](.github/workflows/ci.yml) owns the full test suite on Python
 3.11 and 3.13 across Linux, Windows and macOS, and the package build and metadata
-checks on Linux. These checks are not required locally before a push or after
+checks on Linux. Its test jobs run the suite in shards with `tools/run_tests.py`,
+which also reports the slowest tests ([durations and shards](docs/TESTING.md#durations-and-shards)).
+These checks are not required locally before a push or after
 each edit. Run focused tests locally when needed to diagnose a failure or
 verify a regression, using simulated providers. Keep the local checks below
 that CI does not perform, and rerun those applicable to a code change after

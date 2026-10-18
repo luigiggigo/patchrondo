@@ -3,6 +3,7 @@ import http.client
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -27,8 +28,36 @@ def outcomes(prompt: str, outcome: str = "SATISFIED") -> list[dict]:
     return [{"id": name, "outcome": outcome, "note": ""} for name in dict.fromkeys(CRITERION_ROW.findall(prompt))]
 
 
-def make_repo(path: Path) -> Path:
-    """A Git repository with one commit."""
+# id(build) -> (build, the folder it made): the entry keeps the builder alive, so its id is never given to another.
+_BUILT: dict[int, tuple[object, Path]] = {}
+_TEMPLATES: list[tempfile.TemporaryDirectory] = []
+
+
+def copied(build, path: Path) -> Path:
+    """`path` holding a copy of the folder `build(folder)` makes, which is built once per builder and test process.
+
+    Building a repository starts several Git processes, which costs about a
+    quarter of a second on Windows; copying the files of one built earlier
+    costs a tenth of that. The copy is a repository of its own, with its own
+    `.git`: a test changes only its copy, never the folder it was copied from
+    or another test's copy. Only the commit is the same in every copy.
+    `build` must make the same folder whenever it is called. A builder is the
+    object passed, never its name: two functions of one name, such as two
+    that one factory returned, are two builders with a folder each.
+    """
+    entry = _BUILT.get(id(build))
+    if entry is None:
+        if not _TEMPLATES:
+            _TEMPLATES.append(tempfile.TemporaryDirectory(prefix="patchrondo-test-templates-", ignore_cleanup_errors=True))
+        folder = Path(_TEMPLATES[0].name) / str(len(_BUILT))
+        build(folder)
+        entry = _BUILT[id(build)] = (build, folder)
+    shutil.copytree(entry[1], path, symlinks=True)
+    return path.resolve()
+
+
+def one_commit(path: Path) -> None:
+    """A Git repository with one commit, built with Git."""
     path.mkdir(parents=True)
     for args in (["init", "-q"], ["config", "user.name", "T"], ["config", "user.email", "t@example.invalid"],
                  ["config", "commit.gpgsign", "false"]):
@@ -36,7 +65,21 @@ def make_repo(path: Path) -> Path:
     (path / "README.md").write_text("# Test\n", encoding="utf-8", newline="\n")
     for args in (["add", "."], ["commit", "-qm", "base"]):
         subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
-    return path.resolve()
+
+
+def make_repo(path: Path) -> Path:
+    """A Git repository with one commit, of its own: a copy of the one `one_commit` built for this process."""
+    return copied(one_commit, path)
+
+
+def initial_repo(path: Path) -> None:
+    """The repository of the workflow and recovery tests, built with Git: README.md committed by Test Runner."""
+    path.mkdir(parents=True)
+    for args in (("init", "-q"), ("config", "user.name", "Test Runner"), ("config", "user.email", "tester@example.com")):
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
+    (path / "README.md").write_text("Initial repo\n", encoding="utf-8")
+    for args in (("add", "README.md"), ("commit", "-qm", "initial")):
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
 
 
 SYSTEM = {"os": "Synthetic", "release": "1", "python": "3.11.0", "python_supported": True, "acl_policy": False,

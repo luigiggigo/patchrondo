@@ -19,7 +19,7 @@ from patchrondo.providers import AgentFailure, AgentReply
 from patchrondo.storage import private_dir, read_json, save_json
 from patchrondo.verification import Runner, Status, judge_report, parse_check, parse_junit
 
-from support import make_repo, outcomes
+from support import copied, make_repo, one_commit, outcomes
 
 # A stand-in for a test tool: it does what behaviour.json says, then writes the report it was told to write.
 TOOL = r'''import json, pathlib, subprocess, sys, time
@@ -65,6 +65,14 @@ def git(*args, cwd):
     subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
 
 
+def project(path: Path) -> None:
+    """The project the checks run in, built with Git: one commit, then a second that ignores what checks write."""
+    one_commit(path)
+    (path / ".gitignore").write_text("__pycache__/\n*.pyc\nreports/\ndist/\n", encoding="utf-8", newline="\n")
+    git("add", ".", cwd=path)
+    git("commit", "-qm", "ignore generated files", cwd=path)
+
+
 class Case(unittest.TestCase):
     """A repository whose path has spaces, a private task folder and the synthetic tool beside them."""
 
@@ -72,10 +80,7 @@ class Case(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve() / "with space"
-        self.repo = make_repo(self.root / "project dir")
-        (self.repo / ".gitignore").write_text("__pycache__/\n*.pyc\nreports/\ndist/\n", encoding="utf-8", newline="\n")
-        git("add", ".", cwd=self.repo)
-        git("commit", "-qm", "ignore generated files", cwd=self.repo)
+        self.repo = copied(project, self.root / "project dir")
         self.path = private_dir(self.root / "home dir" / "tasks" / "T-0123456789ab")
         self.tools = self.root / "tool folder"
         self.tools.mkdir()

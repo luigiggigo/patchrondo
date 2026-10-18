@@ -17,20 +17,64 @@ concurrency:
 env:
   PIP_NO_CACHE_DIR: "1"
 
+# Every job skips before allocating a runner if the repository is private.
+# Standard runners are free for public repositories:
+# https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories
 jobs:
-  test:
-    name: Python ${{ matrix.python }} / ${{ matrix.os }}
-    # Skip before allocating a runner if the repository is private.
-    # Standard runners are free for public repositories:
-    # https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories
+  collect:
+    # Fast feedback: a syntax error or a test module that cannot be imported fails here in about a minute.
+    name: Collect tests (Python 3.11 and 3.13)
     if: ${{ github.event.repository.private == false }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        id: python311
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.11"
+          # Dependency caching is disabled by default; do not enable it.
+      - name: Set up Python 3.13
+        id: python313
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.13"
+          # Dependency caching is disabled by default; do not enable it.
+      - name: Compile sources and collect every test, checking the shards of the test jobs
+        env:
+          PYTHONPATH: src
+          PYTHON311: ${{ steps.python311.outputs.python-path }}
+          PYTHON313: ${{ steps.python313.outputs.python-path }}
+        run: |
+          for python in "$PYTHON311" "$PYTHON313"; do
+            "$python" --version
+            "$python" -m compileall -q src tests tools
+            "$python" tools/run_tests.py --collect-only --shard-counts 1,2,4
+          done
+
+  test:
+    # Each shard runs whole test classes chosen by tools/run_tests.py from measured durations;
+    # the shards of one OS and Python hold every test exactly once and fail on their own.
+    name: Python ${{ matrix.python }} / ${{ matrix.target.os }} (${{ matrix.target.shard }})
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ${{ matrix.target.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.11", "3.13"]
+        target:
+          - { os: ubuntu-latest, shard: "1/1" }
+          - { os: macos-latest, shard: "1/2" }
+          - { os: macos-latest, shard: "2/2" }
+          - { os: windows-latest, shard: "1/4" }
+          - { os: windows-latest, shard: "2/4" }
+          - { os: windows-latest, shard: "3/4" }
+          - { os: windows-latest, shard: "4/4" }
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -44,10 +88,53 @@ jobs:
       - name: Install project
         run: python -m pip install -e .
       - name: Run tests with simulated providers
-        run: python -m unittest discover -s tests -v
+        # Measured durations and the slowest tests are printed and added to the job summary.
+        run: python tools/run_tests.py -v --shard ${{ matrix.target.shard }}
+
+  packages:
+    name: Check source and wheel packages (Python 3.13 / ubuntu-latest)
+    if: ${{ github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.13"
+          # Dependency caching is disabled by default; do not enable it.
       - name: Check source and wheel packages
-        if: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.13' }}
         run: |
           python -m pip install build twine
           python -m build
           python -m twine check dist/*
+
+  result:
+    # One check whose name does not depend on the shards. It is skipped when the run itself is
+    # cancelled (a newer push), and fails when any job did not succeed: a job that hit its time
+    # limit ends as "cancelled", which is reported as such and never as a failed test.
+    name: CI result
+    needs: [collect, test, packages]
+    if: ${{ !cancelled() && github.event.repository.private == false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          COLLECT: ${{ needs.collect.result }}
+          TESTS: ${{ needs.test.result }}
+          PACKAGES: ${{ needs.packages.result }}
+        run: |
+          echo "collect: $COLLECT, tests: $TESTS, packages: $PACKAGES"
+          status=0
+          for pair in "collect=$COLLECT" "tests=$TESTS" "packages=$PACKAGES"; do
+            case "${pair#*=}" in
+              success) ;;
+              cancelled) echo "::error::${pair%%=*} was cancelled or reached its time limit: not a test result, and not a pass"; status=1 ;;
+              *) echo "::error::${pair%%=*} ended with ${pair#*=}"; status=1 ;;
+            esac
+          done
+          exit "$status"

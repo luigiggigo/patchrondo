@@ -19,7 +19,9 @@ Findings with a criterion the task does not have, and IDs kept from the
 findings field only: October 17, 2026. Versioned workflow events: October
 17, 2026. Workflow events that say what they cut: October 17, 2026. The
 four records checked together: October 17, 2026. Checks PatchRondo runs
-itself, and publication-status update: October 17, 2026.
+itself, and publication-status update: October 17, 2026. CI duration, and
+publication-status update: October 17, 2026. Review corrections of the CI
+duration change: October 18, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -29,24 +31,28 @@ working tree at its date.
 
 ## Current source and CI status (October 17, 2026)
 
-GitHub API and `gh run list` were checked for this alignment on October 17,
-2026. Remote `main` returned `753d957f9a5d96d6169790dc9faadbeabfa1e314`,
-one implementation commit after the requested baseline `15750e6`.
-That commit implements the verification runner and corrects the
-history-test import error. Package metadata remains 0.2.1; the implemented
-Phase 1 is now grouped under the 0.3.0 development series in the changelog.
-No version tags or GitHub Releases were returned.
+GitHub API, `git ls-remote` and `gh run list` were checked again on October
+17, 2026 between 22:20 and 22:50 +02:00. Remote `main` returned
+`fb6ecb1f399ad05de4319a362a1e2b25bc44dfd8`. No version tags or GitHub
+Releases were returned. Package metadata remains 0.2.1; the implemented
+Phase 1 is grouped under the 0.3.0 development series in the changelog.
 
-The two runs must be read separately, by the commit they actually tested:
+Each run must be read by the commit it actually tested. A job that GitHub
+stops at its 15-minute limit ends as `cancelled`, like a job cancelled
+because a newer push superseded the run; the job times below tell the two
+apart. Neither is a test result.
 
 | Commit | CI run | Observed status on October 17, 2026 |
 |---|---|---|
-| `15750e6` (previous implementation) | [39051863842](https://github.com/luigiggigo/patchrondo/actions/runs/39051863842) | FAILED: `test_history.py` did not import at line 78 |
-| `753d957` (verification runner and import correction) | [39060579672](https://github.com/luigiggigo/patchrondo/actions/runs/39060579672) | IN PROGRESS: both Ubuntu and both macOS jobs succeeded; both Windows jobs were still running |
+| `15750e6` | [39051863842](https://github.com/luigiggigo/patchrondo/actions/runs/39051863842) | FAILED: `test_history.py` did not import at line 78 |
+| `753d957` | [39060579672](https://github.com/luigiggigo/patchrondo/actions/runs/39060579672) | CANCELLED by the newer push of `3f284bf`: both Windows jobs were stopped at 19:14 UTC, after 14 minutes, when the next run started; the four Ubuntu and macOS jobs succeeded |
+| `3f284bf` | [39061558971](https://github.com/luigiggigo/patchrondo/actions/runs/39061558971) | CANCELLED at the time limit: Python 3.13 on `windows-latest` was stopped after 15 min 12 s, with no newer push until 19:56 UTC; the five other jobs succeeded, Python 3.11 on `windows-latest` in 13 min 16 s |
+| `fb6ecb1` | [39064594210](https://github.com/luigiggigo/patchrondo/actions/runs/39064594210) | FAILED: both `windows-latest` jobs were stopped at the time limit after 642 (Python 3.13) and 647 (Python 3.11) of 693 tests; Python 3.11 on `macos-latest` failed one test (`test_a_timeout_stops_the_command_and_what_it_started` returned `blocked`, `permission_denied` instead of a timeout); the three other jobs succeeded |
 
-The failed run belongs to `15750e6`; it is not the result of `753d957`.
-The Linux Python 3.13 package check succeeded on `753d957`. The overall
-conclusion of that run remains UNKNOWN until the two Windows jobs finish.
+The failed run of `15750e6` is not the result of a later commit. On
+`fb6ecb1` no Windows job reached the end of the suite, so the Windows
+result of that commit is UNKNOWN. The macOS failure is described, with its
+probable cause, in [CI duration](#ci-duration-october-17-2026).
 
 ### Focused recheck and GitHub connection (October 17, 2026)
 
@@ -162,6 +168,268 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## CI duration: review corrections (October 18, 2026)
+
+This section covers changes on top of the CI duration change below:
+`tools/run_tests.py`, `tests/support.py`, `tests/test_run_tests.py`,
+`tests/test_support.py`, TESTING, the changelog and this record. No runtime
+code changed: `git diff --stat fb6ecb1 -- src/` and `git status --short src/`
+print nothing. The package version is unchanged, 0.2.1.
+
+**Findings of the review, as received.** A review of the CI duration change
+on October 17, 2026 reported three defects, each with a reproduction. Before
+anything was corrected, the three reproductions failed for the reasons given,
+on native Windows with Python 3.11.3 and 3.13.3 (three failures, exit 1, on
+each).
+
+- P2: `support.copied` kept a built folder under the builder's
+  `__module__.__qualname__`. Two builders that one factory returns have the
+  same key, so the second got the first one's folder (`A, A` where `A, B` was
+  asked). Confirmed. A folder is now kept under `id(build)`, and the entry
+  holds the builder, so that its identity is never given to another object.
+  Each builder is still built once per test process and each copy is still a
+  repository of its own; the builders of the suite are distinct functions of
+  their modules, so nothing they make changes.
+- P3: `tools/run_tests.py` collected the tests before starting its clock,
+  while its summary said the time outside tests included collection: a module
+  that slept 1.2 s when imported gave `outside_tests_seconds` 0.0. Confirmed.
+  The clock now starts before collection. A test is still measured from
+  `startTest` to `stopTest`, and fixtures stay outside tests; an interrupted
+  run still writes its partial report and leaves `--write-timings` alone.
+- P3: `render` put each ID between single backticks as it was: a method
+  named ``test_` | injected`` added a cell to the table. Confirmed, and the
+  same held for module names, the list of tests that did not pass (a class
+  fixture that failed among them) and the test named in the heading of an
+  interrupted run. Each is now one code span on one line (`code`): a fence one
+  backtick longer than its longest run of backticks, a space inside it when
+  the name starts or ends with a backtick or a space, line breaks shown as
+  `\r` and `\n`, and in a table cell every pipe escaped (GitHub splits a row
+  into cells before it reads code spans, then drops the backslash). The
+  summary printed in the log, the JSON report and `--list` keep the IDs as
+  unittest gives them.
+
+**Tests added.** `CopiedRepositoryTests.test_two_builders_of_one_name_keep_their_own_folders`
+(two builders of one factory, each built once). `RunnerTests.test_collecting_the_tests_counts_as_time_outside_them`:
+a module that sleeps 0.5 s when it is imported; wall time and time outside
+tests are at least 0.45 s, time inside tests less.
+`RunnerTests.test_unusual_test_ids_stay_whole_in_the_summary_and_as_they_are_in_the_report`:
+the tool runs, with `GITHUB_STEP_SUMMARY`, a module whose classes and methods
+are named with backticks, pipes, `\n`, `\r\n` and table rows, with a class
+fixture that fails and a last test stopped from outside. Every row of both
+tables has two cells; each cell, item and the heading hold one code span that
+shows the ID; the report and `--list` hold the IDs unchanged. The interrupt
+test also passes `--write-timings` and checks that the file is unchanged.
+
+**Checked against the change.** Against the code before the corrections, in
+a scratch copy, only the three new tests failed (native Windows, Python
+3.11.3 and 3.13.3: 2 of 18 and 1 of 3, exit 1). Each safeguard was then
+removed in turn from a scratch copy of the corrected code, and the tests
+failed 11 times of 11 on native Windows with Python 3.11.3 and 3.13.3 and
+under WSL2 with Python 3.12.3: pipes left in a cell, line breaks left, a
+fence of one backtick, no space inside the fence, the interrupted ID left as
+it was, pipes escaped in the list as well, module names left as they were,
+the clock started after collection, timings written after an interrupt,
+builders told apart by name, a builder built again for every copy.
+
+**What the suite collects.** Through `--list` before and after the
+corrections, with Python 3.11.3 and 3.13.3 on native Windows and 3.12.3 under
+WSL2 (compared with the Windows list from before): the 711 IDs collected
+before are collected in the same order, with the three new ones; the parts of
+1, 2 and 4 shards hold the same tests as before, each new test in the part of
+its class. Four shards hold 233, 195, 173 and 113 tests.
+
+Validation on October 18, 2026, with `PATH` filtered so that `shutil.which`
+found neither `claude` nor `codex` in any run:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| The review's three reproductions, before the corrections | Native Windows, Python 3.11.3 and 3.13.3: 3 failures, for the reasons reported | 1, twice |
+| The same, after | Native Windows, Python 3.11.3 and 3.13.3, and WSL2, Python 3.12.3: 3 passed | 0, three times |
+| `tests/test_run_tests.py` | Native Windows, Python 3.11.3 and 3.13.3, and WSL2, Python 3.12.3: 18 passed | 0 |
+| `tests/test_support.py` | The same three: 3 passed | 0 |
+| New tests against the code before the corrections | Native Windows, Python 3.11.3 and 3.13.3: the 3 new tests failed, the others passed | 1 |
+| Removed safeguards | Native Windows, Python 3.11.3 and 3.13.3, and WSL2, Python 3.12.3: 11 of 11 detected | 0 |
+| `compileall -q src tests tools`, then `run_tests.py --collect-only --shard-counts 1,2,4` | Native Windows, Python 3.11.3 and 3.13.3: 714 tests, none failed to import, the parts of 1, 2 and 4 shards complete; the same under WSL2, Python 3.12.3 | 0 |
+| The modules that copy repositories: `test_acceptance`, `test_live_activity`, `test_recovery`, `test_verification`, `test_workflow` | Native Windows, Python 3.13.3 and 3.11.3: 64, 25, 65 (1 skipped: POSIX `tzset`), 49 (3 skipped: POSIX permissions, signals, pytest not installed) and 23 tests | 0, ten times |
+| The same five modules | WSL2, Python 3.12.3: 64, 25, 65, 49 (2 skipped: job objects of native Windows, pytest not installed) and 23 tests | 0, five times |
+| Protections | WSL2, Python 3.12.3: 243 of 243 removed safeguards detected, 0 missed, 480 s | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.05 s after the planned time | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Publication scanner | 129 files checked; five findings: the three images of earlier sections (binary, unchanged since `fb6ecb1`), and `.claude/` and `debug.log`, both ignored by Git and not written for this change | 1 |
+| Documentation | Links and anchors of five documents resolved; changed files UTF-8 with LF and no BOM; `git diff --check` clean | 0 |
+
+Every provider was scripted: no model was called, and no new session file
+appeared under `~/.codex/sessions` on native Windows or under
+`~/.claude/projects` and `~/.codex/sessions` in WSL2. Not run: the CI
+workflow, so neither its durations on GitHub nor the summary as GitHub
+renders it are observed (the test reads the Markdown by GitHub's documented
+rules for tables and code spans); macOS; the package build and `twine check`
+(CI's); the browser check, the crash test at every checkpoint and the opt-in
+tests in the real Codex sandbox (no interface, checkpoint or environment
+check code changed); pytest's real-pytest test, skipped on both platforms.
+
+**Limits that remain.** A line break in an ID is shown as `\n` in the
+summary, as a name that holds a backslash and an `n` would be; the JSON
+report keeps the difference. `run_tests.unit_of` takes a test's class as
+everything before its last dot, so a method whose name holds a dot (valid
+for unittest, absent from this suite) would make a class of its own and
+could be put in another shard than the rest of its class; the shards would
+still hold every test once. It was found while correcting the findings and
+is left as it is. The limits of the CI duration change below remain.
+
+**Verdict: READY for these three corrections**, on the checks above. The
+duration of CI on GitHub stays NOT_VERIFIED: only a run of a commit holding
+these corrections can measure it. This is not a release-readiness verdict.
+
+## CI duration (October 17, 2026)
+
+This section covers changes on top of `fb6ecb1`: `.github/workflows/ci.yml`,
+the new `tools/run_tests.py` and `tools/test_timings.json` (added to
+`MANIFEST.in`), `tests/support.py`,
+the setup of `tests/test_acceptance.py`, `test_live_activity.py`,
+`test_recovery.py`, `test_verification.py` and `test_workflow.py`, the new
+`tests/test_run_tests.py` and `tests/test_support.py`, TESTING, CONTRIBUTING
+and the changelog. No runtime code changed. The package version is
+unchanged, 0.2.1.
+
+**What was measured before anything changed.** Step times were read with
+`gh run view` for the runs of `c27e61f`, `14d7b86`, `3f284bf` and `fb6ecb1`.
+Setting up a job (checkout, Python, `pip install -e .`) took about 20 s on
+Windows and under 10 s elsewhere; the package check 7 to 10 s. The test step
+took 118 to 141 s on `ubuntu-latest`, 223 to 357 s on `macos-latest` and 514
+to 772 s on `windows-latest` in the jobs that ended; on `3f284bf` and
+`fb6ecb1` Windows jobs were stopped after 880 to 889 s of tests by the
+15-minute limit. A whole run used 33 to 46 runner-minutes, and lasted as
+long as its slowest Windows job.
+
+On native Windows 11 with Python 3.13.3, `tools/run_tests.py` measured the
+693 tests of `fb6ecb1` at 612.4 s, 608.0 s of them inside tests and 4.5 s
+outside (class fixtures and the runner; correction of October 18, 2026: the
+runner of that day started its clock after collecting the tests, so no
+figure of this section counts collection). No test stands out: the slowest
+took 11.5 s, and the engine scenarios cost 1 to 4 s each. A trace of every
+process the suite starts counted 14,867, and 517.6 s waiting for them:
+
+| Started by | Processes | Waited |
+|---|---|---|
+| The engine's Git commands, mostly `gitops.fingerprint` (`rev-parse`, `status`, `ls-files`, about 2,100 times) and `changes` | about 12,000 | about 370 s |
+| The tests' setup building repositories (`init`, `config`, `add`, `commit`) | about 2,070 | about 80 s |
+| Python: configured test commands, the scripted CLI, the tools | 367 | 58 s |
+
+On this computer a Git process took about 30 ms and building a one-commit
+repository with Git 238 ms, copying one 21 ms.
+
+**Decisions.**
+
+- The engine's Git commands are what the engine tests exercise; they are
+  unchanged. Fewer of them would need a change to how evidence is bound to
+  the fingerprint of the files, which is not a change of the tests.
+- Each kind of repository the tests build is built once per test process,
+  with the same commands, and copied for each test (`support.copied`). A
+  copy is a repository of its own; `tests/test_support.py` checks that a
+  commit or a worktree in one copy reaches neither another copy nor later
+  ones.
+- The suite is split into shards of whole classes, balanced by measured
+  durations: four on Windows, two on macOS, one on Linux. Classes keep
+  their fixtures and the order of their tests; the largest class takes 71 s
+  of 532 s. Shards are jobs, not parallel processes in one job: no test
+  meets more contention than before, and a shard fails on its own.
+- Dependency caching stays disabled; no time limit was raised.
+
+**What the change does, measured on native Windows** (Windows 11, Python
+3.13.3, the same computer, nothing else heavy running): the 693 tests of
+`fb6ecb1` took 529.5 s instead of 608.0 s (78.5 s, 12.9%, less), close to
+the 80 s the trace counted for building repositories. Between the two runs
+a module that did not change took 6.4% less, so a module's own gain is
+known to a few percent only. With the 16 new tests the whole suite took
+536.5 s. Split by `tools/test_timings.json` into four shards, Python 3.11.3
+ran them one after the other, as four jobs would: 189, 230, 156 and 135
+tests in 134, 133, 133 and 137 s, each exiting 0; the shards held each of
+the 710 collected tests exactly once (none missing, repeated or unknown).
+With the timings measured before the change, the parts would have differed
+by 1 to 4%.
+
+**Expected on GitHub, not yet observed.** On `fb6ecb1` the Python 3.13
+Windows job ran the first 642 tests, in collection order, in 880 s; they
+took 565 s on this computer, so a Windows runner took about 1.55 times as
+long. The whole suite took about 0.54 times as long on macOS (331 s) and
+0.20 times on Linux (122 s). Applied to the 532 s measured after the change:
+about 825 s on a Windows runner, so about 206 s of tests per Windows shard
+and about 3.8 minutes per job with its setup (three shards would come close
+to 5 minutes); about 145 s per macOS shard and 105 s on Linux; the run
+about 4 to 4.5 minutes, with `CI result` after the slowest shard. Runner
+minutes stay about where they were (an estimated 46, against 33 to 46
+before, when Windows jobs did not always finish): every test still runs on
+every system, and the ten more jobs add their setup. These are estimates
+from the figures above; only a run on GitHub can confirm them.
+
+**The macOS failure of `fb6ecb1`.** Python 3.11 on `macos-latest` failed
+`test_a_timeout_stops_the_command_and_what_it_started`: the check was
+`blocked` with `permission_denied` instead of a timeout. A probable cause,
+read from the code and not reproduced (no macOS was available): after a
+timeout, `process._terminate` ends with `os.killpg(proc.pid, SIGKILL)` and
+catches only `ProcessLookupError`; macOS can answer `EPERM` when what is
+left of the group has exited and not yet been reaped, and the `PermissionError`
+then reaches `verification`, which reads any `PermissionError` of
+`process.execute` as a refusal to start the program. The test, there since
+`753d957`, passed in both macOS jobs of `753d957` and of `3f284bf` and with
+Python 3.13 on `fb6ecb1`: the failure is intermittent, as a race would be.
+It is a defect of the runtime, outside this change, and is left as it is.
+
+**Checked against the change.** Each property of the new tests was removed
+in turn from a scratch copy of `tools/`, `tests/` and `.github/`, and the new
+tests failed every time (14 of 14): a part that loses its last test, a
+partition check that accepts anything, a shard that splits a class, a
+duration counted from the end of the previous test, failures that exit with
+0, an empty shard that passes, a failing subtest taken for a pass, a module
+that cannot be imported let through by `--collect-only`, an interrupted test
+counted as passed, an interrupted run that reports nothing, a Windows shard
+left out of the matrix, `Collect tests` checking other shard counts, copies
+that share their template, a template built again for every copy. The
+commands of `Collect tests` fail (exit 1) on the `tests/test_history.py` of
+`15750e6`.
+
+Validation on October 17, 2026, with `PATH` filtered so that `shutil.which`
+found neither `claude` nor `codex` for reliability and the WSL2 checks:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Whole suite before the change (`fb6ecb1`), `tools/run_tests.py` | Native Windows 11, Python 3.13.3: 693 tests, 679 passed, 14 skipped, 612.4 s | 0 |
+| Whole suite after the change, `tools/run_tests.py` | Native Windows 11, Python 3.13.3: 709 tests, 695 passed, 14 skipped, 536.5 s | 0 |
+| The four Windows shards, one after the other | Native Windows 11, Python 3.11.3: 189, 230, 156 and 135 tests (696 passed, 14 skipped) in 134, 133, 133 and 137 s; each of the 710 collected tests held exactly once | 0, four times |
+| Whole suite, `tools/run_tests.py` | WSL2, Python 3.12.3: 710 tests, 689 passed, 21 skipped, 185.7 s | 0 |
+| `tests/test_run_tests.py`, `tests/test_support.py` (final) | Native Windows, Python 3.13.3 and 3.11.3, and WSL2, Python 3.12.3: 16 and 2 tests passed | 0 |
+| The same tests from the files `MANIFEST.in` selects | Native Windows, Python 3.13.3: 15 passed, 1 skipped (the workflow is not in the source package), 2 passed | 0 |
+| Commands of `Collect tests` | Native Windows, Python 3.11.3 and 3.13.3: `compileall`, then 710 tests collected and the parts of 1, 2 and 4 shards complete | 0 |
+| Protections | WSL2, Python 3.12.3: 243 of 243 removed safeguards detected, 0 missed, 478 s | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.04 s after the planned time | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Publication scanner | 129 files checked; five findings: the three images of earlier sections (binary, unchanged), and `.claude/` and `debug.log`, both ignored by Git and not written for this change | 1 |
+| Documentation | Links and anchors of six documents resolved; changed files UTF-8 with LF and no BOM; `git diff --check` clean | 0 |
+
+Every provider was scripted: no model was called. Not run: the new
+workflow on GitHub, so the durations it is expected to have are not
+measured; macOS; the package build and `twine check` (CI's; locally
+setuptools 65.5 cannot read this `pyproject.toml` and a newer one was not
+installed); the browser check, the crash test at every checkpoint and the
+opt-in tests in the real Codex sandbox (no interface, checkpoint or
+environment check code changed).
+
+**Limits that remain.** The engine's Git processes still take most of the
+suite's time on Windows. The timings file was measured on one Windows
+computer; shards on other systems are balanced by its proportions, and it
+needs a refresh when classes grow. Four Windows shards are sized for about
+825 s of tests; a suite much larger needs a fifth (one more entry in the
+matrix and in `--shard-counts`). A job that reaches its time limit still
+ends as cancelled on GitHub: `CI result` and the runner say so, GitHub's own
+list of runs does not. The macOS failure above remains.
+
+**Verdict: NOT_VERIFIED** for the duration of CI on GitHub, which only a run
+there can measure; the local checks above passed. This is not a
+release-readiness verdict.
 
 ## A check no job object holds says so (October 17, 2026)
 

@@ -42,12 +42,14 @@ package version. Their validation is recorded in [REVIEW.md](REVIEW.md); the
 [current status](REVIEW.md#current-source-and-ci-status-october-17-2026)
 lists the CI runs of these commits.
 
-The remote `main` was checked again on October 17, 2026 at `753d957`, which
-adds the verification runner; tags and GitHub Releases were still empty.
-Its CI run 39060579672 was in progress: four Ubuntu/macOS jobs succeeded
-and the two Windows jobs were running. The failed run 39051863842 belongs
-to the previous commit `15750e6`, whose import error is corrected in
-`753d957`; do not carry that failed result forward to the newer commit.
+The remote `main` was checked again on October 17, 2026 (22:20–22:50
++02:00) at `fb6ecb1`, three commits after `753d957`, which adds the
+verification runner; tags and GitHub Releases were still empty. The run of
+`753d957` was cancelled by the next push before its Windows jobs ended; the
+runs of `3f284bf` and `fb6ecb1` had Windows jobs stopped at the 15-minute
+limit, and the run of `fb6ecb1` failed one macOS test. The failed run
+39051863842 belongs to `15750e6`, whose import error is corrected in
+`753d957`; do not carry a result of one commit forward to another.
 The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
 Workflow Events and their integration under **0.3.0 — Unreleased**, preserving
 all dated entries. This names a development series, not a new published

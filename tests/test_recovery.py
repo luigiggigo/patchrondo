@@ -11,7 +11,6 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import threading
@@ -27,7 +26,7 @@ from patchrondo.providers import AgentFailure, AgentReply, OfficialCLI, classifi
 from patchrondo.storage import LockBusy, TaskLock, _alive, read_json, save_json
 from patchrondo.app import App
 
-from support import outcomes
+from support import copied, initial_repo, outcomes
 
 T0 = datetime(2026, 10, 10, 14, 0, tzinfo=timezone.utc)
 LIMITS = {**recovery.DEFAULTS, "enabled": True}
@@ -90,13 +89,7 @@ class RecoveryCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         self.repo, self.home = root / "repo", root / "state"
-        self.repo.mkdir()
-        for args in (("init", "-q"), ("config", "user.name", "Test Runner"),
-                     ("config", "user.email", "tester@example.com")):
-            self._git(*args)
-        (self.repo / "README.md").write_text("Initial repo\n", encoding="utf-8")
-        self._git("add", "README.md")
-        self._git("commit", "-qm", "initial")
+        copied(initial_repo, self.repo)  # README.md committed by Test Runner, in a repository of this test's own
         initialize(self.home, self.repo)
         cfg = read_json(self.home / "config.json")
         cfg["tests"] = {"enabled": True, "trust_acknowledged": True,
@@ -109,9 +102,6 @@ class RecoveryCase(unittest.TestCase):
         guard = patch("patchrondo.providers.execute", side_effect=AssertionError("real provider call attempted"))
         self.provider_execute = guard.start()
         self.addCleanup(guard.stop)
-
-    def _git(self, *args):
-        subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True)
 
     def configure(self, **values):
         cfg = read_json(self.home / "config.json")

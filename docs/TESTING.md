@@ -8,8 +8,27 @@ checks, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 The [CI workflow](../.github/workflows/ci.yml) runs on pushes to `main`, pull
 requests targeting `main` and manual dispatch. It tests Python 3.11 and 3.13
 on `ubuntu-latest`, `windows-latest` and `macos-latest`, and checks source and
-wheel packages on Linux with Python 3.13. Each job has a 15-minute timeout;
-new runs cancel earlier runs of this workflow on the same branch or PR.
+wheel packages on Linux with Python 3.13. Its jobs:
+
+- **Collect tests**: compiles `src`, `tests` and `tools` and imports every test
+  module with Python 3.11 and with 3.13, and checks that the shards below hold
+  every test exactly once. A syntax error or a module that cannot be imported
+  fails here in about a minute, before the test jobs end.
+- **Python *version* / *OS* (*I/N*)**: the whole suite, run by
+  `tools/run_tests.py` (below). Linux runs it in one job, macOS in two shards
+  and Windows, where the suite is slowest, in four. Each shard is a job of its
+  own: it fails on its own, and the others still report.
+- **Check source and wheel packages**: `python -m build` and `twine check`, in
+  a job of their own on Linux with Python 3.13.
+- **CI result**: succeeds only when every job above succeeded. Its name does not
+  depend on the number of shards, so it is the check to require if a branch
+  protection is added (none was configured on October 17, 2026). It is skipped
+  when the run itself is cancelled by a newer push; a job that reached its time
+  limit ends as cancelled and makes it fail with that reason, never as a failed
+  test.
+
+Each job has a time limit of at most 15 minutes; new runs cancel earlier runs
+of this workflow on the same branch or PR.
 
 Only standard GitHub-hosted runners are used. GitHub documents these as
 [free for public repositories](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#standard-github-hosted-runners-for-public-repositories).
@@ -35,11 +54,49 @@ PYTHONPATH=src python -m unittest discover -s tests -p test_recovery.py -v
 Dated results and platform coverage are recorded in the
 [technical review](REVIEW.md).
 
+### Durations and shards
+
+`python -m unittest discover -s tests -v` remains the whole suite.
+`tools/run_tests.py` runs the same tests, in the same order, and measures each
+one from its start to its stop as unittest reports them (setUp, the test,
+tearDown and cleanups); class and module fixtures are counted apart, as time
+outside tests, with the time to collect the tests and the runner's own. It
+prints the 20 slowest tests and the slowest modules, lists the tests that
+failed, raised an error or passed unexpectedly, and in GitHub Actions adds the
+same summary to the job's page. There each test ID and module name is one code
+span on one line, so a backtick, a pipe or a line break in a name cannot add a
+cell or a row; the JSON report and `--list` keep the IDs as unittest gives them.
+
+```bash
+PYTHONPATH=src python tools/run_tests.py -v                              # the whole suite, measured
+PYTHONPATH=src python tools/run_tests.py -v --shard 2/4                  # what one CI shard runs
+PYTHONPATH=src python tools/run_tests.py --shard 2/4 --list              # its tests, without running them
+PYTHONPATH=src python tools/run_tests.py --report .test-tmp/durations.json   # every duration and outcome as JSON
+PYTHONPATH=src python tools/run_tests.py --write-timings tools/test_timings.json
+```
+
+`--shard I/N` runs the I-th of N parts. A part holds whole test classes, so a
+class keeps its fixtures and the order of its tests. The classes are spread by
+the seconds per class in `tools/test_timings.json`, longest first, each to the
+part with the least time so far: the same tests and the same file give the same
+parts everywhere. A class the file does not know is estimated from the median
+test, so a new test is never left out; the timings only balance the parts.
+Before running, each shard checks that the N parts hold every collected test
+exactly once, and a part without tests fails. The exit status is 0 only when
+every test of the run passed or was skipped. Refresh the file with
+`--write-timings` from a whole run on native Windows, where the suite is
+slowest, when the parts drift apart.
+
 Tests use temporary Git
 repositories, simulated providers, state checks and mocked CLI arguments. They
 do not call Claude or Codex, validate real model output, or replace an end-to-end
 test with authenticated accounts. Package checks run in CI; manual package
 inspection for a versioned release is described in [PUBLISHING.md](PUBLISHING.md).
+Building a repository starts several Git processes, which is slow on Windows:
+most tests get a copy of one that `tests/support.py` builds with Git once per
+builder and test process (`copied`, `make_repo`). A builder is the function
+passed, never its name. Each copy is a repository of its own, with its own
+`.git`; only its first commit is the same as in other copies.
 
 The preflight can be run in the real Codex sandbox on native Windows. It
 starts the installed CLI's sandbox self-check, sends no prompt and uses no

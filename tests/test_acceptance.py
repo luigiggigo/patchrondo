@@ -21,7 +21,7 @@ from patchrondo.core import (AcceptanceRefused, attach_evidence, create_task, de
 from patchrondo.providers import AgentFailure, AgentReply
 from patchrondo.storage import read_json, save_json
 
-from support import outcomes
+from support import copied, outcomes
 
 MO2 ="Verified inside Mod Organizer 2"
 MO2_IT = "Verificare la mod dentro Mod Organizer 2"  # as written in the task that was sent back to the developer
@@ -65,21 +65,27 @@ class Agents:
         return AgentReply(text=json.dumps(answer), provider=provider)
 
 
+def initial(path: Path) -> None:
+    """The repository of the engine scenarios, built with Git: README.md in one commit."""
+    path.mkdir(parents=True)
+    for args in (["init", "-q"], ["config", "user.name", "T"], ["config", "user.email", "t@example.invalid"],
+                 ["config", "commit.gpgsign", "false"]):
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
+    (path / "README.md").write_text("Initial\n", encoding="utf-8")
+    for args in (["add", "."], ["commit", "-qm", "initial"]):
+        subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True)
+
+
 class Case(unittest.TestCase):
-    """A repository and a state directory whose project runs one test command: feature.txt must hold "good"."""
+    """A repository of its own (`initial`) and a state directory whose project runs one test command: feature.txt must
+    hold "good"."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name).resolve()
         self.repo, self.home = root / "repo", root / "state"
-        self.repo.mkdir()
-        for args in (["init", "-q"], ["config", "user.name", "T"], ["config", "user.email", "t@example.invalid"],
-                     ["config", "commit.gpgsign", "false"]):
-            subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True)
-        (self.repo / "README.md").write_text("Initial\n", encoding="utf-8")
-        for args in (["add", "."], ["commit", "-qm", "initial"]):
-            subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True)
+        copied(initial, self.repo)
         initialize(self.home, self.repo)
         self.check = [sys.executable, "-c", "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"]
         self.configure(commands=[self.check])
