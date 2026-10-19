@@ -1,0 +1,43 @@
+Generated and edited with the built-in image_gen tool on October 19, 2026.
+The first prompt produced the draft used as input image 1 for the edit.
+Input image 2 for the edit: docs/assets/rondo-mascot-v1.png.
+
+Initial generation prompt
+
+Use case: infographic-diagram.
+Asset type: polished GitHub README workflow illustration for PatchRondo.
+Primary request: a beautiful but extremely simple horizontal workflow showing Task -> PatchRondo (Dev and Review feedback loop) -> Product / Feature.
+Style: premium minimal editorial tech illustration, crisp flat forms, restrained soft shadows, generous empty space, precise legible sans-serif typography, a few simple outline icons. Wide landscape banner approximately 2.5:1. Opaque very light warm cream background, charcoal text, muted patch blue #5878a8 and warm grey. No gradients or visual clutter.
+Composition: three clear stages left to right, linked by two large blue right-pointing arrows, balanced within comfortable margins.
+Left: small rounded card with a document/checklist icon, large exact label "Task", smaller exact text "Describe the change".
+Center: larger rounded outlined container, prominent exact brand name "PatchRondo" across the top. Inside two smaller cards: code brackets icon labelled "Dev", magnifying glass over code icon labelled "Review". A clear right-pointing arrow goes from Dev to Review, and a separate curved feedback arrow returns from Review back to Dev below the cards, labelled "Feedback". Under the feedback loop within the center container a small subtle line reads exactly "Tests + acceptance criteria".
+Right: compact stylized browser window with a few abstract interface blocks, large exact label "Product / Feature", smaller exact text "For you to integrate".
+Constraints: exact spelling PatchRondo (P-a-t-c-h-R-o-n-d-o). English text only, only the specified text. Text is large enough to read at README width 900px. The feedback return arrow must visibly point back toward Dev. The central container includes development, review, and tests/acceptance. No automatic deployment, merge or publication implied. No provider logos, no mascot, no extra stages, no watermark. Align the stages cleanly.
+
+Final edit prompt
+
+Use case: precise-object-edit.
+Asset type: GitHub README workflow banner for PatchRondo.
+Input image 1 is the workflow diagram to edit. Input image 2 is the actual PatchRondo raccoon brand mascot/logo reference.
+Primary request: add tasteful color to this simple diagram and include the actual PatchRondo mascot/logo inside the central PatchRondo container.
+Keep the entire diagram's clear left-to-right structure, all English text verbatim, large readable typography, the three stages, the Dev -> Review arrow and the curved Review -> Dev feedback arrow. Preserve the wide landscape proportions and comfortable outer margins.
+Colors: give the Task card a soft peach background with warm coral icon accents, the central PatchRondo container a subtle pale blue background with a crisp muted blue outline, the Dev card a light blue fill and blue code icon, the Review card a soft lavender fill with violet inspection icon, and the Product / Feature browser illustration a soft mint/teal fill with teal interface elements. Use refined cheerful pastel colors with sufficient dark text contrast; opaque warm off-white page background.
+Logo placement: place a small clearly recognizable faithful rendering of the raccoon mascot from image 2 INSIDE the central container, beside the PatchRondo wordmark in its header. Use its head and upper torso with the blue stitched chest patch, preserve the exact character identity, friendly expression, charcoal eye mask, grey/cream fur and original art style. It should look like a tidy branded header with the mascot, not a new workflow stage. Make space in the header as needed without crowding the Dev and Review cards or obstructing the arrows.
+Exact text to preserve: "Task", "Describe the change", "PatchRondo", "Dev", "Review", "Feedback", "Tests + acceptance criteria", "Product / Feature", "For you to integrate".
+Avoid: extra text, extra stages, mascots outside the central container, changed spelling, clutter, neon colors, heavy gradients, automatic deployment or publication symbolism, watermark.
+Change only the palette and branded central header; preserve the diagram's meaning and simplicity.
+
+README refinement — October 19, 2026
+Edited with the built-in image_gen tool. Input image 1: the colorful draft
+from the prompts above. Input image 2: docs/assets/rondo-mascot-v1.png.
+
+Use case: precise-object-edit.
+Asset type: introductory GitHub README banner for PatchRondo.
+Input image 1 is the approved colorful PatchRondo workflow banner to edit. Input image 2 is the original PatchRondo raccoon mascot brand reference.
+Make exactly these refinements while preserving the successful composition, pastel palette, mascot identity, icons, clear left-to-right flow and overall simplicity:
+1. Inside the central blue container, keep the mascot and the exact brand wordmark "PatchRondo" prominently in the header. Add a smaller but clearly readable subtitle under the wordmark: "Autonomous Development Loop". Make enough room in the header that neither mascot nor subtitle overlaps Dev or Review.
+2. Keep Dev -> Review and the curved Review -> Dev arrow labelled "Feedback". Make the existing tests line into a distinct, clean verification strip inside the bottom of the central container: a small checkmark-in-shield icon followed by the exact label "Tests + acceptance criteria". Give the strip a soft mint background and dark teal label so verification is visually prominent. The checkmark represents configured checks, not a security certification.
+3. On the right, replace "Product / Feature" with "Verified Changes". Replace "For you to integrate" with "Ready for Integration". Keep the existing mint browser illustration above this output.
+All text, exactly: "Task", "Describe the change", "PatchRondo", "Autonomous Development Loop", "Dev", "Review", "Feedback", "Tests + acceptance criteria", "Verified Changes", "Ready for Integration".
+Maintain an opaque off-white background, peach Task card, light blue central container and Dev card, lavender Review card, mint verification strip and output browser. Dark high-contrast sans-serif typography. Keep the wide horizontal banner and uncluttered margins. Text must be readable at 900px display width. Use a slightly taller composition if needed for clean spacing.
+Constraints: no extra stages, no extra wording, no provider logos, no deploy/merge/publish symbols, no watermark. Preserve Rondo's grey/cream fur, dark eye mask, friendly expression and stitched blue chest patch. Do not imply automatically merging code. The return feedback arrow must clearly point into Dev.

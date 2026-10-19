@@ -1,10 +1,12 @@
 # PatchRondo
 
-<p align="center">
-  <img src="docs/assets/rondo-mascot-v1.png" alt="Rondo, the PatchRondo raccoon mascot" width="160">
-</p>
+**Autonomous AI Development & Code Review**
 
-**Code. Review. Repeat.**
+Describe a task. Let AI agents build, review, and refine the solution.
+
+![Task enters PatchRondo's autonomous development and review feedback loop, with tests and acceptance criteria, producing verified changes ready for integration.](docs/assets/patchrondo-workflow-v3.png)
+
+[Quick start](#quick-start) · [Installation](#installation) · [User guide](docs/USAGE.md)
 
 [![CI](https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml/badge.svg?branch=main&event=push)](https://github.com/luigiggigo/patchrondo/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB)](pyproject.toml)
@@ -15,6 +17,11 @@ PatchRondo coordinates Claude Code and OpenAI Codex CLI in a local development
 and review loop. One agent implements a task in a dedicated Git worktree;
 the other reviews the changes. PatchRondo runs the tests you authorize,
 returns actionable feedback to the developer and saves progress for resumption.
+
+The loop runs within configured limits and pauses for missing consent,
+evidence or user decisions. Verified changes require passing configured tests,
+code approval and evidence for every required acceptance criterion; you still
+review and integrate them yourself.
 
 Manage projects, follow agent activity and inspect changes from a local browser
 dashboard or the command line. The Python runtime has no external dependencies;
@@ -47,6 +54,20 @@ checks, reads a JUnit XML report where one is configured, and records each
 result in the task's evidence ledger before any agent sees it. A developer's
 "all tests pass" is never one of them
 ([checks with a report](docs/USAGE.md#checks-with-a-report)).
+
+<details>
+<summary>Technical view: contracts, decisions, evidence and recovery</summary>
+
+![Task Contract supplies criteria and a plan to orchestration. The verification runner and evidence ledger supply current evidence to its decisions. Quota recovery resumes from a saved plan only when enabled and due. Completion requires code approval and every required criterion verified.](docs/assets/patchrondo-records.svg)
+
+This view maps the current [runtime modules](docs/ARCHITECTURE.md#1-components):
+`core.py` and `acceptance.py` make the orchestration decisions;
+`verification.py` runs configured checks, and `evidence.py` keeps their records;
+`recovery.py` handles opt-in, bounded quota retries. Missing evidence or a
+required external check keeps the task open. The broader 0.35 Evidence Engine
+remains a separate [roadmap proposal](docs/ROADMAP.md).
+
+</details>
 
 ## Development toward 0.3
 
@@ -110,6 +131,8 @@ To explore the dashboard with sample data:
 
 The demo starts with tests disabled. Starting a task from the demo still
 uses the real provider CLIs.
+
+### Installation
 
 Alternatively, install from the cloned checkout in your own Python environment
 (on native Windows, use PowerShell):

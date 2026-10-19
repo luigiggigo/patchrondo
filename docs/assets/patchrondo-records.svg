@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title description">
+  <title id="title">PatchRondo contracts, decisions, evidence and recovery</title>
+  <desc id="description">Task Contract supplies criteria and a plan to orchestration. The verification runner and evidence ledger provide current evidence. Quota recovery is opt-in and bounded. Completion requires code approval and every required criterion verified.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 Z" fill="#5878a8"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="650" rx="20" fill="#fffdf9"/>
+  <g font-family="Segoe UI, Arial, sans-serif" fill="#182435">
+    <text x="40" y="42" font-size="23" font-weight="700">Inside the current runtime</text>
+
+    <rect x="40" y="80" width="370" height="175" rx="18" fill="#fff0e6" stroke="#d89065" stroke-width="2"/>
+    <text x="65" y="119" font-size="23" font-weight="700">Task Contract</text>
+    <text x="65" y="157" font-size="18">Versioned acceptance criteria</text>
+    <text x="65" y="188" font-size="18">Required outcomes and capabilities</text>
+    <text x="65" y="229" font-size="16" fill="#576477">acceptance.py + capabilities.py</text>
+
+    <path d="M 410 166 H 690" fill="none" stroke="#5878a8" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="550" y="150" text-anchor="middle" font-size="17" fill="#405b80">Criteria + plan</text>
+
+    <rect x="690" y="80" width="470" height="175" rx="18" fill="#eaf3ff" stroke="#5878a8" stroke-width="2"/>
+    <text x="715" y="119" font-size="23" font-weight="700">Orchestration &amp; decisions</text>
+    <text x="715" y="157" font-size="18">Develop → authorized tests → read-only review</text>
+    <text x="715" y="188" font-size="18">Code feedback repeats within configured limits</text>
+    <text x="715" y="229" font-size="16" fill="#576477">core.py + acceptance.py</text>
+
+    <rect x="40" y="355" width="530" height="175" rx="18" fill="#e8f7f2" stroke="#4a9b85" stroke-width="2"/>
+    <text x="65" y="394" font-size="23" font-weight="700">Verification Runner + Evidence Ledger</text>
+    <text x="65" y="432" font-size="18">Configured checks; command and review records</text>
+    <text x="65" y="463" font-size="18">Only current, intact, non-invalidated evidence counts</text>
+    <text x="65" y="504" font-size="16" fill="#576477">verification.py + evidence.py</text>
+
+    <path d="M 570 427 H 630 V 220 H 690" fill="none" stroke="#5878a8" stroke-width="3" marker-end="url(#arrow)"/>
+    <rect x="552" y="285" width="120" height="55" rx="7" fill="#fffdf9"/>
+    <text x="612" y="306" text-anchor="middle" font-size="17" fill="#405b80">Current</text>
+    <text x="612" y="329" text-anchor="middle" font-size="17" fill="#405b80">evidence</text>
+
+    <path d="M 835 255 V 355" fill="none" stroke="#5878a8" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="819" y="298" text-anchor="end" font-size="17" fill="#405b80">Quota</text>
+    <text x="819" y="321" text-anchor="end" font-size="17" fill="#405b80">pause</text>
+    <path d="M 1060 355 V 255" fill="none" stroke="#5878a8" stroke-width="3" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+    <text x="1076" y="298" font-size="17" fill="#405b80">Opt-in</text>
+    <text x="1076" y="321" font-size="17" fill="#405b80">retry</text>
+
+    <rect x="690" y="355" width="470" height="175" rx="18" fill="#f0ecff" stroke="#8c78b3" stroke-width="2"/>
+    <text x="715" y="394" font-size="23" font-weight="700">Quota recovery</text>
+    <text x="715" y="432" font-size="18">Saved retry plan; bounded retries and wait budget</text>
+    <text x="715" y="463" font-size="18">Resume under lock, only when the retry is due</text>
+    <text x="715" y="504" font-size="16" fill="#576477">recovery.py · requires an active run process</text>
+
+    <text x="600" y="587" text-anchor="middle" font-size="22" font-weight="700">Done = code approved + every required criterion verified</text>
+    <text x="600" y="622" text-anchor="middle" font-size="18" fill="#576477">Missing consent, evidence or user decisions can pause the task.</text>
+  </g>
+</svg>
