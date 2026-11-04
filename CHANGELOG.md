@@ -677,6 +677,64 @@ nothing, and the pause of a timed-out check said only "Tests timed out".
   run are recorded in
   [the technical review](docs/REVIEW.md#provenance-and-invalidation-of-evidence-november-4-2026).
 
+#### The acceptance gate decides completion — November 4, 2026
+
+- **A task is completed only on the gate's `PASS`.** `gate.py` decides from
+  what the backend recorded whether a task may be completed now: `PASS`,
+  `FAIL`, `PENDING`, `BLOCKED`, `NEEDS_REVERIFICATION` or `ERROR`, with a
+  next action, one row per criterion and the conditions that keep it from
+  passing. `PASS` needs the code approved, every required criterion verified
+  by records that still count, and the test results about the files as they
+  are. Evidence that proved a required criterion and no longer counts is
+  named with its validity and causes (`lapsed`). It calls no model and runs
+  nothing. Statuses stay the acceptance record's: each criterion's reason is
+  now also a fixed code (`acceptance.Basis`), set where its status is
+  decided.
+- **The decision is bound to the files and the ledger it was made on.**
+  `core._complete`, the one place that writes `done`, refuses without `PASS`,
+  fingerprints the files and compares the test context again (changed: back
+  to the tests, `stale_tests`), and reads the ledger again (moved:
+  `completion_refused`). Before, the files were not compared again between
+  the last judgement and `done`.
+- **Switches no longer skip what the configured checks need.** With
+  `PATCHRONDO_VERIFICATION=0` the checks of the `verification` section did
+  not run and `tests.commands` alone could prove the tests; with
+  `PATCHRONDO_PROVENANCE=0` the `inputs` and `same_environment` a check
+  declares were not compared. Either way a task could be completed. It now
+  pauses at `validate` with `completion_refused` (source `gate`), which a
+  Resume returns as saved while the switch is still off; put back, the
+  checks run before the task completes. A project that configured none of
+  these keeps the behavior the switches document.
+- **The reviewer cites evidence; the backend checks it, and it proves
+  nothing.** Each criterion of a review answer has `evidence_refs` (in the
+  schema; an answer without them is read as before). They are looked up in
+  the task's own ledger and recorded in the review's record (`references`):
+  accepted, or refused as `UNKNOWN_RECORD`, `STALE`, `INVALID`, `UNKNOWN`,
+  `NOT_FOR_CRITERION` or `NOT_POSITIVE`. The reviewer's brief lists the
+  records that count for each criterion and says that completion is the
+  orchestrator's decision.
+- **Every decision can be reconstructed.** The last evaluation is saved under
+  `gate` in `state.json` (ID `GE-` plus a digest of its inputs), and
+  `code_approved`, `task_completed` and a pause at `validate` name it with
+  its decision, next action, the criteria it waits for, the snapshot and the
+  ledger count. `report.md` has a "Completion gate" section; the user's
+  criteria operations return the gate's decision.
+- **Nothing else in the loop changes.** Pauses that wait for a person keep
+  their kinds and words, no event was added, and `DECIDED` in
+  `tests/test_findings.py` holds. Findings are reported by the gate and
+  decide nothing. Gate profiles are not implemented; the one policy is
+  `standard`.
+- **A test of the fingerprint no longer fails on Linux and macOS with Python
+  3.13.** `test_a_cloud_file_or_another_reparse_point_is_read_as_a_file`
+  built an `os.stat_result` with Windows-only fields, which Python 3.13
+  refuses elsewhere (CI run 41901150009 for `abfb476`, `ubuntu-latest` and
+  `macos-latest` part 2/2). It uses stand-ins with the fields read, and now
+  checks the junction case on every system.
+- `tests/test_gate.py` has 27 tests; 15 new mutation protections and one
+  whose pattern moved. See
+  [architecture section 18](docs/ARCHITECTURE.md#18-acceptance-gate) and
+  [the technical review](docs/REVIEW.md#acceptance-gate-november-4-2026).
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

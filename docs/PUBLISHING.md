@@ -13,9 +13,9 @@ October 9 and 10, 2026; the CI runs for those commits are recorded in
 **0.2.0** is published as source on `main`: the interface was pushed on
 October 10, 2026, live activity on October 11, 2026, in commit `c9f6e1e`, and
 the failure classification correction the same day in commit `6937d9f`.
-[REVIEW.md](REVIEW.md#current-source-and-ci-status-october-18-2026) records the
+[REVIEW.md](REVIEW.md#current-source-and-ci-status-november-4-2026) records the
 current commit's CI status and the dated local checks. The GitHub repository
-has no version tags or GitHub Releases as checked on October 18, 2026.
+has no version tags or GitHub Releases as checked on November 4, 2026.
 Source publication, a versioned release and publishing to PyPI are separate
 steps.
 
@@ -39,7 +39,7 @@ the review settled by kind (`b9e5283`, October 16), and the criteria
 records, review findings and workflow events of October 16 and 17 (`d4c0ecd`
 to `15750e6`, pushed on October 17, 2026 at 19:00 +02:00) keep the same
 package version. Their validation is recorded in [REVIEW.md](REVIEW.md); the
-[current status](REVIEW.md#current-source-and-ci-status-october-18-2026)
+[current status](REVIEW.md#current-source-and-ci-status-november-4-2026)
 lists the CI runs of these commits.
 
 The remote `main` was checked again on October 17, 2026 (22:20–22:50
@@ -80,11 +80,21 @@ correction of that cause. Tags and GitHub Releases were still empty. Its CI
 run 39149471702 succeeded in all 17 jobs in 4 min 9 s, none cancelled or at
 its time limit. That result belongs to `b962214` only.
 
+On November 4, 2026 (21:25 +01:00) the remote `main` was at `abfb476`,
+committed by the user at 20:52 +01:00 on top of `e9eec80`: the provenance and
+invalidation of evidence. Tags and GitHub Releases were still empty. Its CI
+run 41901150009 failed in 4 min 52 s in two test jobs, Python 3.13 on Ubuntu
+and in the second macOS shard, each with one error in a test of the
+fingerprint that built a stat result Python 3.13 refuses outside Windows; the
+12 other test jobs, the collection and the package check passed. That result
+belongs to `abfb476` only; the correction of the test is recorded in
+[REVIEW.md](REVIEW.md#acceptance-gate-november-4-2026).
+
 The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
 Workflow Events and their integration under **0.3.0 — Unreleased**, preserving
 all dated entries. This names a development series, not a new published
 package. The [roadmap](ROADMAP.md) keeps the separate 0.35 proposal distinct.
-See [REVIEW.md](REVIEW.md#current-source-and-ci-status-october-18-2026) for
+See [REVIEW.md](REVIEW.md#current-source-and-ci-status-november-4-2026) for
 the CI result of each exact commit.
 
 The repository is already initialized and has an `origin` remote. Future updates

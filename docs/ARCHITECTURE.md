@@ -17,9 +17,10 @@ Legacy reads and crash/Resume coherence are covered by `tests/test_coherence.py`
 The activity journal only observes CLI output and is outside these decisions.
 Sections [14](#14-acceptance-criteria-capabilities-and-evidence) and
 [15](#15-workflow-history) give the detailed contracts. Sections
-[16](#16-verification-runner) and [17](#17-provenance-and-invalidation)
-describe the implemented runner and the provenance and invalidation of its
-evidence, of the separate 0.35 proposal. Progress & Stagnation Detection
+[16](#16-verification-runner), [17](#17-provenance-and-invalidation) and
+[18](#18-acceptance-gate) describe the implemented runner, the provenance
+and invalidation of its evidence and the acceptance gate that decides
+completion, of the separate 0.35 proposal. Progress & Stagnation Detection
 remains planned.
 
 ## 1. Components
@@ -2204,3 +2205,162 @@ and the new fields of the runner's records stay.
   time.
 - A record of a later schema version does not count in this version and is
   not invalidated by it: a later version reads it as it wrote it.
+
+## 18. Acceptance gate
+
+The reviewer judges the code; the acceptance record judges each criterion
+from the ledger (section 14); provenance judges whether a record can still be
+used (section 17). `gate.py` answers the one question the workflow asks
+before a task becomes `done`: may it be completed now, and if not, what is
+missing and who can act. It reads only what the backend recorded, calls no
+model and runs nothing. It is not a second acceptance model: statuses are
+the acceptance record's, validity is `provenance.recorded`'s, and the gate
+adds the conditions none of them held on its own.
+
+### Paths to `done` before the gate
+
+Two places set `status: "done"`, both through `core._complete`: the review
+stage after an approval when the record was `RELEASE_READY`, and the
+`validate` stage when it was `RELEASE_READY` and the test context was
+current. Neither compared the files again between that judgement and the
+write, and neither looked at whether a switch had turned off something the
+configured checks rely on: with `PATCHRONDO_VERIFICATION=0` the checks of
+the `verification` section did not run and the legacy commands alone proved
+the tests; with `PATCHRONDO_PROVENANCE=0` the `inputs` and `same_environment`
+a check declares were not compared. `blocked` is reached only by a
+`BLOCKED` verdict or the iteration limit, never completed.
+
+### The decision
+
+`gate.evaluate(record, ledger, fresh, snapshot, missing, findings)` returns a
+`Gate`: `decision`, `next_action`, `completion_allowed`, the approving review,
+the fingerprint it was decided on (`snapshot`), whether the test results are
+about those files (`fresh`), the ledger's count and head, one row per
+criterion and the `conditions` that keep it from passing. Decisions take
+precedence in this order:
+
+| Decision | When |
+|---|---|
+| `ERROR` | the ledger failed its check, a criterion counted as verified names a record that does not count, or the record was never judged |
+| `FAIL` | the code needs changes, or a required criterion's check (a command, the user's check) failed |
+| `NEEDS_REVERIFICATION` | evidence that proved a required criterion, or the approval of the code, no longer counts (`lapsed`: STALE, INVALID or UNKNOWN with causes), or the test results are about other files, checks or inputs |
+| `PENDING` | the workflow still has work its agents and checks can do, or nobody compared the files with the results |
+| `BLOCKED` | what is left needs the user: an authorization, a capability, a check by a person or outside the project, or a switch put back |
+| `PASS` | the code is approved, every required criterion is verified by records that still count, the results are about these files, nothing above holds |
+
+Only `PASS` allows completion. An optional criterion is shown and never
+blocks. A required criterion's reason is a fixed code, `acceptance.Basis`,
+set in `_judge` beside the words for people and never saved with the
+criterion (it is judged again with every status); the gate maps each one to
+a decision and an action (`gate._CRITERIA`). `next_action` is one of
+`COMPLETE`, `DEVELOP`, `RUN_CHECKS`, `REVIEW`, `CONTINUE`,
+`WAIT_FOR_AUTHORIZATION`, `PROVIDE_CAPABILITY`, `WAIT_FOR_USER_VALIDATION`,
+`WAIT_FOR_EXTERNAL_VERIFICATION`, `RESTORE_CONFIGURATION` and
+`REPAIR_EVIDENCE`. An authorization is never the operation it authorizes: a
+granted pull request criterion moves from `AUTHORIZATION_REQUIRED` to
+`EXTERNAL_VERIFICATION_REQUIRED`.
+
+Its ID is `GE-` and the first 16 hex digits of the SHA-256 of everything it
+was decided from and decided, the time aside: equal inputs, equal ID.
+
+There is one policy, `standard`. Profiles such as fast or strict are not
+implemented: no input of the gate could lower a required criterion, and a
+later profile may only ask for more.
+
+### Findings
+
+Findings are reported (`open_blocking`, `settled`, `pending_verification`)
+and never read to decide, as section 14 requires. "No blocking finding is
+open" holds by construction: a finding is blocking for a change the code
+needs, which keeps the code from being approved (`parse_review` turns such
+an approval into a request for changes), or for a required criterion that is
+not verified, which keeps the gate from `PASS`. A finding whose criterion
+was verified since, or of the developer under a later approval, is listed
+as `settled`.
+
+### In the loop
+
+`core._sync` evaluates the gate after every judgement and saves it under
+`gate` in `state.json` with the next checkpoint (`core._gate`); it is
+derived, and no decision reads the saved copy. The review stage after an
+approval and the `validate` stage evaluate it again and complete only on
+`PASS`. `core._complete` is the one place that writes `done`: it refuses
+without `PASS`, fingerprints the files and compares the test context again
+(changed: back to `test`, paused `stale_tests`), and reads the ledger again
+(moved: paused `completion_refused`). So nothing completes on files or
+evidence other than the ones the gate decided on.
+
+What the gate waits for calls no agent. Criteria that wait for somebody keep
+their pauses (`awaiting_validation`, `awaiting_authorization`) and their
+words; only a task whose every required criterion is verified, and that the
+gate still refuses, pauses with `completion_refused` (`last_error.source` is
+`gate`), at `validate`. A Resume of that pause while a switch still turns
+off what the checks rely on returns the saved state. Putting the switch back
+changes the test context (`verification.context` follows the switch), so
+the next run runs the checks before it can complete. Iteration counting is
+unchanged: a pause consumes none.
+
+`gate.protections(cfg)` lists the switches turned off while the validated
+configuration relies on them: `VERIFICATION_DISABLED` when the `verification`
+section has checks and `PATCHRONDO_VERIFICATION=0`, `PROVENANCE_DISABLED`
+when a check declares `inputs` or `same_environment` and
+`PATCHRONDO_PROVENANCE=0`. A project that configured none of them keeps the
+behavior the switches document.
+
+The user's operations (`attach_evidence`, `decide_authorization`,
+`recheck_acceptance`) return `completes` from the gate's decision and a
+brief of it (`gate`).
+
+### The reviewer
+
+The reviewer's brief lists, for each criterion, the records that count for
+it now, beside its status and reason, what no longer counts (section 17)
+and the findings. It says that completion is the orchestrator's decision.
+Each entry of `criteria` in the answer has `evidence_refs`, the IDs it
+relied on (required by the schema, optional when parsed: an answer from
+before has none; more than 20, or anything but text, is `invalid_review`).
+`gate.references` checks each one in this task's ledger only and records the
+result in the review's ledger record (`references`) and in `state.review`:
+accepted only when the record exists, is `VALID`, is one the plan reads for
+that criterion and says it proved it; otherwise `UNKNOWN_RECORD`, `STALE`,
+`INVALID` or `UNKNOWN` (with causes), `NOT_FOR_CRITERION` or `NOT_POSITIVE`.
+A reference proves nothing, accepted or not; what proves a criterion is
+what it always was.
+
+### Auditing
+
+`code_approved`, `task_completed` and the `task_paused` of a pause at
+`validate` carry `gate`: its ID, decision, next action, the required
+criteria it waits for, the reasons, the snapshot and the ledger count
+(`gate.brief_of`). From the history alone: "the reviewer approved the code
+(E-0002), and the task was not completed because AC-02 needed an external
+check" is `review_completed` → `code_approved` with
+`gate.criteria: ["AC-02"]` and `EXTERNAL_VERIFICATION_REQUIRED`. Earlier
+events are never rewritten. `report.md` has a "Completion gate" section
+with the saved decision.
+
+### Older tasks
+
+A task saved before the gate has no `gate` key; the next judgement adds it.
+Nothing about earlier records changes: what proves a criterion, how evidence
+lapses and the loop's events and pauses are those of sections 14 to 17
+(`DECIDED` in `tests/test_findings.py` still holds). A review answer without
+`evidence_refs` is read as before.
+
+### Trust boundaries and limits
+
+- The gate trusts the ledger as far as its hash chain and anchor do
+  (section 14): somebody who can write the task's folder can rewrite the
+  ledger and `state.json` together. The chain detects accidents and edits
+  of part of the file, not a deliberate rewrite of all of it.
+- `fresh` and `snapshot` are only as good as `gitops.fingerprint` (section
+  17). Between the last check in `_complete` and the write of `state.json`
+  nothing is compared again; the task lock keeps PatchRondo's own writers
+  out, not another program writing the worktree.
+- `next_action` names what comes next; the loop does what it did before.
+  `FAIL` with `DEVELOP` for a failed check by the user is reached through
+  `awaiting_validation` and a Resume, as before the gate.
+- The gate decides about completion only. Iteration limits, the routing of
+  a review and the pauses for checks without a result are unchanged.
+- `evidence_refs` and the outcomes per criterion have not been confirmed
+  with an authorized real run.

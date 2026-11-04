@@ -88,6 +88,7 @@ def render_report(state: dict) -> str:
     if state.get("last_error"):
         rows += ["", "## Block/interruption", "", f"`{state['last_error']}`"]
     rows += _acceptance_rows(state)
+    rows += _gate_rows(state.get("gate"))
     rows += _agent_rows(state.get("agent_runs"))
     rows += _environment_rows(state.get("environment"))
     rows += _recovery_rows(state.get("recovery"))
@@ -161,6 +162,37 @@ def _acceptance_rows(state: dict) -> list[str]:
                  f"  {clip(redact(str(criterion.get('text'))), 300)}"]
         if criterion.get("reason"):
             rows.append(f"  {clip(redact(str(criterion['reason'])), 400)}")
+    return rows
+
+
+def _gate_rows(saved) -> list[str]:
+    """The last decision of the acceptance gate (`gate.py`) as it was saved: codes and IDs only, nothing an agent wrote.
+
+    A task saved before the gate existed has none, and nothing is said. A
+    saved value that is not a record is said to be one; a field it lacks is
+    shown as unknown, never as a pass.
+    """
+    if saved is None:
+        return []
+    if not isinstance(saved, dict):
+        return ["", "## Completion gate", "", "The saved decision of the completion gate cannot be read; it is kept in "
+                "state.json as it is."]
+    shown = lambda value: f"`{clip(redact(str(value)), 80)}`" if value is not None else "unknown"  # noqa: E731
+    fresh = {True: "yes", False: "no"}.get(saved.get("fresh"), "not compared")
+    rows = ["", "## Completion gate", "",
+            # Its ID (state.json, the events) depends on the task's ledger: left out, so equal runs give equal reports.
+            f"- **Decision**: {shown(saved.get('decision'))}; next: {shown(saved.get('next_action'))}",
+            f"- **Code review**: {shown(saved.get('code_review'))}; test results about the files it was decided on: {fresh}",
+            "", "The reviewer judges the code; only this decision, from the evidence that counts, lets a task be completed.", ""]
+    for row in saved.get("criteria") if isinstance(saved.get("criteria"), list) else []:
+        if isinstance(row, dict) and row.get("required") and row.get("status") != "VERIFIED":
+            lapsed = row.get("lapsed") if isinstance(row.get("lapsed"), list) else []
+            note = "; ".join(f"{entry.get('evidence')} {entry.get('validity')}" for entry in lapsed if isinstance(entry, dict))
+            rows.append(f"- `{clip(str(row.get('id')), 20)}` waits: {shown(row.get('basis'))}" + (f" (no longer counts: {clip(note, 300)})"
+                                                                                                    if note else ""))
+    reasons = [entry.get("reason") for entry in saved.get("conditions") or [] if isinstance(entry, dict)]
+    if reasons:
+        rows.append(f"- **Conditions**: {clip(', '.join(dict.fromkeys(str(reason) for reason in reasons)), 600)}")
     return rows
 
 

@@ -385,10 +385,10 @@ MUTATIONS = [
              "            if refused:\n", ("test_agents",)),
     # --- acceptance criteria, capabilities and evidence -------------------------------------------
     Mutation("approved code completes a task whose criteria are not verified", "core.py",
-             "                        if record.outcome == criteria.Outcome.RELEASE_READY:\n"
-             "                            return _complete(path, state, **({\"pending_verification\": waiting} if waiting else {}))\n",
+             "                        if decided.completion_allowed:\n"
+             "                            return _complete(path, state, cfg, workspace, decided,\n",
              "                        if True:\n"
-             "                            return _complete(path, state, **({\"pending_verification\": waiting} if waiting else {}))\n",
+             "                            return _complete(path, state, cfg, workspace, decided,\n",
              ("test_acceptance",)),
     Mutation("a task that waits for a person is run again while nothing changed", "core.py",
              "            # Idempotent Resume: while nothing was attached, decided or changed, a run has nothing to do.\n"
@@ -869,6 +869,46 @@ MUTATIONS = [
     Mutation("the files of a repository inside the copy are not hashed", "gitops.py",
              "            elif _depth < NESTED and path.is_dir() and not _linked(path) and (path / \".git\").exists():\n",
              "            elif False:\n", ("test_provenance",)),
+    # The acceptance gate (November 4, 2026).
+    Mutation("a task is completed without the gate's pass", "core.py",
+             "    if not decided.completion_allowed:\n        raise CompletionRefused(decided.message(), \"completion_refused\")\n",
+             "", ("test_gate",)),
+    Mutation("a task is completed on files that changed after the gate decided", "core.py",
+             "    if current != decided.snapshot or state.get(\"test_context\") != _test_context(cfg, current, workspace):\n",
+             "    if False:\n", ("test_gate",)),
+    Mutation("a task is completed on a ledger that moved after the gate decided", "core.py",
+             "    if ledger.problems or {\"count\": ledger.count, \"head\": ledger.head} != decided.ledger:\n",
+             "    if False:\n", ("test_gate",)),
+    Mutation("the validate checkpoint completes without the gate", "core.py",
+             "    if decided.completion_allowed:\n        _complete(path, state, cfg, workspace, decided)\n",
+             "    if True:\n        _complete(path, state, cfg, workspace, decided)\n", ("test_acceptance", "test_gate")),
+    Mutation("a task that waits for a switch to be put back is run again while it is off", "core.py",
+             "            # Idempotent Resume: while a switch still turns off what the configured checks rely on, nothing can complete.\n"
+             "            return state\n",
+             "            # Idempotent Resume: while a switch still turns off what the configured checks rely on, nothing can complete.\n"
+             "            pass\n", ("test_gate",)),
+    Mutation("a reviewer's evidence references are read whatever their shape", "core.py",
+             "        raise AgentFailure(\"Invalid review: malformed evidence references\", \"invalid_review\")\n",
+             "        pass\n", ("test_gate",)),
+    Mutation("test results about other files let the gate pass", "gate.py",
+             "    if fresh is False:\n", "    if False:\n", ("test_gate",)),
+    Mutation("files nobody compared are taken as current by the gate", "gate.py",
+             "    elif fresh is None or snapshot is None:\n", "    elif False:\n", ("test_gate",)),
+    Mutation("evidence that lapsed is not asked for again", "gate.py",
+             "                if not ledger.counts(record) and proofs.positive(record, criterion.id):\n",
+             "                if False:\n", ("test_gate",)),
+    Mutation("a verified criterion naming a record that does not count passes the gate", "gate.py",
+             "            if broken:\n", "            if False:\n", ("test_gate",)),
+    Mutation("a record that was not judged passes the gate", "gate.py",
+             "    if not conditions and acceptance.outcome != Outcome.RELEASE_READY:\n", "    if False:\n", ("test_gate",)),
+    Mutation("the runner turned off lets a task complete without its configured checks", "gate.py",
+             "    if section and not verification.enabled():\n", "    if False:\n", ("test_gate",)),
+    Mutation("provenance turned off lets a task complete without the inputs its checks declare", "gate.py",
+             "    if tied and not provenance.enabled():\n", "    if False:\n", ("test_gate",)),
+    Mutation("a reviewer's reference to a record of another criterion is accepted", "gate.py",
+             "            elif name not in pertinent:\n", "            elif False:\n", ("test_gate",)),
+    Mutation("a reviewer's reference to a record that no longer counts is accepted", "gate.py",
+             "            if not found.usable:\n", "            if False:\n", ("test_gate",)),
 ]
 
 

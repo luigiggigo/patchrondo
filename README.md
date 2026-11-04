@@ -64,6 +64,7 @@ This view maps the current [runtime modules](docs/ARCHITECTURE.md#1-components):
 `core.py` and `acceptance.py` make the orchestration decisions;
 `verification.py` runs configured checks, `evidence.py` keeps their records,
 and `provenance.py` says which of them still apply to the task as it is;
+`gate.py` decides whether the task may be completed;
 `recovery.py` handles opt-in, bounded quota retries. Missing evidence or a
 required external check keeps the task open. The broader 0.35 Evidence Engine
 remains a separate [roadmap proposal](docs/ROADMAP.md).
@@ -93,7 +94,9 @@ test fixtures with Git's background maintenance, whose correction that record
 describes; its Windows shards passed. The run of `eb295cc`, which publishes
 that correction, failed one test with Python 3.11 on macOS: a timeout read as
 a refused start, a defect of the runtime that the same record explains. The
-run of `b962214`, which corrects it, passed in every job.
+run of `b962214`, which corrects it, passed in every job. The run of
+`abfb476` (November 4, 2026) failed one test of the fingerprint with Python
+3.13 on Ubuntu and macOS, a defect of the test that the record also explains.
 
 ## Requirements
 

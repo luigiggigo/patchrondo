@@ -108,6 +108,34 @@ class Outcome(StrEnum):
     RELEASE_READY = "RELEASE_READY"
 
 
+class Basis(StrEnum):
+    """Why a criterion has its status: a fixed code, set where the status is decided (`_judge`), beside the words for people.
+
+    Not saved with the criterion: it is judged again with every status
+    (`Acceptance.basis`), and the acceptance gate (`gate.py`) reads it.
+    """
+    VERIFIED = "VERIFIED"
+    WAITING_FOR_DEPENDENCY = "WAITING_FOR_DEPENDENCY"
+    IN_DEVELOPMENT = "IN_DEVELOPMENT"
+    CODE_CHANGE_REQUIRED = "CODE_CHANGE_REQUIRED"          # the reviewer asked for a change to the code
+    CHECK_FAILED = "CHECK_FAILED"                          # a command of the project failed
+    USER_CHECK_FAILED = "USER_CHECK_FAILED"                # the user's check did not pass
+    CHECK_UNSETTLED = "CHECK_UNSETTLED"                    # a command gave no result: nothing was learned about the code
+    AUTHORIZATION_DENIED = "AUTHORIZATION_DENIED"
+    AUTHORIZATION_REQUIRED = "AUTHORIZATION_REQUIRED"
+    CHECKS_NOT_ALLOWED = "CHECKS_NOT_ALLOWED"              # the project's commands are configured, without the consent
+    NO_TEST_COMMANDS = "NO_TEST_COMMANDS"
+    TOOL_MISSING = "TOOL_MISSING"                          # a toolchain the build needs is not installed
+    NO_COMMAND = "NO_COMMAND"                              # no allowed command builds or packages
+    REVIEWER_CAPABILITY_BLOCKED = "REVIEWER_CAPABILITY_BLOCKED"
+    UNCLASSIFIED = "UNCLASSIFIED"
+    HANDED_OVER_BY_REVIEW = "HANDED_OVER_BY_REVIEW"        # the reviewer could not settle it by reading the code
+    MANUAL_VALIDATION_REQUIRED = "MANUAL_VALIDATION_REQUIRED"
+    EXTERNAL_VERIFICATION_REQUIRED = "EXTERNAL_VERIFICATION_REQUIRED"  # outside the project: an application, the network, a publication
+    AWAITING_REVIEW = "AWAITING_REVIEW"
+    AWAITING_CHECKS = "AWAITING_CHECKS"
+
+
 # Outcomes that hand a criterion over to somebody else than the developer.
 DEFERRED = frozenset({ReviewOutcome.VALIDATION_REQUIRED, ReviewOutcome.CAPABILITY_BLOCKED, ReviewOutcome.APPROVAL_REQUIRED,
                       ReviewOutcome.MANUAL_ACTION_REQUIRED, ReviewOutcome.NOT_ASSESSED})
@@ -124,6 +152,7 @@ PROOF = {"edit": "review", "tests": "test", "build": "build", "package": "packag
          "publish": "manual", "external": "manual", "manual": "manual"}
 RUNTIME_PROOFS = {"test": "tests", "build": "build", "package": "package"}
 CONSENT_NEEDS = frozenset({"network", "publish"})  # operations nobody does without the user's explicit decision
+OUTSIDE_NEEDS = frozenset({"external", "network", "publish"})  # proved only by what happened outside the project
 DEFAULT_NEED = {Category.CODE: "edit", Category.TEST: "tests", Category.BUILD: "build", Category.INTEGRATION: "external",
                 Category.EXTERNAL: "network", Category.PUBLISHING: "publish", Category.MANUAL: "manual"}
 OPERATIONS = {"network": "Downloading or installing from the network", "publish": "Committing, pushing or publishing"}
@@ -152,11 +181,13 @@ REVIEW_SCHEMA = {
         }},
         "criteria": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["id", "outcome", "note"],
+            "required": ["id", "outcome", "note", "evidence_refs"],
             "properties": {
                 "id": {"type": "string"},
                 "outcome": {"type": "string", "enum": [str(outcome) for outcome in ReviewOutcome]},
                 "note": {"type": "string"},
+                # Records of the ledger the reviewer read for it. Checked by the backend (`gate.references`), never proof.
+                "evidence_refs": {"type": "array", "items": {"type": "string"}},
             },
         }},
     },
@@ -550,19 +581,45 @@ class _Proofs:
         return (f"A command of the project {how}: {caps.shown(record.get('command') or [])}" + (f". {reason}" if reason else "")
                 + ". Nothing was learned about the code; the next run of the project's commands tries again")
 
-    def failure(self, proof: str, criterion: str) -> str | None:
-        """Why this kind of proof failed, when the last attempt at it did. A command without a result did not fail."""
+    def failure(self, proof: str, criterion: str) -> tuple[str, str] | None:
+        """Why this kind of proof failed, when the last attempt at it did, as (basis, words). A command without a result did not fail."""
         if proof in RUNTIME_PROOFS:
             failed = self._unpassed(proof)
             if failed and failed.get("result") not in verification.UNSETTLED:
                 reason = ((failed.get("check") or {}).get("reason") if isinstance(failed.get("check"), dict) else None) or ""
-                return (f"A command of the project failed (exit {failed.get('exit_code')}): {caps.shown(failed.get('command') or [])}"
-                        + (f". {reason}" if reason else ""))
+                return Basis.CHECK_FAILED, (f"A command of the project failed (exit {failed.get('exit_code')}): "
+                                            f"{caps.shown(failed.get('command') or [])}" + (f". {reason}" if reason else ""))
         if proof != "review" and proof != "test":
             manual = self._manual(criterion)
             if manual and self.ledger.counts(manual) and manual.get("result") == "failed":
-                return f"Your check did not pass: {manual.get('summary') or 'no details were given'}"
+                return Basis.USER_CHECK_FAILED, f"Your check did not pass: {manual.get('summary') or 'no details were given'}"
         return None
+
+    def sources(self, proof: str, criterion: str) -> list[dict]:
+        """The records this kind of proof is read from now, whether they count or not.
+
+        The last review; the commands of the last run that give it; the user's
+        last check of the criterion where a check by the user can give it. The
+        acceptance gate asks this to tell evidence that went stale from
+        evidence that never was.
+        """
+        if proof == "review":
+            return [self.review] if self.review else []
+        found = []
+        if proof in RUNTIME_PROOFS:
+            found = [record for record in self.run if proof == "test" or RUNTIME_PROOFS[proof] in (record.get("covers") or [])]
+            if proof == "test":
+                return found
+        manual = self._manual(criterion)
+        return found + ([manual] if manual else [])
+
+    def positive(self, record: dict, criterion: str) -> bool:
+        """Whether a record says it proved this criterion when it was written, whether it still counts or not."""
+        if record.get("kind") == "review":
+            outcomes = record.get("outcomes") if isinstance(record.get("outcomes"), dict) else {}
+            covered = self.implicit and record.get("verdict") == "APPROVED"
+            return outcomes.get(criterion, ReviewOutcome.SATISFIED if covered else None) == ReviewOutcome.SATISFIED
+        return record.get("kind") in ("command", "manual") and record.get("result") == "passed"
 
     def user_failure(self, criterion: str) -> dict | None:
         manual = self._manual(criterion)
@@ -588,6 +645,8 @@ class Acceptance:
     source: str = "task"            # "task": given when the task was created; "task.md": read back for an older task
     planned_at: str = ""
     updated_at: str = ""
+    # Why each criterion has its status (`Basis`), from the last `refresh`; judged again each time, never saved.
+    basis: dict = field(default_factory=dict, repr=False, compare=False)
 
     # --- persistence -----------------------------------------------------------------
 
@@ -731,7 +790,8 @@ class Acceptance:
 
     # --- verification ------------------------------------------------------------------
 
-    def _judge(self, criterion: Criterion, proofs: _Proofs, statuses: dict, developing: bool) -> tuple[str, str, list[str]]:
+    def _judge(self, criterion: Criterion, proofs: _Proofs, statuses: dict, developing: bool) -> tuple[str, str, str, list[str]]:
+        """The status of a criterion, why (`Basis`), the words for people, and the records that prove it."""
         held, found = [], []
         for proof in criterion.proof:
             records = proofs.proves(proof, criterion.id)
@@ -745,27 +805,27 @@ class Acceptance:
             found.append(decision["evidence"])
         waiting = [other for other in criterion.depends_on if statuses.get(other) != Status.VERIFIED]
         if not held and not waiting and (granted or not criterion.authorization_required):
-            return Status.VERIFIED, "Verified by recorded evidence", found
+            return Status.VERIFIED, Basis.VERIFIED, "Verified by recorded evidence", found
         if waiting:
-            return Status.PENDING, f"It waits for {', '.join(waiting)}", found
+            return Status.PENDING, Basis.WAITING_FOR_DEPENDENCY, f"It waits for {', '.join(waiting)}", found
         review = criterion.review or {}
         note = f": {review['note']}" if review.get("note") else ""
         if "review" in held and developing:
-            return Status.IN_PROGRESS, "The developer is working on it", found
+            return Status.IN_PROGRESS, Basis.IN_DEVELOPMENT, "The developer is working on it", found
         if "review" in held and review.get("outcome") == ReviewOutcome.CODE_CHANGES_REQUIRED:
-            return Status.FAILED, f"The reviewer asked for a change to the code{note}", found
-        failure = next((text for proof in held if (text := proofs.failure(proof, criterion.id))), None)
+            return Status.FAILED, Basis.CODE_CHANGE_REQUIRED, f"The reviewer asked for a change to the code{note}", found
+        failure = next((found_ for proof in held if (found_ := proofs.failure(proof, criterion.id))), None)
         if failure:
-            return Status.FAILED, failure, found
+            return Status.FAILED, failure[0], failure[1], found
         unsettled = next((text for proof in held if (text := proofs.unsettled(proof))), None)
         if unsettled:
-            return Status.PENDING, unsettled, found
+            return Status.PENDING, Basis.CHECK_UNSETTLED, unsettled, found
         if criterion.authorization_required and not granted:
             operation = next((OPERATIONS[need] for need in criterion.needs if need in OPERATIONS), "This operation")
             if decision.get("decision") == "denied":
-                return Status.AWAITING_AUTHORIZATION, "You did not authorize this operation, so nothing was done and the " \
+                return Status.AWAITING_AUTHORIZATION, Basis.AUTHORIZATION_DENIED, "You did not authorize this operation, so nothing was done and the " \
                                                       "criterion stays open", found
-            return Status.AWAITING_AUTHORIZATION, f"{operation} is never done by the agents or by PatchRondo. It needs your " \
+            return Status.AWAITING_AUTHORIZATION, Basis.AUTHORIZATION_REQUIRED, f"{operation} is never done by the agents or by PatchRondo. It needs your " \
                                                   "explicit decision; after that it is yours to do and to prove", found
         for proof in held:
             if proof not in RUNTIME_PROOFS:
@@ -774,33 +834,34 @@ class Acceptance:
             if entry["state"] in caps.AVAILABLE:
                 continue  # it runs with the project's commands after the next development step
             if entry.get("consent") == "missing":
-                return Status.AWAITING_AUTHORIZATION, "The project's commands are configured but not allowed to run. Allow " \
+                return Status.AWAITING_AUTHORIZATION, Basis.CHECKS_NOT_ALLOWED, "The project's commands are configured but not allowed to run. Allow " \
                                                       "them where the task asks for it, or in Settings → Tests", found
             if proof == "test":
-                return Status.AWAITING_AUTHORIZATION, "PatchRondo runs tests only with commands you configured and allowed, " \
+                return Status.AWAITING_AUTHORIZATION, Basis.NO_TEST_COMMANDS, "PatchRondo runs tests only with commands you configured and allowed, " \
                                                       "and this project has none", found
             absent = next((item for item in criterion.requires if proof == "build" and item["capability"].startswith("tool.")
                            and item["state"] == caps.ABSENT), None)
             what = "runs a build" if proof == "build" else "creates a package"
             if absent:
-                return Status.BLOCKED_CAPABILITY, f"It needs {caps.TOOLCHAIN_LABELS[absent['capability'][5:]]}, and none is " \
+                return Status.BLOCKED_CAPABILITY, Basis.TOOL_MISSING, f"It needs {caps.TOOLCHAIN_LABELS[absent['capability'][5:]]}, and none is " \
                     f"installed on this computer ({absent['source']}). Install one and add the command to the project's " \
                     "commands, or do it elsewhere and attach the evidence", found
-            return Status.BLOCKED_CAPABILITY, f"No command you allowed for this project {what}, and an agent's word is not " \
+            return Status.BLOCKED_CAPABILITY, Basis.NO_COMMAND, f"No command you allowed for this project {what}, and an agent's word is not " \
                 "proof of it. Add the command in Settings → Tests, or do it yourself and attach the evidence", found
         if "manual" in held:
             if review.get("outcome") == ReviewOutcome.CAPABILITY_BLOCKED:
-                return Status.BLOCKED_CAPABILITY, f"The reviewer could not verify it with what this workflow has{note}", found
+                return Status.BLOCKED_CAPABILITY, Basis.REVIEWER_CAPABILITY_BLOCKED, f"The reviewer could not verify it with what this workflow has{note}", found
             if not criterion.categories:
-                return Status.UNKNOWN, f"PatchRondo could not tell what kind of check this needs. " \
+                return Status.UNKNOWN, Basis.UNCLASSIFIED, f"PatchRondo could not tell what kind of check this needs. " \
                                        f"{criterion.classification.get('note') or ''}".strip(), found
             if review.get("outcome") in DEFERRED:
-                return Status.AWAITING_MANUAL_VALIDATION, f"The reviewer could not settle it by reading the code{note}", found
-            return Status.AWAITING_MANUAL_VALIDATION, "It needs a check that neither the agents nor PatchRondo can do. Do " \
-                                                      "it, then attach where its proof can be found", found
+                return Status.AWAITING_MANUAL_VALIDATION, Basis.HANDED_OVER_BY_REVIEW, f"The reviewer could not settle it by reading the code{note}", found
+            outside = Basis.EXTERNAL_VERIFICATION_REQUIRED if set(criterion.needs) & OUTSIDE_NEEDS else Basis.MANUAL_VALIDATION_REQUIRED
+            return Status.AWAITING_MANUAL_VALIDATION, outside, "It needs a check that neither the agents nor PatchRondo can do. " \
+                                                               "Do it, then attach where its proof can be found", found
         if "review" in held:
-            return Status.PENDING, "The reviewer judges it after development and tests", found
-        return Status.PENDING, "PatchRondo runs the project's commands after development", found
+            return Status.PENDING, Basis.AWAITING_REVIEW, "The reviewer judges it after development and tests", found
+        return Status.PENDING, Basis.AWAITING_CHECKS, "PatchRondo runs the project's commands after development", found
 
     def refresh(self, ledger, *, capabilities: dict | None = None, developing: bool = False) -> None:
         """Plan and judge every criterion again from the ledger; nothing is kept from the previous judgement."""
@@ -808,11 +869,13 @@ class Acceptance:
             self.capabilities = capabilities
         proofs = _Proofs(ledger, implicit=not self.explicit_outcomes)
         statuses: dict[str, str] = {}
+        self.basis = {}
         for criterion in _ordered(self.criteria):
             criterion.authorization = proofs.decision(criterion.id)
             self._plan(criterion)
-            status, reason, found = self._judge(criterion, proofs, statuses, developing)
+            status, basis, reason, found = self._judge(criterion, proofs, statuses, developing)
             criterion.status, criterion.reason, criterion.evidence = str(status), reason, list(dict.fromkeys(found))
+            self.basis[criterion.id] = str(basis)
             statuses[criterion.id] = status
         approval = ledger.get(self.code.get("evidence")) if self.code.get("status") == Code.APPROVED else None
         if self.code.get("status") == Code.APPROVED and not ledger.counts(ledger.get(self.code.get("evidence"))):
@@ -1019,7 +1082,8 @@ class Acceptance:
         """The part of the reviewer's prompt with the criteria, the capabilities and the evidence, and how to answer."""
         rows = [{"id": criterion.id, "text": criterion.text, "required": criterion.required, "categories": criterion.categories,
                  "done_by": criterion.executor, "verified_by": criterion.verifier, "status": criterion.status,
-                 "reason": criterion.reason} for criterion in self.criteria]
+                 "reason": criterion.reason, "evidence": [name for name in criterion.evidence if ledger.counts(ledger.get(name))]}
+                for criterion in self.criteria]
         able = []
         for name in caps.EXECUTORS:
             found = (((self.capabilities or {}).get("executors") or {}).get(name) or {}).get("capabilities") or {}
@@ -1060,6 +1124,11 @@ class Acceptance:
             "Every entry of `issues` has a `kind`. A CODE_CHANGES_REQUIRED issue is a change the code needs, whatever its "
             "severity: the code is not approved with one, and only these go back to the developer. Use OBSERVATION for a "
             "remark about the code that asks for no change, and the other kinds for what is missing outside the code.",
+            "`evidence_refs` lists the IDs of the records above that you relied on for a criterion, or nothing. The "
+            "orchestrator checks each one against its ledger and records the ones it refuses; a reference proves nothing "
+            "by itself, and an ID that is not listed above is refused. Never describe a result that no record shows.",
+            "Whether the task is complete is not yours to decide: the orchestrator decides it from the evidence recorded "
+            "for every required criterion. Your verdict is about the code.",
         ]) + "\n"
 
 

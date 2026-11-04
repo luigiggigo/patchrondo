@@ -160,6 +160,14 @@ reparse points are checked on native Windows; symbolic links, a name that
 is not UTF-8 and a link that keeps the size and time of the file it
 replaced, on POSIX. Run it on both.
 
+`tests/test_gate.py` checks the acceptance gate: each decision and next
+action from a record and a ledger built for it (stale, invalid and unknown
+evidence, a newer failed run, an authorization without its operation, a
+tampered ledger, the switches), the references a reviewer cites, the report,
+and the real loop with scripted agents (an external check that pauses the
+task once and completes it without an agent, files or a ledger that change
+after the decision, crashes before and after an approval, two runs at once).
+
 ### Browser checks of the interface (no provider quota usage)
 
 ```bash

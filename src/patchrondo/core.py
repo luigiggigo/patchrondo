@@ -19,7 +19,7 @@ from .process import KILL_REFUSED, execute, short_log, stop_refused, with_refusa
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
 from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery
-from . import provenance, verification, winacl
+from . import gate, provenance, verification, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -257,6 +257,10 @@ class AcceptanceUnreadable(AgentFailure):
     """The task has a saved criteria record this version cannot read. Nothing replaces it: the task pauses."""
 
 
+class CompletionRefused(AgentFailure):
+    """The acceptance gate (`gate.py`) did not let a task whose criteria are verified be completed. No agent is called."""
+
+
 UNREADABLE = ("The saved criteria of this task cannot be read by this version of PatchRondo: {}. Nothing replaced them and "
               "no agent was called. Open the task with the version that saved them, or put back the state.json that held them")
 
@@ -355,7 +359,21 @@ def _sync(root: Path, cfg: dict, path: Path, state: dict, *, current: str | None
             ledger = evidence.read(path)
     record.refresh(ledger, capabilities=_capabilities(root, cfg, state, record), developing=developing)
     state["acceptance"] = record.dump()
+    _gate(cfg, state, record, ledger, current)
     return record, ledger
+
+
+def _gate(cfg: dict, state: dict, record: criteria.Acceptance, ledger: evidence.Ledger, current: str | None) -> gate.Gate:
+    """Evaluate the acceptance gate for a record just judged from `ledger`, and keep it in the state for the next checkpoint.
+
+    `current` is the fingerprint of the task's files, when the caller took it:
+    without it the gate never passes. Deterministic; nothing is run or written.
+    """
+    fresh = None if current is None else state.get("test_context") == _test_context(cfg, current, Path(state["worktree"]))
+    result = gate.evaluate(record, ledger, task_id=state.get("id") if isinstance(state.get("id"), str) else None,
+                           fresh=fresh, snapshot=current, missing=gate.protections(cfg), findings=state.get("findings"))
+    state["gate"] = result.dump()
+    return result
 
 
 def _record_commands(path: Path, state: dict, cfg: dict, results: list[dict], current: str) -> None:
@@ -387,7 +405,8 @@ def _record_review(path: Path, state: dict, review: dict, current: str, run_dir:
                            verdict=review["verdict"], reported_verdict=review.get("reported_verdict"),
                            criteria=[entry["id"] for entry in listed], outcomes={entry["id"]: entry["outcome"] for entry in listed},
                            issues=len(review["issues"]), findings=named or None, iteration=state["iteration"], fingerprint=current,
-                           base=state.get("base_sha"), scope="code", log=f"{run_dir.name}/reviewer.reply.md")
+                           base=state.get("base_sha"), scope="code", log=f"{run_dir.name}/reviewer.reply.md",
+                           references=review.get("references") or None)
 
 
 def _findings(state: dict, path: Path) -> findings.Findings | None:
@@ -510,7 +529,7 @@ What the handoff says about tests is the developer's claim, not a result.
 {stat(workspace) or '(none)'}
 {_context_section(context)}
 ## Review response — ONLY JSON, no markdown
-{{"verdict":"APPROVED|CHANGES_REQUESTED|BLOCKED", "summary":"brief assessment", "issues":[{{"severity":"low|medium|high|critical", "path":"file path or empty", "description":"specific actionable issue", "kind":"{kinds}", "finding_id":"ID of an earlier problem it reports again, or empty", "criterion_id":"AC-01 when it is about one criterion, or empty"}}], "criteria":[{{"id":"AC-01", "outcome":"{outcomes}", "note":"one sentence"}}]}}
+{{"verdict":"APPROVED|CHANGES_REQUESTED|BLOCKED", "summary":"brief assessment", "issues":[{{"severity":"low|medium|high|critical", "path":"file path or empty", "description":"specific actionable issue", "kind":"{kinds}", "finding_id":"ID of an earlier problem it reports again, or empty", "criterion_id":"AC-01 when it is about one criterion, or empty"}}], "criteria":[{{"id":"AC-01", "outcome":"{outcomes}", "note":"one sentence", "evidence_refs":["E-0001"]}}]}}
 """
 
 
@@ -550,6 +569,11 @@ def parse_review(text: str) -> dict:
             not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not isinstance(entry.get("outcome"), str)
             or entry["outcome"] not in set(criteria.ReviewOutcome) or not isinstance(entry.get("note", ""), str) for entry in listed):
         raise AgentFailure("Invalid review: malformed criterion outcome", "invalid_review")
+    # Evidence a reviewer cites is checked by the backend (`gate.references`) and is never proof; an answer from before
+    # the field existed has none.
+    if any(not isinstance(entry.get("evidence_refs", []), list) or len(entry.get("evidence_refs", [])) > gate.MAX_REFS
+           or not all(isinstance(name, str) for name in entry.get("evidence_refs", [])) for entry in listed):
+        raise AgentFailure("Invalid review: malformed evidence references", "invalid_review")
     if obj["verdict"] == "APPROVED" and any(criteria.requires_change(issue) for issue in obj["issues"]):
         obj.update(verdict="CHANGES_REQUESTED", reported_verdict="APPROVED", normalized="code_change_named",
                    summary="Inconsistent review: it approves, and names a change the code requires. " + obj["summary"])
@@ -905,6 +929,8 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
         error["source"] = "environment"  # the details are in the task's `environment` record
     if isinstance(exc, (ValidationPending, AcceptanceUnreadable)):
         error["source"] = "acceptance"  # the details are in the task's `acceptance` record
+    if isinstance(exc, CompletionRefused):
+        error["source"] = "gate"  # the details are in the task's `gate` record
     provider = getattr(exc, "provider", None)
     if kind == "quota":
         provider = provider or state["developer" if state["phase"] == "develop" else "reviewer"]
@@ -923,13 +949,45 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
     return error
 
 
-def _complete(path: Path, state: dict, **details) -> dict:
+def _complete(path: Path, state: dict, cfg: dict, workspace: Path, decided: gate.Gate, **details) -> dict:
+    """Make the task `done`: the one place that does. Only with the gate's PASS, on the files and ledger it was decided on.
+
+    Under the task lock. The files are fingerprinted again and the ledger read
+    again right before the state is written: a task whose files, checks or
+    inputs changed after the gate was evaluated goes back to its tests, and
+    one whose ledger moved pauses to be evaluated again. Nothing completes on
+    evidence about other files than the ones it was judged on.
+    """
+    if not decided.completion_allowed:
+        raise CompletionRefused(decided.message(), "completion_refused")
+    current = fingerprint(workspace)
+    if current != decided.snapshot or state.get("test_context") != _test_context(cfg, current, workspace):
+        state["phase"] = "test"
+        raise AgentFailure("Files or test commands changed after the completion gate was evaluated: resume to rerun tests",
+                           "stale_tests")
+    ledger = evidence.read(path)
+    if ledger.problems or {"count": ledger.count, "head": ledger.head} != decided.ledger:
+        raise CompletionRefused("The evidence ledger changed after the completion gate was evaluated. Resume to evaluate it "
+                                "again: no agent is called for that", "completion_refused")
     state["status"] = "done"
     state["phase"] = "complete"
-    _event(state, "task_completed", **details)
+    _event(state, "task_completed", gate=decided.brief(), **details)
     _save(path, state)
     _report(path, state)
     return state
+
+
+def _held(record: criteria.Acceptance, decided: gate.Gate) -> AgentFailure:
+    """The pause of a task whose code is approved and that the gate does not let complete. No agent is called there.
+
+    Criteria that wait for somebody keep their pauses and words. Only a task
+    whose every required criterion is verified, and that the gate still
+    refuses (a switch turned off a protection, evidence that does not hold),
+    pauses with `completion_refused`, saying why.
+    """
+    if record.outcome == criteria.Outcome.RELEASE_READY:
+        return CompletionRefused(decided.message(), "completion_refused")
+    return ValidationPending(record.pending_message(), criteria.PAUSES.get(record.outcome, "awaiting_validation"))
 
 
 def _validation_moved(root: Path, cfg: dict, path: Path, state: dict, workspace: Path) -> bool:
@@ -970,9 +1028,10 @@ def _validate_stage(sync, cfg: dict, path: Path, state: dict, workspace: Path) -
     """
     current = fingerprint(workspace)
     record, ledger = sync(current=current)
-    fresh = state.get("test_context") == _test_context(cfg, current, workspace)
-    if record.outcome == criteria.Outcome.RELEASE_READY and fresh:
-        _complete(path, state)
+    decided = _gate(cfg, state, record, ledger, current)
+    fresh = decided.fresh is True
+    if decided.completion_allowed:
+        _complete(path, state, cfg, workspace, decided)
         return True
     refused = record.refused_by_user(ledger)
     if refused:
@@ -1001,7 +1060,7 @@ def _validate_stage(sync, cfg: dict, path: Path, state: dict, workspace: Path) -
         state["phase"] = "test"
         _save(path, state)
         return False
-    raise ValidationPending(record.pending_message(), criteria.PAUSES.get(record.outcome, "awaiting_validation"))
+    raise _held(record, decided)
 
 
 def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = False,
@@ -1076,6 +1135,10 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                 _save(path, state)
             if state["phase"] == "test":
                 return state
+        if (state["status"] == "paused" and isinstance(error, dict) and error.get("kind") == "completion_refused"
+                and state["phase"] == "validate" and gate.protections(cfg)):
+            # Idempotent Resume: while a switch still turns off what the configured checks rely on, nothing can complete.
+            return state
         # Checked before `last_error` is cleared: a planned retry must not start early.
         proceed, changed = recovery.admit(state, cfg, active=auto, retry_of=retry_of, now=clock())
         if not proceed:
@@ -1162,6 +1225,10 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                         current = _check_test_context(state, cfg, workspace)
                         # Each issue is recorded as a finding, or linked to one of an earlier review by a fixed rule.
                         review = registry.settle(review, record) if registry is not None else findings.unlinked(review)
+                        # The evidence it cites is checked against the ledger and recorded; it proves nothing either way.
+                        cited = gate.references(review, record, evidence.read(path))
+                        if cited:
+                            review["references"] = cited
                         state["review"] = review
                         entry = _record_review(path, state, review, current, run_dir)
                         recorded = registry.observe(review, entry["id"], iteration, record) if registry is not None else []
@@ -1178,16 +1245,18 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                                 waiting = registry.approved(entry["id"], iteration)  # pending a verification, never resolved
                             _keep_findings(state, registry)
                         state["acceptance"] = record.dump()
-                        record, _ = sync(current=current)
-                        # Approved code is not a finished task: every required criterion needs its own evidence.
-                        if record.outcome == criteria.Outcome.RELEASE_READY:
-                            return _complete(path, state, **({"pending_verification": waiting} if waiting else {}))
+                        record, ledger = sync(current=current)
+                        # Approved code is not a finished task: the acceptance gate decides, from evidence that counts.
+                        decided = _gate(cfg, state, record, ledger, current)
+                        if decided.completion_allowed:
+                            return _complete(path, state, cfg, workspace, decided,
+                                             **({"pending_verification": waiting} if waiting else {}))
                         if not reused:
                             _event(state, "code_approved", evidence=entry["id"], open=len(record.open_required()),
-                                   pending_verification=waiting)
+                                   pending_verification=waiting, gate=decided.brief())
                         state["phase"] = "validate"
                         _save(path, state)
-                        raise ValidationPending(record.pending_message(), criteria.PAUSES.get(record.outcome, "awaiting_validation"))
+                        raise _held(record, decided)
                     reason = "review_not_approved"
                     if not _tests_green(state):
                         reason = "tests_missing_or_failed"
@@ -1213,7 +1282,9 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
             failed_at = clock()
             state["status"] = "paused"
             state["last_error"] = _failure(exc, state, failed_at)
-            _event(state, "task_paused", reason=state["last_error"]["kind"])
+            held = isinstance(exc, (ValidationPending, CompletionRefused)) and isinstance(state.get("gate"), dict)
+            _event(state, "task_paused", reason=state["last_error"]["kind"],
+                   **({"gate": gate.brief_of(state["gate"])} if held else {}))
             # The retry plan is saved with the pause, before the lock is released.
             recovery.on_failure(state, cfg, active=auto, now=failed_at)
             _save(path, state)
@@ -1248,8 +1319,10 @@ def _restate_pause(state: dict, record: criteria.Acceptance) -> None:
         return
     if record.outcome in criteria.PAUSES:
         error.update(kind=criteria.PAUSES[record.outcome], message=record.pending_message())
-    elif record.outcome == criteria.Outcome.RELEASE_READY:
+    elif record.outcome == criteria.Outcome.RELEASE_READY and state["gate"]["completion_allowed"] is True:
         error["message"] = "Every required criterion is verified. Resume to complete the task: no agent is called for that."
+    elif record.outcome == criteria.Outcome.RELEASE_READY:
+        error["message"] = f"Every required criterion is verified, and the completion gate refuses: {state['gate']['message']}"
 
 
 def _on_criteria(home: Path, task_id: str, agents_root: Path | None, change=None) -> dict:
@@ -1281,9 +1354,9 @@ def _on_criteria(home: Path, task_id: str, agents_root: Path | None, change=None
         _restate_pause(state, record)
         _save(path, state)
         _report(path, state)
-        completes = state.get("phase") == "validate" and record.outcome == criteria.Outcome.RELEASE_READY \
-            and state.get("test_context") == _test_context(cfg, current, workspace)
-    return {"record": entry, "acceptance": record.compact(), "completes": completes}
+        # Whether a run started now would complete the task without calling an agent: the gate's decision, on these files.
+        completes = state.get("phase") == "validate" and state["gate"]["completion_allowed"] is True
+    return {"record": entry, "acceptance": record.compact(), "completes": completes, "gate": gate.brief_of(state["gate"])}
 
 
 def recheck_acceptance(home: Path, task_id: str, *, agents_root: Path | None = None) -> dict:

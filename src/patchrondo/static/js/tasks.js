@@ -71,6 +71,7 @@ export const ERRORS = {
   system_error: { title: "PatchRondo hit a system error", help: "A file or Git operation failed. Check the message, then resume." },
   awaiting_validation: { title: "The code is approved; some criteria still need verification", help: "What is left cannot be done by the developer or checked by the reviewer, so the task was not sent back to them. “Criteria and checks” shows what each criterion needs." },
   awaiting_authorization: { title: "The code is approved; some criteria need your authorization", help: "An operation such as a download or a publication is never done without your decision. Decide in “Criteria and checks”; nothing is run either way." },
+  completion_refused: { title: "Every criterion is verified, and completion is still refused", help: "The completion gate found a reason not to finish the task: a switch that turns off what the configured checks rely on, or evidence that changed after it was judged. The message says which; no agent was called. Resume evaluates it again." },
   acceptance_unreadable: { title: "The saved criteria cannot be read", help: "They were saved by another version of PatchRondo, or changed by hand. Nothing replaced them and no agent was called. Open the task with the version that saved them, or put back its state.json, then resume." },
   max_iterations_reached: { title: "Iteration limit reached", help: "The task used all its iterations without an approved review and passing tests. Review the feedback and create a follow-up task." },
   review_blocked: { title: "The reviewer blocked the task", help: "The reviewer judged that the task cannot proceed as specified. Read the review and create a new task." },
@@ -169,7 +170,7 @@ const PAUSE_REASONS = {
   sandbox_unavailable: "Codex could not start its protected environment", sandbox_git_failed: "Git does not work in the review environment",
   git_dubious_ownership: "Git does not trust the project folder", cli_missing: "an agent is not installed",
   awaiting_validation: "criteria wait for a verification", awaiting_authorization: "criteria wait for your authorization",
-  acceptance_unreadable: "the saved criteria cannot be read",
+  acceptance_unreadable: "the saved criteria cannot be read", completion_refused: "the completion gate refused",
   verification_error: "a check gave no usable result", verification_blocked: "a check could not be started",
 };
 const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git trust for this project folder" };

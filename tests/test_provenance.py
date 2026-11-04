@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -156,13 +157,14 @@ class FingerprintTests(unittest.TestCase):
     def test_a_cloud_file_or_another_reparse_point_is_read_as_a_file(self):
         """Only links and junctions are links: a OneDrive file holds its own data."""
         info = os.lstat(self.repo / "README.md")
-        cloud = os.stat_result(tuple(info)[:10], {"st_reparse_tag": 0x9000001A, "st_file_attributes": 0x400})
+        # Stand-ins with the fields `_linked` reads: `os.stat_result` refuses Windows-only fields elsewhere (Python 3.13 on
+        # Linux and macOS raises TypeError, as CI run 41901150009 showed).
+        cloud = SimpleNamespace(st_mode=info.st_mode, st_reparse_tag=0x9000001A, st_file_attributes=0x400)
         with patch("patchrondo.gitops.os.lstat", return_value=cloud):
             self.assertFalse(gitops._linked(self.repo / "README.md"))
-        junction = os.stat_result(tuple(info)[:10], {"st_reparse_tag": 0xA0000003, "st_file_attributes": 0x410})
-        if hasattr(info, "st_reparse_tag"):
-            with patch("patchrondo.gitops.os.lstat", return_value=junction):
-                self.assertTrue(gitops._linked(self.repo / "README.md"))
+        junction = SimpleNamespace(st_mode=info.st_mode, st_reparse_tag=0xA0000003, st_file_attributes=0x410)
+        with patch("patchrondo.gitops.os.lstat", return_value=junction):
+            self.assertTrue(gitops._linked(self.repo / "README.md"))
 
     def test_a_repository_inside_the_copy_is_hashed_too(self):
         nested = self.repo / "vendor lib"

@@ -6,15 +6,17 @@
 |---|---|---|
 | 0.2.1 | Published experimental source; current package metadata | Environment check, repairs, agent settings and the dated maintenance history |
 | 0.3.0 | In development; not a tagged release | Phase 1 functionally implemented; later phases planned |
-| 0.35 | Separate Evidence Engine proposal | Verification runner step implemented in `753d957`; provenance and invalidation step implemented (November 4, 2026); remaining proposal not completed |
+| 0.35 | Separate Evidence Engine proposal | Verification runner step implemented in `753d957`; provenance and invalidation step and acceptance gate step implemented (November 4, 2026); remaining proposal not completed |
 
 No stable release is established by the available publication record. On
-October 18, 2026, GitHub `main` was checked at `533ba8a`, then at `eb295cc`
-and at `b962214`, with no version tags or GitHub Releases (on October 17 it had been checked at
+November 4, 2026, GitHub `main` was checked at `abfb476` (its CI run failed
+one test of the fingerprint with Python 3.13 on Ubuntu and macOS), with no
+version tags or GitHub Releases. On October 18, 2026 it was checked at
+`533ba8a`, then at `eb295cc` and at `b962214`, with no version tags or GitHub Releases (on October 17 it had been checked at
 `753d957`, then at `fb6ecb1`). Source publication is distinct from a versioned release
 and a package publication. Package metadata remains 0.2.1; do not infer release
 readiness from it. See [publication status](PUBLISHING.md#current-publication-status)
-and the [dated validation record](REVIEW.md#current-source-and-ci-status-october-18-2026).
+and the [dated validation record](REVIEW.md#current-source-and-ci-status-november-4-2026).
 
 ## 0.3.0 — Phase 1: functionally complete
 
@@ -58,9 +60,19 @@ check declares; checks bound to their environment; invalidation records with
 a cause and the checks to run again; a hardened fingerprint. See
 [architecture section 17](ARCHITECTURE.md#17-provenance-and-invalidation).
 
+Implemented on November 4, 2026 (the request's "Phase 2, step 3"): the
+acceptance gate, a deterministic decision (`PASS`, `FAIL`, `PENDING`,
+`BLOCKED`, `NEEDS_REVERIFICATION`, `ERROR`) with a next action, evaluated at
+every judgement and required by the one function that completes a task, on
+the files and ledger it decided on; evidence references in the review answer,
+checked and never proof; completion refused while a switch turns off what
+the configured checks rely on. See
+[architecture section 18](ARCHITECTURE.md#18-acceptance-gate). Gate profiles
+(fast, standard, strict) are not implemented; the one policy is `standard`.
+
 Still proposed: invalidation based on the files a check actually depends on
-(test impact analysis), signed attestations, the acceptance gate and the
-other later steps. Invalidation compares states: any change to a file Git
+(test impact analysis), signed attestations, gate profiles, the Verification
+Center and the other later steps. Invalidation compares states: any change to a file Git
 does not ignore makes every check result stale. The reserved `stale` result
 stays unused: validity is not a result. No independent executor or new
 authorization is granted by this roadmap.

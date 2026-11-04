@@ -565,6 +565,18 @@ which configuration of its check ran (written by the runner between October
 the invalidation of earlier versions (files and named files only). See
 [architecture section 17](ARCHITECTURE.md#17-provenance-and-invalidation).
 
+Whether a task may be completed is decided by the acceptance gate, never by
+the reviewer: `PASS` only with the code approved, every required criterion
+verified by evidence that counts and the test results about the files as they
+are. Its last decision, with the criteria it waits for and the next action,
+is saved under `gate` in the task state and shown in `report.md`. What it
+waits for from you pauses the task without calling an agent. A task whose
+criteria are all verified pauses with `completion_refused` while
+`PATCHRONDO_VERIFICATION=0` skips configured `verification` checks, or
+`PATCHRONDO_PROVENANCE=0` ignores the `inputs` or `same_environment` a check
+declares: put the switch back and resume, and the checks run before the task
+is completed. See [architecture section 18](ARCHITECTURE.md#18-acceptance-gate).
+
 A complete reference configuration is in
 [`examples/config.example.json`](../examples/config.example.json). It also includes
 `workflow.max_iterations`, timeouts, the maximum number of Claude turns and the

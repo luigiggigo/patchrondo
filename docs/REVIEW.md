@@ -33,7 +33,24 @@ repository was present in those original directories. A local, ignored
 Each section below says which code it covers: a published commit or a local
 working tree at its date.
 
-## Current source and CI status (October 18, 2026)
+## Current source and CI status (November 4, 2026)
+
+`git ls-remote`, `gh release list` and `gh run list` were checked on November
+4, 2026 at 21:25 +01:00. Remote `main` returned
+`abfb47619cc88cb1b87c92b14306121e64a94a3a`, committed by the user on
+November 4, 2026 at 20:52 +01:00: the provenance and invalidation of evidence
+([its record](#provenance-and-invalidation-of-evidence-november-4-2026)) on
+top of `e9eec80`. No version tags or GitHub Releases were returned; branch
+protection was not read this time. Package metadata remains 0.2.1.
+
+| Commit | CI run | Observed status on November 4, 2026 |
+|---|---|---|
+| `abfb476` | [41901150009](https://github.com/luigiggigo/patchrondo/actions/runs/41901150009) | FAILED, in 4 min 52 s: Python 3.13 on `ubuntu-latest` and Python 3.13 on `macos-latest` part 2 of 2 each failed one test with an error, `test_provenance.FingerprintTests.test_a_cloud_file_or_another_reparse_point_is_read_as_a_file` (`TypeError: os.stat_result() got duplicate or unexpected field name(s)`: the test built a stat result with Windows-only fields, which Python 3.13 refuses there). The 12 other test jobs, `Collect tests` and the package check succeeded; `CI result` failed for that reason only. The correction of the test is in [Acceptance gate](#acceptance-gate-november-4-2026) |
+| `e9eec80` | [39329391851](https://github.com/luigiggigo/patchrondo/actions/runs/39329391851) | SUCCESS (October 19, 2026, 4 min 26 s), as `gh run list` lists it; its jobs were not read |
+| `a82ffa1` | [39154119045](https://github.com/luigiggigo/patchrondo/actions/runs/39154119045) | SUCCESS (October 18, 2026, 4 min 19 s), as `gh run list` lists it; its jobs were not read |
+
+The run of `abfb476` covers that commit only. The check before it is kept
+as it was written:
 
 GitHub API, `git ls-remote` and `gh run list` were checked again on October
 18, 2026 between 19:29 and 19:47 +02:00. Remote `main` returned
@@ -216,6 +233,117 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Acceptance gate (November 4, 2026)
+
+This section covers changes on top of `abfb476`: the new `gate.py`;
+`acceptance.py` (`Basis`, `Acceptance.basis`, `_Proofs.sources` and
+`positive`, `evidence_refs` in the review schema, the reviewer's brief),
+`core.py` (`_gate`, `_complete`, `_held`, `CompletionRefused`, the review and
+`validate` stages, `parse_review`, the idempotent Resume of
+`completion_refused`), `report.py` and `static/js/tasks.js`; the new
+`tests/test_gate.py` (27 tests) and a correction of
+`tests/test_provenance.py`; 15 new mutation protections and one whose
+pattern moved; ARCHITECTURE section 18, SECURITY, USAGE, TESTING, ROADMAP,
+README, PUBLISHING and the changelog. The package version is unchanged, 0.2.1.
+
+**Asked for.** The user's "0.35 Phase 2 / Step 3": a deterministic acceptance
+gate that alone decides whether a task may be completed, from trustworthy,
+current and pertinent evidence; a reviewer aware of the evidence that cannot
+make a requirement satisfied; routing of failures, blockers and
+reverification without wasted iterations; mandatory on every path to `done`,
+Resume included; built on the existing acceptance, ledger, provenance,
+capabilities and findings, without a parallel decision engine.
+
+**Before.** Read in the code of `abfb476`: the acceptance record already
+kept the approval of the code apart from completion (`RELEASE_READY` needs
+every required criterion verified from the ledger), capability-aware
+statuses kept the developer out of what it cannot do, and pauses at
+`validate` called no agent. Two places completed a task, both through
+`_complete`, without comparing the files again after the last judgement.
+With `PATCHRONDO_VERIFICATION=0` a task with configured `verification`
+checks was completed without running them; with `PATCHRONDO_PROVENANCE=0`
+the `inputs` and `same_environment` a check declares were not compared. A
+scratch script ran both cases on the sources of `abfb476` and on the changed
+sources with the same hook (on `core._sync`, which both have): `abfb476`
+completed both tasks (`done`, the configured check never ran); the changed
+sources paused them (`stale_tests`; `completion_refused`). There was no
+structured completion decision, no typed reason for a criterion's status
+and no way for a reviewer to cite evidence.
+
+**Decisions.**
+
+- The gate reads the acceptance record as judged and `provenance.recorded`;
+  it judges no criterion itself. A criterion's reason is a fixed code set in
+  `_judge` beside its status.
+- Findings decide nothing (section 14 of ARCHITECTURE): `blocking` is kept
+  as last reported and stays `OPEN` after its criterion is verified, so
+  deciding on it would block such tasks forever. The gate reports findings
+  against the criteria as they are; "no blocking finding open" holds by
+  construction.
+- No event was added and pauses that wait for a person keep their kinds and
+  words, so `DECIDED` in `tests/test_findings.py` holds; the gate is a detail
+  of `code_approved`, `task_completed` and `task_paused`. One new pause kind,
+  `completion_refused`, only for a task whose required criteria are all
+  verified and that the gate refuses.
+- `evidence_refs` is required by the schema (strict structured output needs
+  every field) and optional when parsed. References are recorded, never
+  proof.
+- Gate profiles are not implemented: one policy, `standard`.
+
+**Found during validation.** Two existing tests compare `report.md`: one
+counts event rows by "· `", the other compares the reports of two equal
+runs. The first version of the "Completion gate" section broke both (an
+extra separator; the gate ID, which depends on the task's ledger). The
+section now uses other separators and leaves the ID out. One mutation
+("a record that was not judged passes the gate") was missed in the first
+full run: the test's record was stopped by an earlier rule; a case only
+that rule catches was added and the mutation is detected. The CI failure of
+`abfb476` (`os.stat_result` with Windows-only fields) is corrected in the
+test.
+
+Validation on November 4, 2026, with neither `claude` nor `codex` found by
+`shutil.which` (native Windows: `.local\bin`, WinGet links and VS Code
+extensions removed from `PATH`; WSL2: `~/.local/bin`, `/usr/local/bin` and
+`/mnt/*` removed), on the final sources unless said otherwise:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Whole unittest suite | Native Windows, Python 3.13.3: 800 tests, 780 passed, 20 skipped (before the last edit of `tests/test_gate.py`, a test added to one case; that module was run again below) | 0 |
+| `test_gate`, `test_acceptance`, `test_findings`, `test_history`, `test_coherence`, `test_provenance`, `test_live_activity`, `test_criteria_ui`, `test_workflow`, `test_recovery_checks` | Native Windows, Python 3.11.3: 252 tests, 251 passed, 1 skipped | 0 |
+| `test_gate` (final) | Native Windows, Python 3.13.3 and 3.11.3: 27 tests passed | 0 |
+| The 23 modules the protections use | WSL2, Python 3.12.3: 718 tests, 702 passed, 16 skipped | 0 |
+| `test_history`, `test_gate`, `test_provenance` | WSL2, Python 3.12.3: 91 tests passed, none skipped | 0 |
+| `test_coherence` with `PATCHRONDO_ALL_CHECKPOINTS=1` | Native Windows, Python 3.13.3: 9 tests passed in 74 s | 0 |
+| Protections | WSL2, Python 3.12.3: 299 of 299 removed safeguards detected, 0 missed (15 of them new), 755 s | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.05 s after the planned time | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Browser, all twelve scenarios | Native Windows, Python 3.13.3, Chrome 156.0.8078.80 headless: 355 passed, 0 failed | 0 |
+| Publication scanner | 136 files checked, six findings: four images (binary, unchanged), and `.claude/` and `debug.log`, both ignored by Git and not written for this change | 1 |
+
+Every provider was scripted: no model was called. Remote `main` was
+`abfb476` when checked on November 4, 2026; its CI run 41901150009 failed
+for the test corrected here and says nothing about this change. Not run:
+anything on macOS, and Python 3.13 on Linux, where that test failed (CI runs
+them); the package build and `twine check` (CI's); the opt-in tests in the
+real Codex sandbox (the environment check did not change); the real pytest
+test (pytest is not installed).
+
+**Limits that remain.** The gate trusts the ledger as far as its chain does:
+someone with the user's rights can rewrite the ledger and `state.json`
+together. Between the last comparison in `_complete` and the write of
+`state.json` nothing is compared again, and the task lock does not keep
+another program from writing the worktree. `next_action` names what comes
+next; the routing of the loop is unchanged (a failed check by the user still
+reaches the developer through `awaiting_validation` and a Resume). The page
+receives `state.gate` but shows only the new pause's words; the Verification
+Center is a later step. `evidence_refs` and outcomes per criterion have not
+been confirmed with an authorized real run. Gate profiles are not
+implemented.
+
+**Verdict: READY for this change**, on the checks above. This is not a
+release-readiness verdict.
 
 ## Provenance and invalidation of evidence (November 4, 2026)
 

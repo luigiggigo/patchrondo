@@ -349,6 +349,19 @@ read inside the project only, without following a link or a junction, and
 only their digest is kept, never a file's content or its own hash; the
 fingerprint of the task's files never reads behind a link or a junction.
 
+**Acceptance gate.** A task is completed only by `core._complete`, and only
+when the gate (`gate.py`) decides `PASS` from the records that count: the
+code approved, every required criterion verified, the test results about
+the files as they are. The files are fingerprinted and the ledger read again
+right before `done` is written. A reviewer's answer cannot complete a task:
+its verdict is about the code, and the evidence IDs it cites are checked in
+the task's own ledger and recorded, never taken as proof. An authorization is
+never the operation it authorizes. While `PATCHRONDO_VERIFICATION=0` or
+`PATCHRONDO_PROVENANCE=0` turns off what the configured checks rely on, no
+task is completed. The gate trusts the ledger as far as its chain does: a
+process with your account's rights can rewrite the ledger and `state.json`
+together.
+
 ## Local interface
 
 `patchrondo` starts an HTTP server for the browser interface. It is meant for
