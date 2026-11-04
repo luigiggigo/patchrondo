@@ -760,7 +760,17 @@ nothing, and the pause of a timed-out check said only "Tests timed out".
   an issue, completes the task while one is open. A finding left out by an
   approval of the current files is `PENDING_VERIFICATION`, never `RESOLVED`.
   The workflow tests follow these cases through the loop.
-- `tests/test_gate.py` has 33 tests (two rule tests and four workflow tests
+- **A blocking finding waiting for a verification completes nothing on an
+  approval of other files.** A change the code needs, about no criterion,
+  that an approval left out stays `PENDING_VERIFICATION`, its `blocking`
+  flag as reported. When the files change, the approval it waits on stops
+  counting and nothing completes until a reviewer, shown the finding with
+  its status, approves the files as they are: leaving it out again
+  completes the task with the finding still waiting; reporting it again
+  reopens it and sends the code back. A test follows both ways through the
+  loop. The flag itself decides nothing, by policy: nothing sets `RESOLVED`,
+  so deciding on it would keep such tasks open forever.
+- `tests/test_gate.py` has 34 tests (two rule tests and five workflow tests
   added); `tests/test_coherence.py` also checks that a task that is done, or
   whose saved gate passes, has no unsettled open blocking finding and is
   approved by a review of the files of its test results. Three new mutation

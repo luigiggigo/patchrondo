@@ -35,6 +35,20 @@ working tree at its date.
 
 ## Current source and CI status (November 4, 2026)
 
+`git ls-remote`, `git ls-remote --tags`, `gh release list`, `gh run list`
+and `gh run view` were checked again on November 4, 2026 at 23:00 +01:00.
+Remote `main` returned `268b82dafc4277118fa415d9365ae5d76f34d5df`, committed
+by the user at 22:52 +01:00: [the gate checks its own snapshot](#the-gate-checks-its-own-snapshot-november-4-2026),
+on top of `a0bc8b5`. No version tags or GitHub Releases were returned;
+branch protection was not read. Package metadata remains 0.2.1.
+
+| Commit | CI run | Observed status on November 4, 2026 |
+|---|---|---|
+| `268b82d` | [41920202128](https://github.com/luigiggigo/patchrondo/actions/runs/41920202128) | SUCCESS in all 17 jobs (6 min 12 s): `Collect tests`, the 14 test jobs (Python 3.11 and 3.13 on `ubuntu-latest`, `macos-latest` parts 1 and 2 and `windows-latest` parts 1 to 4; Python 3.13 on Ubuntu ran 806 tests, 21 skipped), the package check (`twine check` PASSED for the wheel and the source archive) and `CI result` |
+
+The run of `268b82d` covers that commit only. The check before it is kept as
+it was written:
+
 `git ls-remote`, `git ls-remote --tags`, `gh release list`, `gh run list` and
 `gh run view` were checked again on November 4, 2026 at 22:40 +01:00. Remote
 `main` returned `a0bc8b5f4a95454bdc67eeaf95f2bf9c3badb308`, committed by the
@@ -252,9 +266,10 @@ validation scope for this refresh was documentation only.
 
 ## The gate checks its own snapshot (November 4, 2026)
 
-This section covers changes on top of `a0bc8b5`: `gate.py` (`_elsewhere`,
+This section covers `268b82d` (on top of `a0bc8b5`) and one test added on
+top of it: `gate.py` (`_elsewhere`,
 `_worst`, the checks of the approval and of verified criteria in
-`evaluate`), six new tests in `tests/test_gate.py` (33 in all), two new
+`evaluate`), seven new tests in `tests/test_gate.py` (34 in all), two new
 checks in `coherent` of `tests/test_coherence.py`, three new mutation
 protections, ARCHITECTURE section 18 and the changelog. No engine module
 other than `gate.py` changed; the package version is unchanged, 0.2.1.
@@ -322,6 +337,7 @@ crash included; green tests on new files do not renew an old review.
 | 1, 3, 18 | open blocking finding without a criterion; "resolved" by the developer's handoff or by a status in the reviewer's issue; an approval that names it | G `test_an_open_blocking_finding_about_no_criterion_keeps_the_task_open_until_a_review_leaves_it_out` |
 | 2, 5, 6 | a finding settled by evidence that counts; an observation that blocks nothing; evidence invalidated by a change | G `test_a_finding_that_asks_for_a_check_is_settled_only_by_evidence_about_the_files_of_now` |
 | 4 | left out by a later review: not resolved | G (first test above); `test_findings` `test_a_finding_left_out_is_left_as_it_was_and_an_approval_only_makes_it_pending` |
+| 4, 9, 18 | a blocking finding about no criterion, `PENDING_VERIFICATION`, then the files change: nothing completes until a reviewer shown it approves the new files; reported again, it reopens | G `test_a_blocking_finding_waiting_for_verification_completes_only_on_an_approval_of_the_files_of_now` |
 | 7 | legacy finding, or a status beyond `OPEN` naming no record | G `test_a_finding_without_a_reliable_state_is_never_taken_as_resolved` |
 | 8, 9, 10, 11, 12, 13, 15, 20 | no change: reused; untracked file, edit under the same HEAD, new commit, crash before the pause: new review after new tests, old one kept and not counting | G `test_an_approval_is_never_carried_over_to_files_that_changed_after_it` |
 | 14 | files changed during the review | G `test_files_that_change_while_the_reviewer_reads_them_give_no_approval`; W `test_reviewer_changes_cannot_pass_test_gate` |
@@ -331,8 +347,24 @@ crash included; green tests on new files do not renew an old review.
 | all | at every checkpoint: done or `PASS` with an unsettled open blocking finding, or an approval of other files than the test results | C, with `PATCHRONDO_ALL_CHECKPOINTS=1` |
 
 Run against the `gate.py` of `a0bc8b5`, the gate rule test fails (`PASS`
-for snapshot B); the five other new tests pass there, which is the evidence
+for snapshot B); the six other new tests pass there, which is the evidence
 that the loop already behaved so.
+
+**A blocking finding waiting for a verification** (asked for after
+`268b82d`). A change the code needs, about no criterion, that an approval
+left out is `PENDING_VERIFICATION` and keeps `blocking` as last reported.
+The flag keeps nothing open by itself, by policy: the finding names the
+approval that left it out, and that approval is the one thing that may
+let the task complete. When the files change it stops counting (section
+17), the code is no longer approved, and the gate cannot pass until a
+reviewer approves the files as they are; that reviewer's prompt lists the
+finding with its ID and status. If it reports the problem again, the
+finding is `OPEN` and the approval a request for changes (`FAIL`, back to
+the developer); if it leaves it out, the task may complete on that new
+approval, with the finding still `PENDING_VERIFICATION`, never `RESOLVED`.
+So no `PASS` rests on an approval of other files, and none on a review that
+reported the problem. Making the flag decide would block forever every
+task that ever had a request for changes: nothing sets `RESOLVED`.
 
 Validation on November 4, 2026, with neither `claude` nor `codex` found by
 `shutil.which` (native Windows: `.local\bin`, WinGet links and VS Code
@@ -357,7 +389,19 @@ unittest suite, the package build and `twine check` (CI's); anything on
 macOS; the browser check (the page does not read the gate record, and no
 file of the interface changed); the real Codex sandbox tests (the
 environment check did not change). The CI run of `a0bc8b5` (41914441234,
-success) is about that commit and says nothing about this change.
+success) is about that commit and says nothing about this change; the run
+of `268b82d` is in the status above.
+
+The test added on top of `268b82d` was run on November 4, 2026 with the
+other tests of its module: `test_gate`, native Windows, Python 3.13.3 and
+3.11.3, and WSL2, Python 3.12.3, 34 tests passed each, exit status 0.
+Over the same final sources: protections on WSL2, 302 of 302 removed
+safeguards detected, 0 missed; real-clock recovery on WSL2, 10/10;
+reliability `--repeat 3`, WSL2 42 passed, 0 failed, 0 skipped, and native
+Windows 30 passed, 0 failed, 12 skipped (the POSIX scenarios); the
+publication scanner with the same six findings (exit status 1). With the
+`gate.py` of `a0bc8b5` in a scratch copy, only the gate rule test of the
+rule and workflow cases failed (1 of 30).
 
 **Limits that remain.** Files Git ignores are not part of the snapshot of a
 review (a check can declare the ones it reads as `inputs`). A finding of the
@@ -370,8 +414,8 @@ the findings record cannot be read, the gate reports it (`unreadable`) and
 decides as before, from the approval and the criteria. The gate trusts the
 ledger as far as its chain does.
 
-**Verdict: READY for this change**, on the checks above; CI has not run on
-it. This is not a release-readiness verdict.
+**Verdict: READY for this change**, on the checks above. This is not a
+release-readiness verdict.
 
 ## Acceptance gate (November 4, 2026)
 

@@ -445,6 +445,60 @@ class WorkflowTests(Case):
                          ("PENDING_VERIFICATION", True, approval["id"]))
         self.assertEqual(self.event(path, "task_completed")["pending_verification"], ["RF-001"])
 
+    def test_a_blocking_finding_waiting_for_verification_completes_only_on_an_approval_of_the_files_of_now(self):
+        """A change the code needs, about no criterion, that an approval left out: PENDING_VERIFICATION, blocking as reported.
+
+        Its flag keeps nothing open by itself: what keeps the task open is that no approval of the files as they are now
+        exists. After the files change, the approval it waits on no longer counts and nothing completes until a reviewer,
+        shown the finding with its status, approves the new files: leaving it out again completes the task with the
+        finding still waiting (never resolved); reporting it again reopens it and sends the code back to the developer.
+        """
+        wrong = issue("feature.txt does not handle an empty input")
+        for again in (False, True):
+            with self.subTest(reported_again=again):
+                task_id, path, workspace = self.task(GOOD, MO2)
+                agents = Agents([review("CHANGES_REQUESTED", [wrong])])
+                state = run_task(self.home, task_id, adapter=agents)
+                self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "awaiting_validation"))
+                [item] = Findings.load(state).items
+                first = item.verification["review"]
+                self.assertEqual((item.status, item.blocking, item.criterion_id, item.owner),
+                                 ("PENDING_VERIFICATION", True, None, "developer"))
+                attach_evidence(self.home, task_id, "AC-02", summary="Started the mod inside Mod Organizer 2", reference="log.txt")
+                (workspace / "notes.txt").write_text("changed after the approval\n", encoding="utf-8")
+                if again:
+                    agents.reviews = [review("APPROVED", [{**wrong, "finding_id": "RF-001"}], AC01="SATISFIED", AC02="SATISFIED")]
+                seen, watching = self.watched()
+                start = len(agents.prompts)
+                with watching:
+                    state = run_task(self.home, task_id, adapter=agents)
+                    self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "awaiting_validation"))
+                    self.assertFalse(any(result.completion_allowed for result, _, _ in seen))
+                    # The reviewer of the new files was shown the finding and what it waits for.
+                    self.assertEqual(agents.roles[start], "reviewer")
+                    self.assertIn("- RF-001 [PENDING_VERIFICATION] CODE_CHANGES_REQUIRED · feature.txt · no criterion",
+                                  agents.prompts[start])
+                    [item] = Findings.load(state).items
+                    if again:
+                        self.assertEqual(agents.roles, ["developer", "reviewer"] * 2 + ["reviewer", "developer", "reviewer"])
+                        reopened = [result.decision for result, saved, _ in seen
+                                    if saved and saved["items"][0]["status"] == "OPEN"]
+                        self.assertTrue(reopened and set(reopened) == {Decision.FAIL})
+                        self.assertNotEqual(item.verification["review"], first)
+                    else:
+                        self.assertEqual(agents.roles, ["developer", "reviewer"] * 2 + ["reviewer"])
+                        self.assertEqual(item.verification["review"], first)  # an approval does not re-verify it
+                    self.assertEqual(item.status, "PENDING_VERIFICATION")
+                    attach_evidence(self.home, task_id, "AC-02", summary="Started it again on these files", reference="log2.txt")
+                    state = run_task(self.home, task_id, adapter=agents)
+                self.assertEqual(state["status"], "done")
+                self.assert_sound(seen)
+                approval = evidence.read(path).get(self.gate_of(path)["review"])
+                self.assertNotEqual(approval["id"], first)
+                self.assertEqual(approval["fingerprint"], fingerprint(workspace))
+                self.assertEqual(self.gate_of(path)["findings"]["pending_verification"], ["RF-001"])
+                self.assertEqual([item.status for item in Findings.load(state).items], ["PENDING_VERIFICATION"])
+
     def test_a_finding_that_asks_for_a_check_is_settled_only_by_evidence_about_the_files_of_now(self):
         task_id, path, workspace = self.task(GOOD, MO2)
         check = {**issue("Start the mod inside Mod Organizer 2", kind="MANUAL_ACTION_REQUIRED", path=""), "criterion_id": "AC-02"}
