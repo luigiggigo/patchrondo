@@ -735,6 +735,37 @@ nothing, and the pause of a timed-out check said only "Tests timed out".
   [architecture section 18](docs/ARCHITECTURE.md#18-acceptance-gate) and
   [the technical review](docs/REVIEW.md#acceptance-gate-november-4-2026).
 
+#### The gate checks its own snapshot — November 4, 2026
+
+- **An approval or a result about other files never passes the gate, whatever
+  its caller did.** `gate.evaluate` took the approval of the code and the
+  records of verified criteria as they counted in the ledger, and relied on
+  `core._sync` to have invalidated those about other files. Given a ledger
+  that was not brought up to date, it passed on an approval and test results
+  of snapshot A when asked about snapshot B. It now requires every record it
+  relies on to name its `snapshot` (the rule of `provenance.assess`):
+  otherwise `NEEDS_REVERIFICATION`, `APPROVAL_NO_LONGER_COUNTS` with action
+  `REVIEW` for the approval, `EVIDENCE_STALE` (or `EVIDENCE_UNKNOWN` for a
+  record that names no fingerprint) under the criterion's `elsewhere`. An
+  approval naming a record that is not an approving review is `ERROR`. In
+  the loop `core._sync` invalidates such records first, so no decision of a
+  run changes; the loop already asked for a new review whenever the files
+  changed after an approval, including untracked files, edits under the same
+  `HEAD`, a new commit and a crash before the pause.
+- **Blocking findings keep a task open without deciding anything.** Audited
+  rather than changed: a blocking finding is a change the code needs (the
+  approval that names it becomes a request for changes) or a check for a
+  required criterion that is not verified, so neither the reviewer's later
+  approval nor the developer's claim, nor a status the reviewer writes into
+  an issue, completes the task while one is open. A finding left out by an
+  approval of the current files is `PENDING_VERIFICATION`, never `RESOLVED`.
+  The workflow tests follow these cases through the loop.
+- `tests/test_gate.py` has 33 tests (two rule tests and four workflow tests
+  added); `tests/test_coherence.py` also checks that a task that is done, or
+  whose saved gate passes, has no unsettled open blocking finding and is
+  approved by a review of the files of its test results. Three new mutation
+  protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

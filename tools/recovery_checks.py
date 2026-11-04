@@ -909,6 +909,15 @@ MUTATIONS = [
              "            elif name not in pertinent:\n", "            elif False:\n", ("test_gate",)),
     Mutation("a reviewer's reference to a record that no longer counts is accepted", "gate.py",
              "            if not found.usable:\n", "            if False:\n", ("test_gate",)),
+    # The gate binds what it relies on to its own snapshot (November 4, 2026, Step 3 hardening).
+    Mutation("an approval about other files lets the gate pass", "gate.py",
+             "        elif (found := _elsewhere(ledger, approval, snapshot)) is not None:\n", "        elif False:\n",
+             ("test_gate",)),
+    Mutation("evidence about other files verifies a required criterion at the gate", "gate.py",
+             "            if elsewhere:\n", "            if False:\n", ("test_gate",)),
+    Mutation("a record that is not an approving review approves the code at the gate", "gate.py",
+             "        if approval is None or approval.get(\"kind\") != \"review\" or approval.get(\"verdict\") != \"APPROVED\":\n",
+             "        if False:\n", ("test_gate",)),
 ]
 
 

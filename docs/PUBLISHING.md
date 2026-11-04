@@ -90,6 +90,12 @@ fingerprint that built a stat result Python 3.13 refuses outside Windows; the
 belongs to `abfb476` only; the correction of the test is recorded in
 [REVIEW.md](REVIEW.md#acceptance-gate-november-4-2026).
 
+On November 4, 2026 (22:40 +01:00) the remote `main` was at `a0bc8b5`,
+committed by the user at 22:15 +01:00 on top of `abfb476`: the acceptance
+gate and that correction. Tags and GitHub Releases were still empty. Its CI
+run 41914441234 succeeded in all 17 jobs in 4 min 46 s. That result belongs
+to `a0bc8b5` only.
+
 The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
 Workflow Events and their integration under **0.3.0 — Unreleased**, preserving
 all dated entries. This names a development series, not a new published

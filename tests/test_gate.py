@@ -7,6 +7,7 @@ reviewer of `test_acceptance`: no CLI is started and no model is called.
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from unittest.mock import patch
 from patchrondo import acceptance, capabilities as caps, core, evidence, gate, provenance, verification
 from patchrondo.acceptance import Acceptance, Basis
 from patchrondo.core import attach_evidence, decide_authorization, parse_review, run_task
+from patchrondo.findings import Findings
 from patchrondo.gate import Action, Decision
 from patchrondo.gitops import fingerprint
 from patchrondo.providers import AgentFailure, AgentReply
@@ -59,10 +61,10 @@ class RuleTests(unittest.TestCase):
         evidence.append(self.path, "invalidation", result="invalidated", of=[record["id"]], cause=cause,
                         reason=provenance.REASONS[provenance.Cause(cause)])
 
-    def judge(self, record: Acceptance, *, fresh=True, snapshot="F1", missing=None, tests=True) -> gate.Gate:
+    def judge(self, record: Acceptance, *, fresh=True, snapshot="F1", missing=None, tests=True, findings=None) -> gate.Gate:
         ledger = evidence.read(self.path)
         record.refresh(ledger, capabilities=detected(tests))
-        return gate.evaluate(record, ledger, task_id="T-1", fresh=fresh, snapshot=snapshot, missing=missing)
+        return gate.evaluate(record, ledger, task_id="T-1", fresh=fresh, snapshot=snapshot, missing=missing, findings=findings)
 
     def approved(self, *texts, **outcome) -> tuple[Acceptance, dict]:
         """A record whose code was approved by a review giving these outcomes, after a run whose one command passed."""
@@ -231,6 +233,69 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(gate.evaluate(record, evidence.read(self.path), fresh=True, snapshot="F1",
                                        findings={"version": 9}).findings, {"unreadable": True})
 
+    def test_an_approval_or_evidence_about_other_files_never_passes_the_gate(self):
+        """The gate's snapshot is the one every record it relies on must be about, whatever its caller invalidated."""
+        record, first = self.approved(GOOD, TESTS_PASS, AC01="SATISFIED")  # the tests and the approval are about F1
+        self.assertEqual(self.judge(record).decision, Decision.PASS)
+        moved = self.judge(record, snapshot="F2")  # nothing about F1 was invalidated: the gate sees it by itself
+        self.assertEqual((moved.decision, moved.review, moved.completion_allowed), (Decision.NEEDS_REVERIFICATION, None, False))
+        self.assertIn({"decision": "NEEDS_REVERIFICATION", "reason": "APPROVAL_NO_LONGER_COUNTS", "action": "REVIEW",
+                       "evidence": [first["id"]], "validity": "STALE", "causes": ["WORKSPACE_CHANGED"]}, moved.conditions)
+        self.assertEqual(moved.criteria[1]["elsewhere"], [{"evidence": "E-0001", "validity": "STALE", "causes": ["WORKSPACE_CHANGED"]}])
+        self.assertEqual(moved.next_action, Action.RUN_CHECKS)
+        # Tests that pass on F2 do not carry the review of F1 over to F2: the code is reviewed again.
+        self.command(run="r2", fingerprint="F2")
+        tested = self.judge(record, snapshot="F2")
+        self.assertEqual((tested.decision, tested.next_action, tested.review), (Decision.NEEDS_REVERIFICATION, Action.REVIEW, None))
+        self.assertNotIn("elsewhere", tested.criteria[1])
+        # A review of F2 is about F2; and nothing recorded for either set of files is taken for the other.
+        second = self.review(fingerprint="F2", AC01="SATISFIED")
+        record.approve_code(second["id"], 2)
+        self.assertEqual((self.judge(record, snapshot="F2").decision, self.judge(record, snapshot="F2").review),
+                         (Decision.PASS, second["id"]))
+        self.assertEqual(self.judge(record, snapshot="F1").decision, Decision.NEEDS_REVERIFICATION)
+        # A record that names no state of its files is about none: not taken as current for compatibility.
+        self.setUp()
+        record = self.plan(GOOD)
+        unnamed = evidence.append(self.path, "review", verdict="APPROVED", result="approved", criteria=["AC-01"],
+                                  outcomes={"AC-01": "SATISFIED"}, scope="code")
+        record.approve_code(unnamed["id"], 1)
+        result = self.judge(record)
+        self.assertEqual((result.decision, result.review), (Decision.NEEDS_REVERIFICATION, None))
+        self.assertIn("EVIDENCE_UNKNOWN", [entry["reason"] for entry in result.conditions])
+        self.assertIn(["SNAPSHOT_MISSING"], [entry.get("causes") for entry in result.conditions])
+        # An approval that names a record which is not an approving review approves nothing (a record edited by hand).
+        self.setUp()
+        record, _ = self.approved(GOOD, TESTS_PASS, AC01="SATISFIED")
+        ledger = evidence.read(self.path)
+        record.refresh(ledger, capabilities=detected())
+        record.approve_code("E-0001", 1)  # the command record
+        result = gate.evaluate(record, ledger, fresh=True, snapshot="F1")
+        self.assertEqual((result.decision, result.review), (Decision.ERROR, None))
+        self.assertEqual(result.conditions[0]["reason"], "EVIDENCE_INCONSISTENT")
+
+    def test_a_finding_without_a_reliable_state_is_never_taken_as_resolved(self):
+        """Findings saved by earlier versions are read as they were saved: nothing promotes one to resolved."""
+        record = self.plan(GOOD, TESTS_PASS)
+        self.command()
+        self.review("CHANGES_REQUESTED")
+        record.request_changes(1, "review_not_approved")
+        legacy = {"id": "RF-001", "kind": None, "path": "feature.txt", "criterion_id": None, "severity": "high",
+                  "description": "Wrong", "owner": "developer", "actionable_now": True, "blocking": True, "status": "OPEN",
+                  "first_seen_iteration": 1, "last_seen_iteration": 1, "reported_in": ["E-0002"]}  # no keys, no criterion kept
+        saved = {"version": 1, "next": 2, "reviews": ["E-0002"], "items": [legacy]}
+        result = self.judge(record, findings=saved)
+        self.assertEqual((result.decision, result.findings["open_blocking"]), (Decision.FAIL, ["RF-001"]))
+        registry = Findings.load({"findings": saved})
+        self.assertEqual(registry.approved("E-0003", 2), ["RF-001"])
+        self.assertEqual(registry.get("RF-001").status, "PENDING_VERIFICATION")  # an approval never resolves it
+        for status in ("RESOLVED", "PENDING_VERIFICATION"):
+            with self.subTest(status=status):
+                claimed = {**saved, "items": [{**legacy, "status": status}]}  # a status that names no record it rests on
+                with self.assertRaises(ValueError):
+                    Findings.load({"findings": claimed})
+                self.assertEqual(self.judge(record, findings=claimed).findings, {"unreadable": True})
+
     def test_completion_is_refused_without_a_pass_wherever_it_is_asked_for(self):
         record = self.plan(GOOD)
         result = self.judge(record)
@@ -332,6 +397,152 @@ class WorkflowTests(Case):
 
     def event(self, path, name) -> dict:
         return [entry for entry in self.state(path)["history"] if entry["event"] == name][-1]
+
+    def watched(self):
+        """Every evaluation of the gate during a run, with a copy of the findings the state held then, and the ledger read."""
+        seen, real = [], core._gate
+
+        def evaluate(cfg, state, record, ledger, current):
+            result = real(cfg, state, record, ledger, current)
+            seen.append((result, json.loads(json.dumps(state.get("findings"))), ledger))
+            return result
+
+        return seen, patch("patchrondo.core._gate", side_effect=evaluate)
+
+    def assert_sound(self, seen) -> None:
+        """No evaluation passed on an approval of other files, or with a blocking finding open that nothing settled."""
+        for result, saved, ledger in seen:
+            if not result.completion_allowed:
+                continue
+            self.assertEqual(ledger.get(result.review)["fingerprint"], result.snapshot)
+            verified = {row["id"] for row in result.criteria if row["status"] == "VERIFIED"}
+            for item in Findings.load({"findings": saved}).items if saved else []:
+                if item.status == "OPEN" and item.blocking:
+                    self.assertTrue(item.owner != "developer" and item.criterion_id in verified, item.id)
+
+    def test_an_open_blocking_finding_about_no_criterion_keeps_the_task_open_until_a_review_leaves_it_out(self):
+        """A finding is never resolved by a claim: the developer's, or a status the reviewer writes into an issue."""
+        task_id, path, _ = self.task(GOOD)
+        wrong = issue("feature.txt does not handle an empty input")  # a change the code needs, about no criterion
+        claimed = {**wrong, "finding_id": "RF-001", "status": "RESOLVED", "blocking": False}
+        agents = Agents([review("CHANGES_REQUESTED", [wrong]), review("APPROVED", [claimed], AC01="SATISFIED")])
+        seen, watching = self.watched()
+        with watching:
+            state = run_task(self.home, task_id, adapter=agents)
+        self.assertEqual((state["status"], state["iteration"], agents.roles), ("done", 3, ["developer", "reviewer"] * 3))
+        self.assert_sound(seen)
+        verdicts = [entry["verdict"] for entry in self.state(path)["history"] if entry["event"] == "review_completed"]
+        self.assertEqual(verdicts, ["CHANGES_REQUESTED", "CHANGES_REQUESTED", "APPROVED"])  # the second "approval" named it
+        # While RF-001 was open, the developer's handoff ("everything is done") and the reviewer's "RESOLVED" changed nothing.
+        held = [(result.decision, item["status"], item["blocking"], item["criterion_id"], len(item["reported_in"]))
+                for result, saved, _ in seen if saved for item in saved["items"]]
+        self.assertTrue(held and all(decision != Decision.PASS for decision, status, *_ in held if status == "OPEN"))
+        self.assertIn((Decision.FAIL, "OPEN", True, None, 2), held)
+        [item] = Findings.load(self.state(path)).items
+        approval = [record for record in evidence.read(path).records if record["kind"] == "review"][-1]
+        # Left out by an approval of the files as they are now: waiting for a verification, never resolved.
+        self.assertEqual((item.status, item.blocking, item.verification["review"]),
+                         ("PENDING_VERIFICATION", True, approval["id"]))
+        self.assertEqual(self.event(path, "task_completed")["pending_verification"], ["RF-001"])
+
+    def test_a_finding_that_asks_for_a_check_is_settled_only_by_evidence_about_the_files_of_now(self):
+        task_id, path, workspace = self.task(GOOD, MO2)
+        check = {**issue("Start the mod inside Mod Organizer 2", kind="MANUAL_ACTION_REQUIRED", path=""), "criterion_id": "AC-02"}
+        remark = issue("The name of the file could be shorter", kind="OBSERVATION")
+        agents = Agents([review("APPROVED", [check, remark], AC01="SATISFIED", AC02="MANUAL_ACTION_REQUIRED")])
+        state = run_task(self.home, task_id, adapter=agents)
+        self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "awaiting_validation"))
+        found = {item.id: (item.owner, item.blocking, item.criterion_id) for item in Findings.load(state).items}
+        self.assertEqual(found, {"RF-001": ("user", True, "AC-02"), "RF-002": ("nobody", False, None)})
+        self.assertEqual(self.gate_of(path)["findings"]["open_blocking"], ["RF-001"])
+        attach_evidence(self.home, task_id, "AC-02", summary="Started the mod inside Mod Organizer 2", reference="log.txt")
+        (workspace / "notes.txt").write_text("changed after the check\n", encoding="utf-8")
+        state = run_task(self.home, task_id, adapter=agents)  # the check is about other files: it no longer settles RF-001
+        self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "awaiting_validation"))
+        saved = self.gate_of(path)
+        self.assertEqual((saved["decision"], saved["findings"]["open_blocking"]), ("NEEDS_REVERIFICATION", ["RF-001"]))
+        attach_evidence(self.home, task_id, "AC-02", summary="Started it again on these files", reference="log2.txt")
+        seen, watching = self.watched()
+        with watching:
+            state = run_task(self.home, task_id, adapter=agents)
+        self.assertEqual((state["status"], agents.roles), ("done", ["developer", "reviewer", "reviewer"]))
+        self.assert_sound(seen)
+        self.assertEqual(self.gate_of(path)["findings"], {"open_blocking": [], "settled": ["RF-001"], "pending_verification": []})
+        # Settled by the criterion its check is for; the observation never kept the task open. Neither is resolved.
+        self.assertEqual([item.status for item in Findings.load(state).items], ["OPEN", "OPEN"])
+
+    def test_an_approval_is_never_carried_over_to_files_that_changed_after_it(self):
+        def untracked(workspace):
+            (workspace / "notes.txt").write_text("a file Git does not track yet\n", encoding="utf-8")
+
+        def tracked(workspace):
+            (workspace / "README.md").write_text("Edited, not committed\n", encoding="utf-8")
+
+        def committed(workspace):
+            (workspace / "extra.txt").write_text("committed in the copy\n", encoding="utf-8")
+            for args in (["add", "extra.txt"], ["commit", "-qm", "extra"]):
+                subprocess.run(["git", "-C", str(workspace), *args], check=True, capture_output=True)
+
+        for name, change, crash in (("untracked", untracked, False), ("tracked", tracked, False),
+                                    ("committed", committed, False), ("untracked", untracked, True)):
+            with self.subTest(change=name, crash=crash):
+                task_id, path, workspace = self.task(GOOD, MO2)
+                agents = Agents()
+                if crash:  # the process dies after the approval was saved, before the pause
+                    with patch("patchrondo.core._held", side_effect=SystemExit("the process died")), \
+                            self.assertRaises(SystemExit):
+                        run_task(self.home, task_id, adapter=agents)
+                    self.assertEqual(self.record(path).code["status"], "APPROVED")
+                else:
+                    run_task(self.home, task_id, adapter=agents)
+                    run_task(self.home, task_id, adapter=agents)  # nothing changed: the approval stands, nobody is called
+                self.assertEqual(agents.roles, ["developer", "reviewer"])
+                head = subprocess.run(["git", "-C", str(workspace), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+                before = fingerprint(workspace)
+                change(workspace)
+                self.assertNotEqual(fingerprint(workspace), before)
+                moved = subprocess.run(["git", "-C", str(workspace), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+                self.assertEqual(moved != head, name == "committed")
+                seen, watching = self.watched()
+                with watching:
+                    state = run_task(self.home, task_id, adapter=agents)
+                self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "awaiting_validation"))
+                self.assertEqual(agents.roles, ["developer", "reviewer", "reviewer"])  # the new files are reviewed
+                self.assertFalse(any(result.completion_allowed for result, _, _ in seen))
+                ledger, now = evidence.read(path), fingerprint(workspace)
+                old, new = [record for record in ledger.records if record["kind"] == "review"]
+                self.assertEqual(provenance.recorded(ledger, old).causes, ("WORKSPACE_CHANGED",))  # kept, no longer counting
+                self.assertEqual((new["fingerprint"], self.record(path).code["evidence"]), (now, new["id"]))
+                # The checks ran on the new files before the new review read them.
+                ran = [record["seq"] for record in ledger.records if record["kind"] == "command" and record["fingerprint"] == now]
+                self.assertTrue(ran and ran[0] < new["seq"])
+                attach_evidence(self.home, task_id, "AC-02", summary="Started the mod inside Mod Organizer 2", reference="log.txt")
+                with watching:
+                    state = run_task(self.home, task_id, adapter=agents)
+                self.assertEqual((state["status"], agents.roles), ("done", ["developer", "reviewer", "reviewer"]))
+                self.assert_sound(seen)
+                self.assertEqual((self.gate_of(path)["review"], self.event(path, "task_completed")["gate"]["snapshot"]),
+                                 (new["id"], now))
+
+    def test_files_that_change_while_the_reviewer_reads_them_give_no_approval(self):
+        task_id, path, workspace = self.task(GOOD)
+
+        class Editing(Agents):
+            def invoke(self, provider, role, prompt, workspace, run_dir):
+                reply = super().invoke(provider, role, prompt, workspace, run_dir)
+                if role == "reviewer" and self.roles.count("reviewer") == 1:
+                    (workspace / "notes.txt").write_text("written while the review ran\n", encoding="utf-8")
+                return reply
+
+        agents = Editing()
+        state = run_task(self.home, task_id, adapter=agents)
+        self.assertEqual((state["status"], state["phase"], state["last_error"]["kind"]), ("paused", "test", "stale_tests"))
+        self.assertNotIn("review", self.kinds(path))  # the answer was about files that are no longer there: not recorded
+        self.assertEqual(self.record(path).code["status"], "PENDING")
+        state = run_task(self.home, task_id, adapter=agents)
+        self.assertEqual((state["status"], agents.roles), ("done", ["developer", "reviewer", "reviewer"]))
+        [approval] = [record for record in evidence.read(path).records if record["kind"] == "review"]
+        self.assertEqual(approval["fingerprint"], fingerprint(workspace))
 
     def test_an_external_check_pauses_the_task_once_and_its_evidence_completes_it_without_an_agent(self):
         """The cycle of the request: develop, checks pass, approval, external check missing, pause, evidence, resume, done."""

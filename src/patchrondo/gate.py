@@ -27,6 +27,14 @@ Decisions, in the order they take precedence:
     PASS                    the code is approved, every required criterion is verified by records that count,
                             the test results are about these files, and nothing above holds
 
+Every record the gate relies on is about its own `snapshot`: the review that
+approved the code, and each record a verified required criterion names, must
+name that fingerprint (`_elsewhere`, the rule of `provenance.assess`). The
+engine invalidates records about other files before it asks the gate, so
+this decides nothing there; it keeps an approval or a result about other
+files from passing whatever a caller did (NEEDS_REVERIFICATION). An approval
+that names no approving review record is ERROR.
+
 Only PASS allows completion (`Gate.completion_allowed`). Optional criteria
 are shown and never block. No profile, switch or answer of an agent lowers a
 required criterion: the gate has no input that could.
@@ -255,6 +263,29 @@ def _findings(state_findings, acceptance: Acceptance) -> dict:
     return {"open_blocking": open_, "settled": settled, "pending_verification": pending}
 
 
+def _worst(found) -> provenance.Validity:
+    """The validity that says most against a set of records (`Assessment`s or their saved rows): INVALID, UNKNOWN, STALE."""
+    seen = {str(item["validity"] if isinstance(item, dict) else item.validity) for item in found}
+    return next((validity for validity in (provenance.Validity.INVALID, provenance.Validity.UNKNOWN) if validity in seen),
+                provenance.Validity.STALE)
+
+
+def _elsewhere(ledger: evidence.Ledger, record: dict | None, snapshot: str | None) -> provenance.Assessment | None:
+    """Why a record that counts in the ledger is not about the files at `snapshot`; None when it is, or cannot be told.
+
+    The rule is the invalidation's own (`provenance.assess` on the fingerprint
+    alone): a record about the task's files names the fingerprint it was made
+    on, and it must be `snapshot`. The engine invalidates such records before
+    it asks the gate, so this never decides there; it keeps the gate from
+    passing on evidence or an approval about other files whatever its caller
+    did. The gate reads no file: artifacts are left to that invalidation.
+    """
+    if snapshot is None or record is None or not ledger.counts(record):
+        return None
+    found = provenance.assess(ledger, record, provenance.Current(fingerprint=snapshot), artifacts=lambda _artifact: evidence.INTACT)
+    return None if found.usable else found
+
+
 def evaluate(acceptance: Acceptance, ledger: evidence.Ledger, *, task_id: str | None = None, fresh: bool | None = None,
              snapshot: str | None = None, missing: list[dict] | None = None, findings=None) -> Gate:
     """Decide from a record judged against `ledger` (`Acceptance.refresh`) whether its task may be completed now.
@@ -285,6 +316,18 @@ def evaluate(acceptance: Acceptance, ledger: evidence.Ledger, *, task_id: str | 
                 if criterion.required:
                     hold(Decision.ERROR, Reason.EVIDENCE_INCONSISTENT, Action.REPAIR_EVIDENCE, criteria=[criterion.id],
                          evidence=broken)
+            # And each one must be about the files the gate is evaluated on, not only about files it once saw.
+            elsewhere = [found for name in criterion.evidence if name not in broken
+                         and (found := _elsewhere(ledger, ledger.get(name), snapshot)) is not None]
+            if elsewhere:
+                row["elsewhere"] = [{"evidence": found.evidence, "validity": str(found.validity),
+                                     "causes": [str(cause) for cause in found.causes]} for found in elsewhere]
+                if criterion.required:
+                    kinds = {found.kind for found in elsewhere}
+                    hold(Decision.NEEDS_REVERIFICATION, _VALIDITY[_worst(elsewhere)],
+                         Action.RUN_CHECKS if "command" in kinds else Action.REVIEW if "review" in kinds
+                         else Action.WAIT_FOR_USER_VALIDATION, criteria=[criterion.id],
+                         evidence=[found.evidence for found in elsewhere])
             rows.append(row)
             continue
         # Evidence that proved it when it was written and no longer counts: say which, and why, as the ledger says.
@@ -300,9 +343,7 @@ def evaluate(acceptance: Acceptance, ledger: evidence.Ledger, *, task_id: str | 
         if criterion.required:
             decision, action = _CRITERIA.get(basis, (Decision.ERROR, Action.REPAIR_EVIDENCE))
             if lapsed and decision != Decision.FAIL and basis != Basis.WAITING_FOR_DEPENDENCY:
-                worst = next((validity for validity in (provenance.Validity.INVALID, provenance.Validity.UNKNOWN,
-                                                        provenance.Validity.STALE)
-                              if any(entry["validity"] == validity for entry in lapsed)), provenance.Validity.STALE)
+                worst = _worst(lapsed)
                 again = {entry["proof"] for entry in lapsed}
                 action = (Action.RUN_CHECKS if again & set(RUNTIME_PROOFS) else Action.REVIEW if "review" in again
                           else Action.WAIT_FOR_USER_VALIDATION)
@@ -314,6 +355,16 @@ def evaluate(acceptance: Acceptance, ledger: evidence.Ledger, *, task_id: str | 
 
     code = acceptance.code.get("status")
     review = acceptance.code.get("evidence") if code == Code.APPROVED else None
+    if code == Code.APPROVED:
+        # The approval is about the files the reviewer read: it counts here only for those very files.
+        approval = ledger.get(review) if isinstance(review, str) else None
+        if approval is None or approval.get("kind") != "review" or approval.get("verdict") != "APPROVED":
+            hold(Decision.ERROR, Reason.EVIDENCE_INCONSISTENT, Action.REPAIR_EVIDENCE, evidence=[review])
+            review = None
+        elif (found := _elsewhere(ledger, approval, snapshot)) is not None:
+            hold(Decision.NEEDS_REVERIFICATION, Reason.APPROVAL_NO_LONGER_COUNTS, Action.REVIEW, evidence=[found.evidence],
+                 validity=str(found.validity), causes=[str(cause) for cause in found.causes])
+            review = None
     if code == Code.CHANGES_REQUIRED:
         hold(Decision.FAIL, Reason.CODE_CHANGES_REQUIRED, Action.DEVELOP)
     elif code != Code.APPROVED:

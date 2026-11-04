@@ -35,6 +35,22 @@ working tree at its date.
 
 ## Current source and CI status (November 4, 2026)
 
+`git ls-remote`, `git ls-remote --tags`, `gh release list`, `gh run list` and
+`gh run view` were checked again on November 4, 2026 at 22:40 +01:00. Remote
+`main` returned `a0bc8b5f4a95454bdc67eeaf95f2bf9c3badb308`, committed by the
+user on November 4, 2026 at 22:15 +01:00: the acceptance gate
+([its record](#acceptance-gate-november-4-2026)) on top of `abfb476`. No
+version tags or GitHub Releases were returned; branch protection was not
+read. Package metadata remains 0.2.1.
+
+| Commit | CI run | Observed status on November 4, 2026 |
+|---|---|---|
+| `a0bc8b5` | [41914441234](https://github.com/luigiggigo/patchrondo/actions/runs/41914441234) | SUCCESS in all 17 jobs (4 min 46 s): `Collect tests`, the 14 test jobs (Python 3.11 and 3.13 on `ubuntu-latest`, `macos-latest` parts 1 and 2 and `windows-latest` parts 1 to 4), the package check and `CI result`. It covers the correction of the fingerprint test that failed in the run of `abfb476` |
+
+The run of `a0bc8b5` covers that commit only, not the
+[snapshot check of the gate](#the-gate-checks-its-own-snapshot-november-4-2026)
+recorded after it. The check before it is kept as it was written:
+
 `git ls-remote`, `gh release list` and `gh run list` were checked on November
 4, 2026 at 21:25 +01:00. Remote `main` returned
 `abfb47619cc88cb1b87c92b14306121e64a94a3a`, committed by the user on
@@ -233,6 +249,129 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## The gate checks its own snapshot (November 4, 2026)
+
+This section covers changes on top of `a0bc8b5`: `gate.py` (`_elsewhere`,
+`_worst`, the checks of the approval and of verified criteria in
+`evaluate`), six new tests in `tests/test_gate.py` (33 in all), two new
+checks in `coherent` of `tests/test_coherence.py`, three new mutation
+protections, ARCHITECTURE section 18 and the changelog. No engine module
+other than `gate.py` changed; the package version is unchanged, 0.2.1.
+
+**Asked for.** The user's "0.35 — Step 3 Hardening": verify, and correct only
+where present, two possible P1 defects. (1) An open blocking finding must
+keep a task from completion even without a criterion, after a later
+approval, or with every test green; a finding is resolved only by
+verifiable evidence, never by a claim or by being left out of a review. (2)
+An approval must be bound to the snapshot it reviewed (HEAD, uncommitted and
+untracked files) and never be reused for other files, after a Resume or a
+crash included; green tests on new files do not renew an old review.
+
+**Audit.**
+
+- *Approval freshness.* `gitops.fingerprint` hashes HEAD, `git status` and
+  every file Git does not ignore (tracked or not). `_record_review` binds the
+  review to that fingerprint, taken by `_check_test_context` before and after
+  the reviewer ran: files changed during the review pause with `stale_tests`
+  and record nothing. `_sync(current=…)` invalidates every record about
+  other files (`provenance.invalidate`; `evidence.outdated` with
+  `PATCHRONDO_PROVENANCE=0`) and `Acceptance.refresh` turns an approval that
+  stopped counting back to `PENDING`, so the review stage asks for a new
+  review; `_complete` compares the files and the ledger again. No path of
+  `run_task` reused an approval of other files. But `gate.evaluate` did not
+  check it: a scratch script gave it a ledger with an approval and a passed
+  command of fingerprint `A` and `snapshot="B"`, and it returned `PASS`. The
+  gate relied on its caller. **Present in the gate, not reachable through
+  the loop**: corrected in the gate.
+- *Blocking findings.* `findings._about` sets `blocking` for a change the
+  code needs (`requires_change`) or for a check of a required criterion that
+  is not verified; nothing else. The first keeps the code from being
+  approved: `parse_review` turns an approval naming such an issue into a
+  request for changes, and an issue without a kind counts as one when high
+  or critical. The second keeps the gate from `PASS` through the criterion,
+  judged again from the ledger each time. A finding the reviewer sets a
+  status or flag on keeps the backend's (`ANNOTATIONS` and fixed rules); the
+  developer's handoff is not read. An approval moves the developer's
+  findings it left out to `PENDING_VERIFICATION`, never `RESOLVED`.
+  **Not present**: no reachable state has an open blocking finding that
+  nothing settles beside a `PASS`. Deciding on findings directly would
+  contradict ARCHITECTURE section 14 and, with no `RESOLVED` path, block
+  every task that ever had a request for changes; not done.
+
+**Decisions.**
+
+- The gate uses the invalidation's own rule (`provenance.assess` with the
+  fingerprint alone and artifacts taken as intact: the gate reads no file),
+  so there is one definition of "about other files". `provenance.py` is
+  unchanged, and so are its mutation patterns.
+- An approval or a criterion's record about other files is
+  `NEEDS_REVERIFICATION` with existing reasons
+  (`APPROVAL_NO_LONGER_COUNTS`, `EVIDENCE_STALE`, `EVIDENCE_UNKNOWN` for a
+  record without a fingerprint); no reason, decision, event or pause was
+  added. An approval naming no approving review record is `ERROR`.
+- No new finding status. `PENDING_VERIFICATION` is the "needs
+  reverification" of the request; `DISMISSED` would need a user operation
+  and an authorization, and nothing decides on findings for it to matter.
+
+**Scenarios of the request and where they are checked** (G is
+`tests/test_gate.py`, W `tests/test_workflow.py`, C `coherent`):
+
+| # | Scenario | Test |
+|---|---|---|
+| 1, 3, 18 | open blocking finding without a criterion; "resolved" by the developer's handoff or by a status in the reviewer's issue; an approval that names it | G `test_an_open_blocking_finding_about_no_criterion_keeps_the_task_open_until_a_review_leaves_it_out` |
+| 2, 5, 6 | a finding settled by evidence that counts; an observation that blocks nothing; evidence invalidated by a change | G `test_a_finding_that_asks_for_a_check_is_settled_only_by_evidence_about_the_files_of_now` |
+| 4 | left out by a later review: not resolved | G (first test above); `test_findings` `test_a_finding_left_out_is_left_as_it_was_and_an_approval_only_makes_it_pending` |
+| 7 | legacy finding, or a status beyond `OPEN` naming no record | G `test_a_finding_without_a_reliable_state_is_never_taken_as_resolved` |
+| 8, 9, 10, 11, 12, 13, 15, 20 | no change: reused; untracked file, edit under the same HEAD, new commit, crash before the pause: new review after new tests, old one kept and not counting | G `test_an_approval_is_never_carried_over_to_files_that_changed_after_it` |
+| 14 | files changed during the review | G `test_files_that_change_while_the_reviewer_reads_them_give_no_approval`; W `test_reviewer_changes_cannot_pass_test_gate` |
+| 16, 20 | approval and evidence of other snapshots given to the gate | G `test_an_approval_or_evidence_about_other_files_never_passes_the_gate` |
+| 17 | everything holds: `done` | G (all the workflow tests above) |
+| 19 | approval with a required criterion without proof | G `test_an_external_check_pauses_the_task_once_and_its_evidence_completes_it_without_an_agent` |
+| all | at every checkpoint: done or `PASS` with an unsettled open blocking finding, or an approval of other files than the test results | C, with `PATCHRONDO_ALL_CHECKPOINTS=1` |
+
+Run against the `gate.py` of `a0bc8b5`, the gate rule test fails (`PASS`
+for snapshot B); the five other new tests pass there, which is the evidence
+that the loop already behaved so.
+
+Validation on November 4, 2026, with neither `claude` nor `codex` found by
+`shutil.which` (native Windows: `.local\bin`, WinGet links and VS Code
+extensions removed from `PATH`; WSL2: `~/.local/bin`, `/usr/local/bin` and
+`/mnt/*` removed), on the final sources:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| `test_gate` | Native Windows, Python 3.13.3 and 3.11.3: 33 tests passed each | 0 |
+| `test_findings`, `test_acceptance`, `test_provenance`, `test_workflow`, `test_history`, `test_recovery_checks`, `test_verification` | Native Windows, Python 3.13.3: 233 tests, 228 passed, 5 skipped (POSIX, WSL2 or pytest only) | 0 |
+| `test_coherence` with `PATCHRONDO_ALL_CHECKPOINTS=1` | Native Windows, Python 3.13.3 and 3.11.3: 9 tests passed (72 s, 84 s) | 0 |
+| `test_gate`, `test_provenance`, `test_findings`, `test_workflow` | WSL2, Python 3.12.3: 132 tests passed, none skipped | 0 |
+| `test_coherence` with `PATCHRONDO_ALL_CHECKPOINTS=1` | WSL2, Python 3.12.3: 9 tests passed | 0 |
+| Protections | WSL2, Python 3.12.3: 302 of 302 removed safeguards detected, 0 missed (3 of them new) | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Publication scanner | 136 files checked, six findings: four images (binary, unchanged), and `.claude/` and `debug.log`, both ignored by Git and not written for this change | 1 |
+
+Every provider was scripted: no model was called. Not run: the whole
+unittest suite, the package build and `twine check` (CI's); anything on
+macOS; the browser check (the page does not read the gate record, and no
+file of the interface changed); the real Codex sandbox tests (the
+environment check did not change). The CI run of `a0bc8b5` (41914441234,
+success) is about that commit and says nothing about this change.
+
+**Limits that remain.** Files Git ignores are not part of the snapshot of a
+review (a check can declare the ones it reads as `inputs`). A finding of the
+developer that a later approval left out stays `PENDING_VERIFICATION` and
+does not keep the task open: the approval of the current files by a reviewer
+shown that finding is the verification this version has; nothing sets
+`RESOLVED`. A finding about no criterion that asks for a check, a decision
+or an action is not blocking: the task waits only for its criteria. When
+the findings record cannot be read, the gate reports it (`unreadable`) and
+decides as before, from the approval and the criteria. The gate trusts the
+ledger as far as its chain does.
+
+**Verdict: READY for this change**, on the checks above; CI has not run on
+it. This is not a release-readiness verdict.
 
 ## Acceptance gate (November 4, 2026)
 

@@ -217,6 +217,14 @@ def coherent(path: Path) -> dict:
             approval = ledger.get(saved.code.get("evidence"))
             if not ledger.counts(approval) or approval.get("verdict") != "APPROVED":
                 problems.append("the code is approved by a review that does not count")
+            elif approval.get("fingerprint") != files:
+                problems.append("the code is approved by a review of other files than the test results")
+        # Done, or passed by the gate: no blocking finding is open unless the required criterion its check is for is verified.
+        if state.get("status") == "done" or (isinstance(state.get("gate"), dict) and state["gate"].get("decision") == "PASS"):
+            verified = {criterion.id for criterion in saved.criteria if criterion.status == "VERIFIED"}
+            problems += [f"{item.id} is open and blocking, and the task passed the gate" for item in registry.items
+                         if item.status == findings.Status.OPEN and item.blocking
+                         and (item.owner == "developer" or item.criterion_id not in verified)]
     return {"problems": problems, "orphans": orphans, "reviews": len(named)}
 
 

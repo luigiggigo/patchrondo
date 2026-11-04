@@ -2260,6 +2260,22 @@ a decision and an action (`gate._CRITERIA`). `next_action` is one of
 granted pull request criterion moves from `AUTHORIZATION_REQUIRED` to
 `EXTERNAL_VERIFICATION_REQUIRED`.
 
+Every record the gate relies on must be about its own `snapshot` (November
+4, 2026): the review named by the approval of the code, and each record a
+verified required criterion names, must give that fingerprint, by the rule
+of `provenance.assess` on the fingerprint alone (`gate._elsewhere`; the gate
+reads no file, so artifacts stay the invalidation's). One about other files
+is `NEEDS_REVERIFICATION`: an approval as `APPROVAL_NO_LONGER_COUNTS`
+(action `REVIEW`, and `review` is left empty), a criterion's record as
+`EVIDENCE_STALE`, or `EVIDENCE_UNKNOWN` for one that names no fingerprint,
+listed under the criterion's `elsewhere`. An approval naming a record that
+is not an approving review is `ERROR`. `core._sync` invalidates such
+records before it asks the gate, so in the loop this never decides; it
+keeps the gate from passing on an approval of other files, or on test
+results of other files, whatever its caller did. Tests that pass on new
+files never carry an approval of earlier ones over to them: the code is
+reviewed again.
+
 Its ID is `GE-` and the first 16 hex digits of the SHA-256 of everything it
 was decided from and decided, the time aside: equal inputs, equal ID.
 
@@ -2277,6 +2293,19 @@ an approval into a request for changes), or for a required criterion that is
 not verified, which keeps the gate from `PASS`. A finding whose criterion
 was verified since, or of the developer under a later approval, is listed
 as `settled`.
+
+Neither list resolves anything. A finding a later review leaves out stays as
+it was; one of the developer that an approval of the files as they are left
+out is `PENDING_VERIFICATION`, naming that approval, and never `RESOLVED`.
+The historical `blocking` flag is not what keeps a task open: the approval
+of the code and the criteria are, and they are judged again from the ledger
+each time, so evidence that settled a finding's criterion and stops counting
+opens it again. A finding about no criterion is blocking only when it is a
+change the code needs. `tests/test_gate.py` runs these cases through the
+loop, and `tests/test_coherence.py` checks at every checkpoint of its
+scenario that a task that is done, or whose saved gate passes, has no open
+blocking finding that a verified criterion does not settle, and an approval
+about the files of its test results.
 
 ### In the loop
 
