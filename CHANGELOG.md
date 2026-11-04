@@ -425,9 +425,11 @@ for the distinction between executed checks and CI failures.
 ### Separate development — Evidence Engine proposal (0.35)
 
 `753d957` implements the verification runner requested as the proposal's
-"Phase 2, step 1". This is separate from the planned 0.3 Progress & Stagnation
-Detection phase; it does not mean that phase or the whole 0.35 proposal is
-implemented. The existing ledger is extended, not replaced.
+"Phase 2, step 1"; the entry of November 4, 2026 below implements its
+"Phase 2, step 2", provenance and invalidation. This is separate from the
+planned 0.3 Progress & Stagnation Detection phase; it does not mean that
+phase or the whole 0.35 proposal is implemented. The existing ledger is
+extended, not replaced.
 
 #### Checks PatchRondo runs and records itself — October 17, 2026
 
@@ -599,6 +601,81 @@ nothing, and the pause of a timed-out check said only "Tests timed out".
   task, with a result that has no such field. Eight new mutation
   protections. The checks that were run are recorded in
   [the technical review](docs/REVIEW.md#a-refused-stop-is-said-by-agent-steps-and-the-earlier-test-stage-october-18-2026).
+
+#### Provenance and invalidation of evidence — November 4, 2026
+
+- **Whether evidence can still be used is judged apart from its result.**
+  `provenance.py` gives each record of the ledger a validity: `VALID`,
+  `STALE` (true when written, about something that changed since),
+  `INVALID` (the record or what it rests on cannot be trusted) or `UNKNOWN`
+  (what is needed to judge it is missing), with typed causes. Only `VALID`
+  evidence counts. A check that `passed` stays `passed`: no record is
+  rewritten, and what stops counting is named by an `invalidation` record
+  that now carries its `cause`, its validity, the state of the files before
+  and now and the checks to run again (`reverify`). The
+  `evidence_invalidated` event names the causes. Nothing is run because of
+  it: the next test stage runs the project's checks, under the same consent.
+- **A changed or removed check no longer leaves a counting record.** Each
+  record of the runner names the digest of its check's configuration
+  (`check.config_sha256`). A record of another configuration, or of a check
+  no longer configured, is invalidated (`CHECK_CHANGED`, `CHECK_REMOVED`).
+  An entry of `tests.commands` recorded before is compared by its command;
+  a record of the runner written between October 17 and November 3, 2026,
+  whose configuration cannot be read back, is `UNKNOWN` and run again once,
+  never taken as valid for compatibility.
+- **Checks can declare the ignored files they read and the environment they
+  need.** `inputs` lists up to 20 patterns inside the project (a local
+  configuration, a model file); they are hashed before and after the check
+  without following a link or a junction, only their digest is kept, a
+  change makes the result stale, and a check that changes them while it runs
+  gives no result (`inputs_modified`). `"same_environment": true` makes a
+  result count only where it ran. Both are part of the test context only
+  when set, so a change before the review pauses with `stale_tests` before
+  the reviewer is called.
+- **The fingerprint of a task's files reads only what it may and refuses to
+  guess.** Names that are not UTF-8 are hashed as the files they are (they
+  were hashed as missing); nothing behind a folder that is a link or a
+  junction is read; a repository inside the copy (an initialized submodule,
+  a clone) is hashed with its files; a file that keeps changing while it is
+  read, or cannot be read, pauses the task with `fingerprint_unavailable`
+  instead of giving a digest. For a copy without those, the digest is the
+  one earlier versions computed, so saved evidence stays bound to its files.
+- **Records this version does not write never count.** A record of another
+  schema version, a kind this version does not know, or an executor other
+  than the one of its kind is never proof, a decision of the user included,
+  even when the hash chain holds it. An artifact replaced by a link is
+  changed; one that is gone is told apart from one that changed, and a
+  changed copy of a report that PatchRondo kept makes the record `INVALID`.
+- **The reviewer and the developer are told what no longer counts.** The
+  reviewer's brief and `feedback.md` list, from the ledger, the evidence
+  that no longer counts by ID with its causes, and the checks without a
+  usable result; the reviewer is told that such evidence is never a reason
+  for `SATISFIED`. Each record the interface lists carries `validity` and
+  `causes`.
+- **Compatibility.** Saved ledgers and tasks are read as they are; no record
+  is rewritten or migrated. The identity of a check, its test context and
+  the decisions of the loop are unchanged for a configuration without the
+  new settings (`DECIDED` in `tests/test_findings.py` unchanged). A Resume
+  at `validate` with nothing changed still writes nothing.
+  `PATCHRONDO_PROVENANCE=0` keeps the invalidation of earlier versions
+  (`evidence.outdated`), the test context and the briefs; the stricter
+  reading of records, the fingerprint and the new fields of records stay.
+- `tests/test_provenance.py` has 48 tests: the fingerprint (the earlier
+  digest kept, uncommitted, new, deleted and renamed files, ignored files, a
+  link or a junction, a cloud file, a nested repository, an unreadable file,
+  a file that changes while it is read, a name that is not UTF-8, no Git),
+  declared inputs (patterns, locations outside the project, a cycle of
+  links, size and count limits), each rule of the judgement, the
+  invalidation records (one per cause, never twice, a crash between two),
+  and the loop with the real runner (a test passed on other files, a
+  reviewer citing stale evidence, a changed and a removed check, a changed
+  input before and during a check, another environment, a record without
+  its configuration, a Resume with nothing changed, a crash before the
+  checkpoint, a checkpoint restored from before an invalidation, two tasks
+  on one repository, an unreadable file, the switch). 28 new mutation
+  protections remove the new safeguards one at a time. The checks that were
+  run are recorded in
+  [the technical review](docs/REVIEW.md#provenance-and-invalidation-of-evidence-november-4-2026).
 
 ### Documentation alignment — October 17, 2026
 

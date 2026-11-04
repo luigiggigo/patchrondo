@@ -522,7 +522,15 @@ folder, so the report it reads is always the one this run wrote. More fields:
   `criteria`, the criteria the check may give evidence for, such as
   `["AC-02"]` (it lists the record under them; it verifies nothing by
   itself);
-- `"shell": true`, required for a command that starts a shell.
+- `"shell": true`, required for a command that starts a shell;
+- `inputs`, such as `["config/local.yaml", "models/*.bin"]`: files the check
+  reads that Git ignores, so they are not in the fingerprint of the task's
+  files. They are hashed before and after the check (only a digest is kept);
+  a change makes its earlier results stale, and a check that changes them
+  while it runs gives no result. Up to 20 patterns inside the project; a link
+  or a junction is never followed;
+- `"same_environment": true`: the result counts only on the computer and with
+  the interpreter it ran with.
 
 Checks run under the same consent as `tests.commands`, after them, in order,
 until one does not pass. With tests enabled, `tests.commands` may be empty
@@ -545,6 +553,17 @@ the task worktrees too. Output is saved with values that look like secrets
 masked. `PATCHRONDO_VERIFICATION=0` runs `tests.commands` as versions before
 the runner did, and leaves `verification` aside. The
 [architecture](ARCHITECTURE.md#16-verification-runner) has every rule.
+
+A result is never rewritten, but it stops counting when it is no longer about
+the task as it is: its files changed, the check was changed or removed, an
+input it declares or its environment changed, or a file it names changed. The
+ledger then gets an `invalidation` record with the cause and the checks to
+run again, which the next test stage runs, under the same consent; the
+reviewer is told which evidence no longer counts. A record that does not say
+which configuration of its check ran (written by the runner between October
+17 and November 3, 2026) is run again once. `PATCHRONDO_PROVENANCE=0` keeps
+the invalidation of earlier versions (files and named files only). See
+[architecture section 17](ARCHITECTURE.md#17-provenance-and-invalidation).
 
 A complete reference configuration is in
 [`examples/config.example.json`](../examples/config.example.json). It also includes
@@ -673,10 +692,14 @@ interruption, `resume` **repeats only the unfinished phase**, although partially
 completed agent actions may require an additional check.
 
 Before and after review, a fingerprint of tracked/untracked files (excluding
-ignored files) and the configured test commands is checked. If they differ from
-the last test checkpoint, the task pauses with `stale_tests`; `resume` starts at
-the test phase. This check does not cover external dependencies, ignored files or
-submodule contents. Do not modify these during a task.
+ignored files), the configured test commands and checks, and the inputs and
+environment a check declares are checked. If they differ from the last test
+checkpoint, the task pauses with `stale_tests`; `resume` starts at the test
+phase. This check does not cover external dependencies, ignored files a check
+does not declare or submodules that were never initialized. Do not modify
+these during a task. A file that cannot be read, or that keeps changing while
+it is read, pauses the task with `fingerprint_unavailable`: nothing is taken
+as verified on files PatchRondo could not read.
 
 ## Automatic quota recovery (opt-in)
 

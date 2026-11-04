@@ -45,7 +45,7 @@ import copy
 import json
 import re
 
-from . import capabilities as caps, evidence, verification
+from . import capabilities as caps, evidence, provenance, verification
 from .activity import clip, redact
 from .storage import now
 
@@ -571,7 +571,7 @@ class _Proofs:
     def decision(self, criterion: str) -> dict | None:
         """The user's last decision about the operation of a criterion. It does not depend on the files."""
         record = self.ledger.last("authorization", criterion)
-        if not record or not record["trusted"]:
+        if not self.ledger.sound(record):
             return None
         return {"decision": record.get("result"), "at": record.get("at"), "evidence": record["id"]}
 
@@ -1033,17 +1033,21 @@ class Acceptance:
                     for record in proofs.run if ledger.counts(record)]
         recorded += [f"- {record['id']} check by the user for {', '.join(record.get('criteria') or [])}: {record.get('result')}"
                      for record in ledger.records if record.get("kind") == "manual" and ledger.counts(record)]
+        # What no longer counts, and why, as the ledger says: a record listed there proves nothing.
+        apart = provenance.brief(ledger) if provenance.enabled() else []
         return "\n".join([
             "## Acceptance criteria (tracked by the orchestrator)",
             json.dumps(rows, ensure_ascii=False, indent=2)[:12000],
             "", "## Who can do what in this workflow", *able,
             "", "## Evidence recorded so far", *(recorded or ["- (none)"]),
+            *apart,
             "", "## How to judge",
             "`verdict` is about the code only: APPROVED when the changes are correct and every criterion the developer can "
             "satisfy by changing files is satisfied.",
             "Give every criterion one entry in `criteria`, with one outcome" + (
                 ". An APPROVED verdict that leaves out a criterion you verify is not accepted:" if self.explicit_outcomes else ":"),
-            "- SATISFIED: you checked it by reading the worktree and the evidence above.",
+            "- SATISFIED: you checked it by reading the worktree and the evidence above. Evidence that no longer counts "
+            "is never a reason for it.",
             "- CODE_CHANGES_REQUIRED: the developer has to change the code for it. Only for a criterion a change to the files "
             "can satisfy (category CODE); for any other it is recorded and asks nothing of the developer.",
             "- VALIDATION_REQUIRED: the code may be correct, but a check is missing.",
@@ -1111,6 +1115,14 @@ def judged_now(acceptance: Acceptance, ledger, *, developing: bool = False) -> t
     return current, saved
 
 
+def _validity(ledger, record: dict) -> dict:
+    """Whether a record listed for people can still be used, and why not, as the ledger alone says."""
+    if record.get("kind") not in provenance.JUDGED:
+        return {}
+    found = provenance.recorded(ledger, record)
+    return {"validity": str(found.validity), "causes": [str(cause) for cause in found.causes]}
+
+
 def view(acceptance: Acceptance | None, ledger, *, pending: list[dict] | None = None, developing: bool = False) -> dict:
     """Everything the interface and the command line show about the criteria of one task.
 
@@ -1139,7 +1151,7 @@ def view(acceptance: Acceptance | None, ledger, *, pending: list[dict] | None = 
                          "actions": {"evidence": open_ and refusal is None, "evidence_refusal": refusal if open_ else None,
                                      "authorize": criterion.authorization_required}})
     shown = [{key: value for key, value in record.items() if key not in {"prev", "hash"}} | {"current": ledger.counts(record)}
-             for record in ledger.records]
+             | _validity(ledger, record) for record in ledger.records]
     return {"tracked": True, "source": acceptance.source, "criteria": criteria, "capabilities": _labelled(acceptance.capabilities),
             "code": dict(acceptance.code), "outcome": str(acceptance.outcome), "results": acceptance.results(),
             "summary": acceptance.summary(), "updated_at": acceptance.updated_at, "saved": saved_record, "evidence": shown[-200:],

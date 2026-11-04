@@ -16,9 +16,11 @@ The first three are saved at state checkpoints; ledger writes occur separately.
 Legacy reads and crash/Resume coherence are covered by `tests/test_coherence.py`.
 The activity journal only observes CLI output and is outside these decisions.
 Sections [14](#14-acceptance-criteria-capabilities-and-evidence) and
-[15](#15-workflow-history) give the detailed contracts. Section
-[16](#16-verification-runner) describes the implemented runner of the
-separate 0.35 proposal. Progress & Stagnation Detection remains planned.
+[15](#15-workflow-history) give the detailed contracts. Sections
+[16](#16-verification-runner) and [17](#17-provenance-and-invalidation)
+describe the implemented runner and the provenance and invalidation of its
+evidence, of the separate 0.35 proposal. Progress & Stagnation Detection
+remains planned.
 
 ## 1. Components
 
@@ -30,6 +32,7 @@ separate 0.35 proposal. Progress & Stagnation Detection remains planned.
 | `capabilities.py` | What each executor of a task can do (developer, reviewer, PatchRondo itself, the user), read from settings and from the computer; nothing is started |
 | `evidence.py` | The evidence ledger of a task: append-only, hash-chained records of commands, reviews, checks by the user and decisions; invalidation and integrity; the one executor allowed to write each kind |
 | `verification.py` | The verification runner: the project's configured checks (tests, build, static analysis, repository checks), run by PatchRondo, judged from their exit code or JUnit XML report, each result recorded in the ledger as it ends |
+| `provenance.py` | Whether a record of the ledger can still be used (`VALID`, `STALE`, `INVALID`, `UNKNOWN`) and why, apart from its result; the invalidations that put it on record; what the reviewer and the developer are told about it |
 | `findings.py` | The findings of a task's reviews: an ID for each problem that it keeps across iterations, links by fixed rules only, and its history; it decides nothing |
 | `history.py` | The workflow history of a task: versioned events with an ID each, saved with the checkpoints, naming ledger records, findings and criteria; it proves and decides nothing |
 | `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse; starts each step with its agent settings |
@@ -38,7 +41,7 @@ separate 0.35 proposal. Progress & Stagnation Detection remains planned.
 | `activity.py` | The activity journal of a task: bounded, redacted, append-only events, and paging through them by cursor |
 | `recovery.py` | Opt-in quota recovery: retry policy, the persisted plan and the foreground supervisor that waits without the task lock |
 | `process.py` | Process stdin/stdout, timeouts, group cleanup (a job object on native Windows when asked) and filtered environment; optional observers that see output while the process runs |
-| `gitops.py` | Separate worktrees and branches, Git status |
+| `gitops.py` | Separate worktrees and branches, Git status, the fingerprint of a task's files |
 | `storage.py` | Atomic JSON state, private directories, locks and process PID checks |
 | `report.py` | Auditable reports with files, tests, reviews and events |
 | `rag.py` | Optional incremental SQLite FTS5 index and retrieval of repository excerpts |
@@ -70,7 +73,8 @@ interface cannot bypass the lock, the checkpoints or the consent rules.
 - The code of a task is approved **if and only if** review is approved, all tests pass and changes exist (or `allow_no_changes=true`).
 - A task is `DONE` **if and only if** its code is approved and every required acceptance criterion is verified by records of the evidence ledger that still count ([section 14](#14-acceptance-criteria-capabilities-and-evidence)). Approved code with a required criterion open pauses the task at the `validate` checkpoint; it is never completed and never sent back to a developer who cannot change the outcome.
 - A criterion is verified only by evidence: a command PatchRondo ran, a review the backend settled, a check the user attached. The developer's handoff is never evidence, and the reviewer's word counts only for criteria the plan gives it to verify.
-- File fingerprints and configured test commands must match the test checkpoint before and after review. Changes during a pause require fresh tests. Ignored files, external services and submodule contents are not fingerprinted.
+- File fingerprints and configured test commands must match the test checkpoint before and after review, and so must the inputs a check declares and its environment when it asks for it. Changes during a pause require fresh tests. Ignored files a check does not declare, external services and submodules that were never initialized are not fingerprinted (section 17).
+- Only evidence that is `VALID` counts: intact, of a shape this version writes, and about the task as it is now. A result that was observed is never rewritten; what stops counting is named by an `invalidation` record with its cause (section 17).
 - The developer cannot award itself an `APPROVED` verdict.
 - Claude reviewer uses read-only file tools; Codex reviewer uses the `read-only` sandbox and can execute commands allowed by it. Change requests are passed to the developer as data.
 - State moves between atomically saved checkpoints: `develop` -> `test` -> `review` -> `complete`, or `develop` in the next iteration. `review` -> `validate` -> `complete` is the path of a task whose code is approved while criteria are open; `validate` goes back to `test` when evidence that only the project's commands and a review can give is missing, and to `develop` when a check by the user failed. No agent is called at `validate`.
@@ -1243,7 +1247,9 @@ verified has to be verified again.
 Records are never edited. When the fingerprint of the files changes, records
 with `scope: "code"` made on other files are named by an `invalidation`
 record; a record with `artifacts` is invalidated when one of the files it
-named is gone or no longer the file that was hashed. A check of a download
+named is gone or no longer the file that was hashed; a command record, when
+the configuration of its check, the inputs it declares or its environment
+changed ([section 17](#17-provenance-and-invalidation)). A check of a download
 has `scope: "independent"`; a decision of the user does not depend on files.
 The developer's step invalidates what was verified on the files as they were,
 which is how a criterion goes back from `VERIFIED` to open.
@@ -1829,8 +1835,8 @@ read nothing but their arguments.
 
 A report written to `{report}` is read where it is; one read from
 `report_path` is copied beside the log, to a name of this run only. The copy
-and every artifact are hashed into `artifacts`, so `evidence.outdated`
-invalidates the record when one of them changes or disappears. A report
+and every artifact are hashed into `artifacts`, so the record is invalidated
+when one of them changes or disappears (section 17). A report
 inside the project must be ignored by Git, or the run changed the task's
 files.
 
@@ -1874,9 +1880,12 @@ hold.
 | (not asked for) | `check.process_tree`: `process_group`, `job_object` or `child_only`; absent from records written before it, `null` when the command never started |
 | (not asked for) | `check.kill_refused`: `true` when, stopping the check on POSIX, the system refused the last SIGKILL to its group until the end; absent from records written before October 18, 2026 |
 | `artifacts`, `error` | `log`, `log_sha256`, `artifacts`, `check.report`; `check.error.kind` and `check.reason` |
+| (not asked for) | `check.config_sha256`: the digest of `Check.identity`; `check.inputs` and `check.same_environment` for a check that sets them; absent from records written before November 4, 2026 (section 17) |
 
-`stale` is reserved in `verification.STALE`: no version writes it, and
-evidence that stopped counting is named by an `invalidation` record.
+`stale` is reserved in `verification.STALE`: no version writes it as a
+result. Whether evidence can still be used is its validity
+(`provenance.Validity`, section 17), and evidence that stopped counting is
+named by an `invalidation` record.
 
 ### In the loop
 
@@ -1939,7 +1948,8 @@ the events stay those of any timeout; without the flag nothing changes.
   another shape stays in the log, which is private to the user.
 - The snapshot needs Git. Without it the record says which facts are
   missing, binds itself to no files and so never counts for the task's
-  files. Ignored files and submodule contents are outside the fingerprint.
+  files. Ignored files a check does not declare in `inputs`, and
+  submodules that were never initialized, are outside the fingerprint.
 - `report_path` names one file. A tool that writes one report per module
   (Maven Surefire) needs a single merged file.
 - Required tests are matched by name, never by what they test.
@@ -1970,3 +1980,227 @@ the events stay those of any timeout; without the flag nothing changes.
   for tests is only a proposal in [ROADMAP.md](ROADMAP.md), not implemented
   and not a release commitment.
 - Nothing marks a check as unrepeatable: a Resume runs every check again.
+
+## 17. Provenance and invalidation
+
+A record of the ledger says what was observed when it was written, and it
+is never rewritten. Whether it can still prove anything is judged again,
+apart from its result, by `provenance.py`: a check that `passed` stays
+`passed` when its evidence becomes stale. Before this, a record stopped
+counting only when the digest of the task's files changed or a file it named
+changed. A record did not say which configuration of its check ran, so a
+check changed or removed after it passed kept a counting record, which only
+the test context of the task kept from being reused. Ignored files a check
+read and the environment were never compared. No model is asked anything
+here, and nothing is run.
+
+### Validity
+
+`provenance.assess(ledger, record, current)` answers, for one record:
+
+| Validity | Meaning | Causes |
+|---|---|---|
+| `VALID` | Read intact, of a shape this version writes, about the task as it is now | |
+| `STALE` | True when written, about something that changed since | `WORKSPACE_CHANGED`, `CHECK_CHANGED`, `CHECK_REMOVED`, `INPUTS_CHANGED`, `ENVIRONMENT_CHANGED`, `ARTIFACT_CHANGED`, `ARTIFACT_MISSING`, `HANDED_OVER`, `INVALIDATED` |
+| `INVALID` | The record or what it rests on cannot be trusted | `RECORD_UNTRUSTED` (the chain does not hold it, or the ledger lost what the state saw), `RECORD_UNKNOWN_SHAPE`, `REPORT_CHANGED` |
+| `UNKNOWN` | What is needed to judge it is missing | `SNAPSHOT_MISSING`, `CHECK_UNIDENTIFIED`, `INPUTS_UNKNOWN` |
+
+Only `VALID` evidence counts. The rules, in order:
+
+1. Integrity and shape, from the ledger alone (`provenance.recorded`): a
+   record the hash chain does not hold, or one `evidence.Ledger.sound`
+   refuses (a schema version other than 1, a kind this version does not
+   know, an executor other than the one of its kind, a `command` result
+   outside `COMMAND_RESULTS`), is `INVALID`. `Ledger.counts` now needs a
+   sound record too, so such a record never proves anything, also where
+   criteria are only shown; no invalidation is written for it, so a record
+   of a later version is not marked by this one. A record named by a later
+   `invalidation` takes that record's `cause`; one written before causes is
+   read from its words (`provenance.REASONS`), or `INVALIDATED`.
+2. A decision of the user (`authorization`) depends on no files: it stays
+   `VALID` whatever changes. So does a check by the user recorded as
+   `independent`, except for the files it names.
+3. A record with `scope: "code"` names the state of the files it was made
+   on (`fingerprint`): another one is `WORKSPACE_CHANGED`, none at all
+   `SNAPSHOT_MISSING`.
+4. A `command` record is about a configured check: its `check.id`, or
+   `command-<n>` for one written by the test stage before checks, known by
+   its place in its run. That check no longer configured is `CHECK_REMOVED`.
+   A record that names its configuration (`check.config_sha256`) must name
+   the current one; one written before that field is judged where the
+   configuration can be read back from the record (an entry of
+   `tests.commands` is its command alone, compared as the record keeps it,
+   bounded and redacted) and is otherwise `CHECK_UNIDENTIFIED`: never
+   promoted to `VALID` for compatibility. A check with `inputs` compares
+   their digest (`INPUTS_CHANGED`; `INPUTS_UNKNOWN` when either side has
+   none); a check with `"same_environment": true` compares
+   `check.environment.id` (`ENVIRONMENT_CHANGED`).
+5. Each artifact a record names is looked at (`evidence.artifact_state`):
+   missing is `ARTIFACT_MISSING`, changed or replaced by a link is
+   `ARTIFACT_CHANGED`, and the copy of a report that PatchRondo kept in the
+   task's private folder, which nothing should ever change, is
+   `REPORT_CHANGED`, `INVALID`.
+
+A part of `provenance.Current` left `None` is not looked at, and nothing
+about it is judged: a run judges the files only where it has their
+fingerprint, as before. `gitops.fingerprint` never gives a digest of files
+it could not read (below), so "not looked at" is never taken for "unchanged"
+in a decision.
+
+### Workspace fingerprint
+
+`gitops.fingerprint` hashes `HEAD`, `git status --porcelain` and, for each
+name `git ls-files --cached --others --exclude-standard` gives (sorted as
+bytes, as Git gives them, with `/`), its name and its content, or its link
+target. Its digest is the one earlier versions computed for every copy
+without links, nested repositories or names Git cannot give as UTF-8, so
+saved evidence stays bound to its files (a test compares it with the
+earlier function). What changed:
+
+- Names are read as bytes: a name that is not valid UTF-8 (POSIX) was
+  hashed as missing whatever the file held.
+- Nothing behind a folder that is a symbolic link or a junction is read: such
+  a file is hashed as `outside`. Other reparse points (a OneDrive file, a
+  deduplicated one) hold their own data and are read as files.
+- A repository inside the copy (a submodule that was initialized, a clone)
+  is hashed the same way, three levels deep; the parent's `git status` line
+  for it does not change when files inside change again. A nested
+  repository without a commit is hashed without one.
+- Each file is read with a link at the end refused (`O_NOFOLLOW` on POSIX),
+  and its size and time (and on POSIX its file index) compared before
+  opening, after opening, after reading and on the path again. A file that
+  keeps changing for three reads, or that cannot be read, raises
+  `gitops.FingerprintError` (an `OSError`, kind `fingerprint_unavailable`):
+  the run pauses with that kind, and nothing is judged on files that could
+  not be read. A time is not content: touching a file changes nothing.
+
+Ignored files are not part of it. A check that reads some (a local
+configuration, a model file) declares them:
+
+```json
+{"id": "pytest", "type": "test", "report": "junit", "command": ["python", "-m", "pytest", "--junitxml={report}"],
+ "inputs": ["config/local.yaml", "models/*.bin"], "same_environment": true}
+```
+
+`inputs` are up to 20 patterns inside the project (`relative`: no absolute
+path, drive, `..` or `:`), matched as `Path.glob` matches them by
+`verification._matches`, which follows nothing: a link or a junction a
+pattern reaches is refused, so a cycle of links cannot make the walk
+endless, and `.git` is not entered. `verification.inputs_digest` hashes each
+pattern, then each file with its name and content (`gitops.content_digest`),
+with a pattern that matches nothing hashed as such, so a file that appears
+later changes the digest. More than 200 files, a file over 64 MiB, more than
+50,000 entries looked at, or a file that cannot be read make the inputs
+unknown. Only the digest, the patterns and the count are kept: a file of
+secrets is never copied or hashed on its own into a record. The runner
+hashes them before the check (inputs that cannot be hashed block it, before
+it starts) and after it (`inputs_modified`, an `error`, when they changed).
+
+What stays outside: the content of a submodule that was never initialized,
+the network, installed packages and tools outside the project, anything
+read through a link, and what a check reads that it does not declare.
+
+### Provenance of a record
+
+| Question | Where the answer is |
+|---|---|
+| Who produced it | `executor`, the one of its kind (`evidence.EXECUTORS`); a `command` record only by the runtime |
+| Which component ran the check | The runner: a `check` object of `version` 1; none for the test stage before checks |
+| Which check, which configuration | `check.id`, `check.config_sha256` (SHA-256 of `Check.identity` in canonical JSON: sorted keys, no spaces, UTF-8); `command` as it ran |
+| Which repository and files | `fingerprint` before the check, `base`, `check.snapshot` (commit, branch, Git directory, worktree, dirty) |
+| Which environment | `check.environment` (`id` is a digest of the system, the interpreter and the computer's name) |
+| Which inputs | `check.inputs` (`patterns`, `files`, `sha256`), only for a check that declares them |
+| Which logs and reports | `log`, `log_sha256`, `artifacts`, `check.report` |
+| What ties it to its run | `run` (`<iteration>-<8 hex>`), `of`, `check.index`, the `tests_started` and `tests_completed` events naming the same run |
+
+`identity` gains `inputs` and `same_environment` only when they are set, so
+the identity, and the test context, of a check configured before them stay
+what they were.
+
+Trust boundaries: a string `"executor": "runtime"` proves nothing by
+itself. What holds is that only PatchRondo's own code calls
+`evidence.append`, that an agent's text never reaches it, and that the
+ledger lives in the task's private folder, outside the worktree the agents
+work in. A process with the user's rights, an agent allowed to write outside
+the worktree included, can still write that folder and rewrite the whole chain;
+the chain is not signed and does not establish authenticity. It establishes
+integrity against an edit that does not rewrite it, and the record names
+what was observed; neither says the code is correct.
+
+### Invalidation
+
+`provenance.invalidate` appends, under the task lock, one `invalidation`
+record for each cause that makes records that still count unusable, each
+record under its first cause:
+
+```json
+{"kind": "invalidation", "executor": "runtime", "result": "invalidated", "of": ["E-0003", "E-0004"],
+ "cause": "WORKSPACE_CHANGED", "validity": "STALE", "detector": "provenance",
+ "reason": "The files of the task changed after this was recorded",
+ "snapshot": {"previous": ["<fingerprint>"], "current": "<fingerprint>"}, "reverify": ["pytest"], "iteration": 2}
+```
+
+`snapshot` is there for `WORKSPACE_CHANGED` only, with up to 20 earlier
+states; `reverify` names the configured checks whose evidence it is, which
+the runtime runs again with the project's checks, under the consent, at the
+next test stage; no new executor exists and nothing runs because of it. The
+`reason` keeps the words `evidence.outdated` wrote for the files and for an
+artifact. The `evidence_invalidated` event gains `causes`, fixed words.
+
+`core._sync` calls it wherever it was called before: with the fingerprint
+after the developer's step, after the checks, before and after the review,
+at the `validate` checkpoint, and in the user's three operations. Without a
+fingerprint (the start of a run, the start of a development step) only the
+artifacts are looked at, as before. `core._validation_moved` asks the same
+question without writing (`provenance.stale`), so a Resume at `validate`
+with nothing changed still returns the saved state.
+
+A record that no longer counts is never named again, so a Resume adds
+nothing. A crash between two invalidations leaves the first one in the
+ledger and the rest to the next look; a crash after them and before the
+checkpoint loses only the event, as for any event of a checkpoint never
+saved, while the ledger keeps the invalidation. The test context of a task
+(`_test_context`) gains `inputs` and `environment` only for checks that set
+them; inputs that cannot be hashed give a context nothing equals. So a
+change of either before the review pauses with `stale_tests` before the
+reviewer is called, as a change of the files does.
+
+### Who is told
+
+The reviewer's brief adds, from the ledger alone, the evidence that no
+longer counts (the last 12, by ID, with the result it recorded, its
+validity and causes) and the checks without a usable result, and says that
+such evidence is never a reason for `SATISFIED`. The developer's
+`feedback.md` adds the same lines when there are any. Fingerprints and logs
+are not sent. Each record the interface lists (`acceptance.view`) carries
+`validity` and `causes`, from the ledger alone: nothing is hashed to show a
+page. A stale record is not a defect of the developer: it starts
+no development step and is never sent as one.
+
+`PATCHRONDO_PROVENANCE=0` keeps the invalidation of the versions before it
+(`evidence.outdated`: the files and the artifacts), the test context and the
+briefs as they were. The stricter `counts`, the fingerprint described above
+and the new fields of the runner's records stay.
+
+### Limits
+
+- Invalidation compares states; it does not know which files a check
+  depends on. Every change to a file Git does not ignore makes every check
+  result stale, whether or not the check reads it. A change is reused only
+  where it is proved irrelevant by a rule: a time without content, an
+  ignored file no check declares.
+- An `authorization` stays valid whatever changes. A check by the user
+  tied to the files (`scope: "code"`) becomes stale with them; one tied to
+  a build only through an artifact it names becomes stale when that file
+  changes.
+- `same_environment` compares PatchRondo's interpreter and computer, not the
+  toolchain the check starts. A Python patch release changes it.
+- Unknown inputs and records that do not name their configuration are
+  invalidated rather than kept unknown: the next authorized run gives a
+  result. A record of the runner from before `config_sha256` (October 17 to
+  November 3, 2026) is run again once for that reason.
+- Same size and time as when an artifact was hashed is taken as unchanged
+  without reading it again; somebody who can write the file can set its
+  time.
+- A record of a later schema version does not count in this version and is
+  not invalidated by it: a later version reads it as it wrote it.

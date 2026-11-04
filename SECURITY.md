@@ -334,6 +334,21 @@ are private project data. The child process does not receive those variables
 `PATCHRONDO_VERIFICATION=0` runs `tests.commands` as the versions before the
 runner did, without the masking of logs.
 
+**Provenance and invalidation.** Whether a record can still be used is judged
+apart from its result (`provenance.py`). Integrity, observed provenance,
+authenticity, validity for the files as they are and correctness of the code
+are different properties, and only the first two and the fourth are checked:
+the hash chain shows an edit that does not rewrite it; a record names the
+run, the check and the digest of its configuration, the files, the inputs it
+declared and the environment; and evidence about anything that changed since
+stops counting. Nothing is signed: a process with your account's rights can
+rewrite the ledger with its chain, and no record proves that the code is
+correct. A record of a schema version this one does not know, or written by
+another executor than the one of its kind, never counts. Declared inputs are
+read inside the project only, without following a link or a junction, and
+only their digest is kept, never a file's content or its own hash; the
+fingerprint of the task's files never reads behind a link or a junction.
+
 ## Local interface
 
 `patchrondo` starts an HTTP server for the browser interface. It is meant for

@@ -6,7 +6,7 @@
 |---|---|---|
 | 0.2.1 | Published experimental source; current package metadata | Environment check, repairs, agent settings and the dated maintenance history |
 | 0.3.0 | In development; not a tagged release | Phase 1 functionally implemented; later phases planned |
-| 0.35 | Separate Evidence Engine proposal | Verification runner step implemented in `753d957`; remaining proposal not completed |
+| 0.35 | Separate Evidence Engine proposal | Verification runner step implemented in `753d957`; provenance and invalidation step implemented (November 4, 2026); remaining proposal not completed |
 
 No stable release is established by the available publication record. On
 October 18, 2026, GitHub `main` was checked at `533ba8a`, then at `eb295cc`
@@ -51,11 +51,19 @@ snapshots and process cleanup, under the existing test consent. See
 [architecture section 16](ARCHITECTURE.md#16-verification-runner) and
 [its validation record](REVIEW.md#checks-patchrondo-runs-itself-october-17-2026).
 
-Still proposed: invalidation based on the files a check depends on, provenance
-validation beyond the current snapshot, and use of the reserved `stale` value.
-Current invalidation on changes to task files and named artifacts already
-exists; it does not implement dependency-based invalidation. No independent
-executor or new authorization is granted by this roadmap.
+Implemented on November 4, 2026 (the request's "Phase 2, step 2"): the
+validity of each record (`VALID`, `STALE`, `INVALID`, `UNKNOWN`) apart from its
+result; records that name the configuration of their check; ignored inputs a
+check declares; checks bound to their environment; invalidation records with
+a cause and the checks to run again; a hardened fingerprint. See
+[architecture section 17](ARCHITECTURE.md#17-provenance-and-invalidation).
+
+Still proposed: invalidation based on the files a check actually depends on
+(test impact analysis), signed attestations, the acceptance gate and the
+other later steps. Invalidation compares states: any change to a file Git
+does not ignore makes every check result stale. The reserved `stale` result
+stays unused: validity is not a result. No independent executor or new
+authorization is granted by this roadmap.
 
 ## Requirements before a 0.3 release decision
 

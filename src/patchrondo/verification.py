@@ -23,9 +23,15 @@ The result of a check is one of these (`Status`):
              or a folder that is not there, a location outside the project, a start refused
 
 `timeout` is an error caused by the time limit, written as versions before
-this one wrote it. `stale` is reserved for evidence that stopped counting:
-no version writes it yet, and such evidence is named by an `invalidation`
-record instead.
+this one wrote it. `stale` is reserved: a result is what was observed and is
+never rewritten. Whether a record can still be used is a separate judgement
+(`provenance.Validity`), and evidence that stopped counting is named by an
+`invalidation` record.
+
+Each record says which configuration of its check ran (`check.config_sha256`,
+the SHA-256 of `Check.identity`), and with `inputs` the digest of the files
+the check declared it reads (`check.inputs`), so that `provenance.py` can tell
+from the record alone whether it is about the check as it is configured now.
 
 Only `passed` is ever proof (`evidence.POSITIVE`), and only while its record
 counts. What a result means is decided by `judge_exit`, `parse_junit` and
@@ -45,6 +51,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 import functools
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import platform
@@ -66,7 +73,7 @@ TYPES = ("test", "build", "static_analysis", "repository_check")
 FORMATS = ("junit",)
 REPORT = "{report}"           # in a command: the path PatchRondo gives the report of this run
 FIELDS = frozenset({"id", "type", "command", "cwd", "timeout_seconds", "report", "report_path", "min_tests",
-                    "required_tests", "criteria", "artifacts", "shell"})
+                    "required_tests", "criteria", "artifacts", "shell", "inputs", "same_environment"})
 CHECK_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,39}")
 LEGACY_ID = re.compile(r"command-\d+", re.I)   # the names of the entries of tests.commands
 CRITERION_ID = re.compile(r"AC-\d{2,4}")       # as `acceptance.CRITERION_ID`
@@ -76,6 +83,10 @@ MAX_CHECKS = 30
 MAX_ARGUMENTS = 500
 MAX_REQUIRED = 200
 MAX_CRITERIA = 50
+MAX_INPUTS = 20               # patterns of the files a check declares it reads
+MAX_INPUT_FILES = 200         # files they may match
+MAX_INPUT_BYTES = 64 * 1024 ** 2   # of each of them
+MAX_INPUT_ENTRIES = 50_000    # entries of the project looked at to match them
 MAX_REPORT_BYTES = 32 * 1024 ** 2
 MAX_CASES = 200_000
 MAX_DEPTH = 64
@@ -133,16 +144,32 @@ class Check:
     artifacts: tuple[str, ...] = ()      # files a build produces, as patterns inside the project
     shell: bool = False
     legacy: bool = False                 # an entry of tests.commands
+    inputs: tuple[str, ...] = ()         # files it reads, as patterns inside the project, ignored by Git or not
+    same_environment: bool = False       # its result counts only where it ran (`environment()["id"]`)
 
     @property
     def adapter(self) -> str:
         return self.report or "exit_code"
 
     def identity(self) -> dict:
-        """What decides what the check runs and how its result is read: a change makes earlier results stale."""
-        return {"id": self.id, "type": self.type, "command": list(self.command), "cwd": self.cwd, "report": self.report,
-                "report_path": self.report_path, "min_tests": self.min_tests, "required_tests": list(self.required_tests),
-                "artifacts": list(self.artifacts), "shell": self.shell}
+        """What decides what the check runs and how its result is read: a change makes earlier results stale.
+
+        `inputs` and `same_environment` are there only when they are set, so
+        the identity of a check configured before them stays what it was.
+        """
+        found = {"id": self.id, "type": self.type, "command": list(self.command), "cwd": self.cwd, "report": self.report,
+                 "report_path": self.report_path, "min_tests": self.min_tests, "required_tests": list(self.required_tests),
+                 "artifacts": list(self.artifacts), "shell": self.shell}
+        if self.inputs:
+            found["inputs"] = list(self.inputs)
+        if self.same_environment:
+            found["same_environment"] = True
+        return found
+
+    def digest(self) -> str:
+        """SHA-256 of the identity in canonical JSON (sorted keys, no spaces, UTF-8): what a record says it ran."""
+        return hashlib.sha256(json.dumps(self.identity(), sort_keys=True, ensure_ascii=False,
+                                         separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def program(argv) -> str:
@@ -225,6 +252,12 @@ def parse_check(raw, *, default_timeout: int) -> Check:
     for key in ("min_tests", "required_tests"):
         if key in raw and report is None:
             raise ValueError(f"{where}: {key} needs a report: an exit code does not say which tests ran")
+    same_environment = raw.get("same_environment", False)
+    if type(same_environment) is not bool:
+        raise ValueError(f"{where}: same_environment must be a JSON boolean (true/false)")
+    inputs = tuple(relative(item, f"{where}: inputs") for item in _strings(raw.get("inputs", []), f"{where}: inputs", MAX_INPUTS))
+    if "." in inputs or len(set(inputs)) != len(inputs):
+        raise ValueError(f"{where}: inputs must name files or patterns inside the project, each once")
     return Check(
         id=name, type=raw["type"], command=tuple(command), cwd=relative(raw.get("cwd", "."), f"{where}: cwd"),
         timeout=_integer(raw.get("timeout_seconds", default_timeout), f"{where}: timeout_seconds", 1, 86400),
@@ -234,7 +267,7 @@ def parse_check(raw, *, default_timeout: int) -> Check:
         criteria=_strings(raw.get("criteria", []), f"{where}: criteria", MAX_CRITERIA, CRITERION_ID),
         artifacts=tuple(relative(item, f"{where}: artifacts")
                         for item in _strings(raw.get("artifacts", []), f"{where}: artifacts", evidence.MAX_ARTIFACTS)),
-        shell=shell)
+        shell=shell, inputs=inputs, same_environment=same_environment)
 
 
 def parse_section(section, *, default_timeout: int) -> list[Check]:
@@ -567,6 +600,94 @@ def read_report(path: Path) -> tuple[bytes | None, tuple | None, str | None]:
     return data, (len(data), info.st_mtime_ns, hashlib.sha256(data).hexdigest()), None
 
 
+def _matches(root: Path, pattern: str) -> tuple[list[str], str | None]:
+    """The files of the project that a pattern names, as relative paths, and why they cannot be listed.
+
+    `*`, `?` and `[...]` match within one name and `**` any number of
+    folders, as `Path.glob` does. Nothing is followed: a link or a junction
+    the pattern reaches is refused, never listed or entered, so a cycle of
+    links cannot make the walk endless; `.git` is not entered.
+    """
+    import fnmatch
+    parts = pattern.split("/")
+    found: set[str] = set()
+    visited, seen = 0, set()
+    pending = [(root, "", 0)]
+    while pending:
+        folder, prefix, index = pending.pop()
+        if (prefix, index) in seen:
+            continue
+        seen.add((prefix, index))
+        part, last = parts[index], index == len(parts) - 1
+        if part == "**" and not last:
+            pending.append((folder, prefix, index + 1))  # `**` standing for no folder at all
+        try:
+            entries = list(os.scandir(folder))
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return [], f"The folder {prefix or '.'} cannot be listed"
+        for entry in entries:
+            visited += 1
+            if visited > MAX_INPUT_ENTRIES:
+                return [], f"Matching {pattern} looks at more than {MAX_INPUT_ENTRIES} entries of the project"
+            if entry.name == ".git" or (part != "**" and not fnmatch.fnmatch(entry.name, part)):
+                continue
+            name = prefix + entry.name
+            try:
+                if gitops._linked(Path(entry.path)):
+                    return [], f"{name} is a link or a junction: what it leads to is not read as an input of the check"
+                folder_entry = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                return [], f"{name} cannot be read"
+            if part == "**":
+                if folder_entry:
+                    pending.append((Path(entry.path), name + "/", index))
+                elif last:
+                    found.add(name)
+            elif folder_entry:
+                if not last:
+                    pending.append((Path(entry.path), name + "/", index + 1))
+            elif last:
+                found.add(name)
+    return sorted(found), None
+
+
+def inputs_digest(check: Check, workspace: Path) -> tuple[dict | None, str | None]:
+    """The files a check declares it reads, and why they cannot be: (record, None) or (None, reason).
+
+    Each pattern, then each file it matches with its name and the SHA-256 of
+    its content, go into one digest; a pattern that matches nothing is part
+    of it as such, so a file that appears later changes it. Only the digest
+    and the count are kept: a file of secrets is never copied or hashed on
+    its own into the record. A file larger than `MAX_INPUT_BYTES`, more than
+    `MAX_INPUT_FILES` files, one that cannot be read or that keeps changing
+    while it is read make the inputs unknown.
+    """
+    if not check.inputs:
+        return None, None
+    digest, files = hashlib.sha256(), 0
+    for pattern in check.inputs:
+        digest.update(pattern.encode("utf-8") + b"\0")
+        names, problem = _matches(Path(workspace), pattern)
+        if problem:
+            return None, problem
+        if not names:
+            digest.update(b"none\0")
+        for name in names:
+            files += 1
+            if files > MAX_INPUT_FILES:
+                return None, f"The inputs of the check match more than {MAX_INPUT_FILES} files"
+            path = Path(workspace) / name
+            try:
+                if os.lstat(path).st_size > MAX_INPUT_BYTES:
+                    return None, f"{name} is larger than {MAX_INPUT_BYTES // 1024 ** 2} MiB: PatchRondo does not hash it"
+                digest.update(name.encode("utf-8") + b"\0" + gitops.content_digest(path, name))
+            except OSError as exc:
+                return None, evidence.text(str(exc) if isinstance(exc, gitops.FingerprintError) else f"{name} cannot be read", 300)
+    return {"patterns": list(check.inputs), "files": files, "sha256": digest.hexdigest()}, None
+
+
 def _artifact(path: Path) -> dict | None:
     """The hash of a file a build produced, when it is a regular file and not a link."""
     try:
@@ -603,6 +724,7 @@ class Result:
     artifacts: list[dict] = field(default_factory=list)
     evidence: str | None = None       # ID of the ledger record
     lines: frozenset = field(default_factory=frozenset, repr=False)  # Git's status lines after the check
+    inputs: dict | None = None        # `inputs_digest` before the check started
     process_tree: str | None = None   # `process.Result.process_tree`: None when the command did not start
     kill_refused: bool = False        # `process.Result.kill_refused`
 
@@ -700,6 +822,10 @@ class Runner:
                 target = self.run_dir / f"{name}.junit.xml"
                 if target.exists() or target.is_symlink():
                     refusal = "The report of this run exists before the run: it cannot be told apart from another"
+        if refusal is None and check.inputs:
+            result.inputs, problem = inputs_digest(check, self.workspace)
+            if problem:
+                refusal = f"An input the check declares cannot be hashed, so its result could not be tied to it: {problem}"
         if refusal:
             result.reason, result.error = refusal, {"kind": "refused"}
             return
@@ -757,6 +883,13 @@ class Runner:
                         "files it was given. Keep what it generates out of the project, or ignored by Git"
                         + (f": {', '.join(evidence.text(line[3:], 120) for line in touched)}" if touched else ""))
             return
+        if check.inputs:
+            after, problem = inputs_digest(check, self.workspace)
+            if problem or after["sha256"] != result.inputs["sha256"]:
+                self._error(result, "inputs_modified", "The files the check declares as its inputs changed while it ran, or "
+                            "could no longer be read, so its result is not about the inputs it was given"
+                            + (f": {problem}" if problem else ""))
+                return
         if check.report:
             self._report(result, target, earlier)
             if result.status == Status.ERROR:
@@ -836,6 +969,9 @@ class Runner:
     def _record(self, result: Result) -> None:
         """One `command` record in the ledger, written before the result is returned to anybody."""
         check = result.check
+        extra = {"inputs": result.inputs} if check.inputs else {}
+        if check.same_environment:
+            extra["same_environment"] = True
         entry = evidence.append(
             self.task_path, "command", executor="runtime", criteria=list(check.criteria), result=result.status,
             exit_code=result.exit_code, command=[evidence.text(part, 300) for part in result.command][:60],
@@ -844,6 +980,7 @@ class Runner:
             log=f"{self.run_dir.name}/{result.log.name}" if result.log else None, log_sha256=result.log_sha256,
             artifacts=result.artifacts or None,
             check={"version": VERSION, "id": check.id, "type": check.type, "adapter": check.adapter, "index": result.index,
+                   "config_sha256": check.digest(), **extra,
                    "cwd": check.cwd, "timeout_seconds": check.timeout, "started_at": result.started_at,
                    "finished_at": result.finished_at, "duration_ms": result.duration_ms, "environment": environment(),
                    "process_tree": result.process_tree,

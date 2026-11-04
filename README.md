@@ -62,7 +62,8 @@ result in the task's evidence ledger before any agent sees it. A developer's
 
 This view maps the current [runtime modules](docs/ARCHITECTURE.md#1-components):
 `core.py` and `acceptance.py` make the orchestration decisions;
-`verification.py` runs configured checks, and `evidence.py` keeps their records;
+`verification.py` runs configured checks, `evidence.py` keeps their records,
+and `provenance.py` says which of them still apply to the task as it is;
 `recovery.py` handles opt-in, bounded quota retries. Missing evidence or a
 required external check keeps the task open. The broader 0.35 Evidence Engine
 remains a separate [roadmap proposal](docs/ROADMAP.md).

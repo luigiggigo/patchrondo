@@ -217,6 +217,118 @@ and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
 
+## Provenance and invalidation of evidence (November 4, 2026)
+
+This section covers changes on top of `e9eec80`: the new `provenance.py`;
+`gitops.py` (the fingerprint), `evidence.py` (`Ledger.sound`,
+`artifact_state`), `verification.py` (`Check.digest`, `inputs`,
+`same_environment`, `inputs_digest`, the record's `check.config_sha256`),
+`acceptance.py` and `core.py`; the new `tests/test_provenance.py` (48 tests);
+28 new mutation protections and one whose pattern moved; ARCHITECTURE
+section 17 and sections 2, 14 and 16, USAGE, SECURITY, TESTING, ROADMAP,
+README and the changelog. The package version is unchanged, 0.2.1.
+
+**Asked for.** The user's "0.35 Phase 2 / Step 2": a workspace fingerprint,
+a provenance and an integrity validator, an invalidation engine, the
+preparation of reverification and the integration with the existing
+acceptance, review, checkpoints and recovery; with the result of a check
+kept apart from whether its evidence can still be used, nothing rewritten,
+legacy records never promoted, and no new registry, runner, decision engine
+or agent.
+
+**Before.** Read in the code of `e9eec80`: `evidence.outdated` invalidated
+records about other files and records whose artifacts changed;
+`test_context` kept the loop from reusing results after a change of the
+files or of the checks; `_Proofs` counted only the latest run. A record did
+not name the configuration of its check, so a check changed or removed after
+it passed left a counting record that the page showed as proof. Ignored
+inputs and the environment were never compared. `Ledger.counts` accepted a
+record of another schema version or with another executor if the chain held
+it. `gitops.fingerprint` hashed a name that is not UTF-8 as a missing file,
+read files behind a junction, did not see changes inside a nested repository
+once its status line was set, and hashed a file changing under it.
+`artifact_changed` followed a link that replaced an artifact.
+
+**Decisions.**
+
+- The existing ledger, runner, invalidation records and test context are
+  extended; `provenance.py` holds the judgement only. Validity
+  (`VALID`, `STALE`, `INVALID`, `UNKNOWN`) is not a result: no record is
+  rewritten and `verification.STALE` stays unused.
+- What cannot be proved unchanged is not reused: records without the
+  configuration of their check (`CHECK_UNIDENTIFIED`), unknown inputs and
+  missing snapshots are invalidated and run again, never promoted to
+  `VALID`. An entry of `tests.commands` recorded before is judged by its
+  command, which the record holds, so a task saved before the runner still
+  resumes without running its tests again (`test_a_task_saved_before_the_runner_resumes_unchanged`).
+- Records of another schema version or executor never count and are not
+  invalidated by this version, so a later version can still read its own.
+- The fingerprint keeps the digest of earlier versions for an ordinary copy,
+  checked against the earlier function in a test and on this repository
+  with Python 3.13.3 and 3.11.3 (the same digest), so no saved evidence is
+  invalidated by the upgrade alone.
+- The new settings change the identity of a check and the test context only
+  when they are set, so `DECIDED` in `tests/test_findings.py` and the
+  context of saved tasks are unchanged.
+
+**Found during validation.** The first WSL2 run of `tests/test_provenance.py`
+failed 30 of 48 tests: `stat.IO_REPARSE_TAG_MOUNT_POINT` exists only in
+Python's Windows builds, so every fingerprint raised `AttributeError` on
+Linux and macOS. `gitops.MOUNT_POINT` now holds the value of `winnt.h`; all
+checks below ran after that correction. The same run showed that both CLIs
+are also installed in `/usr/local/bin` under WSL2; every WSL2 run below
+removed that folder from `PATH` too and checked with `shutil.which` that
+neither CLI could be found before it started.
+
+**Checked against the change.** Each new safeguard has a mutation that
+removes it; on native Windows (Python 3.13.3) 28 of the 29 entries added or
+changed were detected before the full run. The one missed there, "an
+artifact replaced by a link is intact", needs a link whose own time can be
+set, which Windows does not allow; it was detected under WSL2 in the full
+run.
+
+Validation on November 4, 2026, with neither `claude` nor `codex` found by
+`shutil.which`, on the final sources:
+
+| Check | Platform and result | Exit status |
+|---|---|---|
+| Whole unittest suite | Native Windows, Python 3.13.3: 773 tests, 753 passed, 20 skipped | 0 |
+| `test_provenance`, `test_verification`, `test_acceptance`, `test_coherence`, `test_history`, `test_findings`, `test_criteria_ui`, `test_recovery_checks`, `test_workflow` | Native Windows, Python 3.11.3: 252 tests, 247 passed, 5 skipped | 0 |
+| `test_provenance` | Native Windows, Python 3.13.3 and 3.11.3: 48 tests, 47 passed, 1 skipped (a name that is not UTF-8) | 0 |
+| `test_verification`, `test_provenance` | WSL2, Python 3.12.3: 100 tests, 98 passed, 2 skipped (job objects; real pytest) | 0 |
+| `test_coherence` with `PATCHRONDO_ALL_CHECKPOINTS=1` | Native Windows, Python 3.13.3: 9 tests passed in 66 s; WSL2, Python 3.12.3: 9 passed in 17 s | 0 |
+| Protections | WSL2, Python 3.12.3: 284 of 284 removed safeguards detected, 0 missed (28 of them new), 766 s | 0 |
+| Real-clock recovery | WSL2: 10/10 checks passed; retry 0.06 s after the planned time | 0 |
+| Reliability, `--repeat 3` | WSL2, Python 3.12.3: 42 passed, 0 failed, 0 skipped | 0 |
+| Reliability, `--repeat 3` | Native Windows, Python 3.13.3: 30 passed, 0 failed, 12 skipped (the crash and interrupt scenarios need POSIX) | 0 |
+| Browser, all twelve scenarios | Native Windows, Python 3.13.3, Chrome 156.0.8078.80 headless: 355 passed, 0 failed | 0 |
+| Publication scanner | 134 files checked, six findings: four images (binary; `docs/assets/patchrondo-workflow-v3.png`, added in `e9eec80`, reviewed by eye: a workflow diagram with nothing private), and `.claude/` and `debug.log`, both ignored by Git and not written for this change | 1 |
+| Baseline before the change | Native Windows, Python 3.13.3, sources of `e9eec80`: the six modules `test_verification`, `test_acceptance`, `test_history`, `test_findings`, `test_coherence`, `test_workflow`, 192 tests, 188 passed, 4 skipped; on the changed sources the same 192 gave the same result | 0 |
+
+Every provider was scripted: no model was called. Remote `main` was
+`e9eec80` when checked on November 4, 2026, with CI run
+[39329391851](https://github.com/luigiggigo/patchrondo/actions/runs/39329391851)
+successful for that commit only; it says nothing about this change. Not run:
+anything on macOS (CI runs it there); the package build and `twine check`
+(CI's); the opt-in tests in the real Codex sandbox (the environment check
+did not change); the real pytest test (pytest is not installed).
+
+**Limits that remain.** Invalidation compares states: any change to a file
+Git does not ignore makes every check result stale, whether or not the check
+reads it (no test impact analysis). Nothing is signed: someone with the
+user's rights can rewrite the ledger with its chain, and the record says
+what was observed, not that the code is correct. `same_environment`
+compares PatchRondo's interpreter and computer, not the toolchain a check
+starts. Undeclared ignored files, submodules never initialized, installed
+packages and the network stay outside the fingerprint. An artifact with the
+size and time it was hashed with is not read again. The page receives
+`validity` and `causes` but does not show them yet. The publication status
+sections of this file, PUBLISHING and README still describe the check of
+October 18, 2026; they were not refreshed with this change.
+
+**Verdict: READY for this change**, on the checks above. This is not a
+release-readiness verdict.
+
 ## A refused stop is said by agent steps and the earlier test stage (October 18, 2026)
 
 This section covers changes on top of `b962214`: `process.py`

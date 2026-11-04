@@ -19,7 +19,7 @@ from .process import KILL_REFUSED, execute, short_log, stop_refused, with_refusa
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
 from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery
-from . import verification, winacl
+from . import provenance, verification, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -330,18 +330,29 @@ def _sync(root: Path, cfg: dict, path: Path, state: dict, *, current: str | None
     """Judge the criteria of a task again from its evidence ledger and put the result in the state. Under the task lock.
 
     `current` is the fingerprint of the task's files, when the caller has it:
-    evidence recorded on other files is then invalidated first, in the ledger
-    itself, so that it is never counted again. Capabilities are detected
-    again each time. Returns the record and the ledger it was judged from.
+    evidence that is no longer about the task as it is now (its files, the
+    configuration, inputs and environment of its check, the artifacts it
+    names: `provenance.assess`) is then invalidated first, in the ledger
+    itself, so that it is never counted again. Without it only the artifacts
+    are looked at, as before. Capabilities are detected again each time.
+    Returns the record and the ledger it was judged from.
     """
     record = _acceptance(path, state)
     ledger = _ledger(path, state, record)
-    stale = evidence.outdated(ledger, current)
-    written = [evidence.append(path, "invalidation", executor="runtime", result="invalidated", of=records, reason=reason,
-                               iteration=state["iteration"])["id"] for reason, records in stale.items()]
-    if stale:
-        _event(state, "evidence_invalidated", records=sum(len(records) for records in stale.values()), invalidations=written)
-        ledger = evidence.read(path)
+    if provenance.enabled():
+        now = provenance.current(cfg, Path(state["worktree"]), current) if current is not None else provenance.Current()
+        entries = provenance.invalidate(path, ledger, now, iteration=state["iteration"])
+        if entries:
+            _event(state, "evidence_invalidated", records=sum(len(entry["of"]) for entry in entries),
+                   invalidations=[entry["id"] for entry in entries], causes=[entry["cause"] for entry in entries])
+            ledger = evidence.read(path)
+    else:
+        stale = evidence.outdated(ledger, current)
+        written = [evidence.append(path, "invalidation", executor="runtime", result="invalidated", of=records, reason=reason,
+                                   iteration=state["iteration"])["id"] for reason, records in stale.items()]
+        if stale:
+            _event(state, "evidence_invalidated", records=sum(len(records) for records in stale.values()), invalidations=written)
+            ledger = evidence.read(path)
     record.refresh(ledger, capabilities=_capabilities(root, cfg, state, record), developing=developing)
     state["acceptance"] = record.dump()
     return record, ledger
@@ -704,7 +715,7 @@ def _test_stage(path: Path, state: dict, cfg: dict, workspace: Path, reviewer_ch
             results = _run_tests(cfg, workspace, run_dir, journal)
     state["tests"] = results
     current = fingerprint(workspace)
-    state["test_context"] = _test_context(cfg, current)
+    state["test_context"] = _test_context(cfg, current, workspace)
     _event(state, "tests_completed", statuses=[x["status"] for x in results], **(ran or {}))
     if sync is not None:
         if settings["enabled"] and ran is None:
@@ -734,24 +745,36 @@ def _tests_green(state: dict) -> bool:
     return bool(state["tests"]) and all(item["status"] == "passed" for item in state["tests"])
 
 
-def _test_context(cfg: dict, current: str) -> dict:
+def _test_context(cfg: dict, current: str, workspace: Path) -> dict:
     """What test results are about: the files, and the commands and checks that ran on them.
 
     `checks` is there only when the project configured checks beyond
-    tests.commands, so the context of a task saved before them stays equal.
+    tests.commands, so the context of a task saved before them stays equal;
+    so are `inputs` (the digest of the files each check declares it reads,
+    ignored by Git or not) and `environment` (where the checks ran, when one
+    of them counts only there). Inputs that cannot be hashed make a context
+    no other one equals: results are never taken as being about them.
     """
     enabled = cfg["tests"]["enabled"]
     context = {"fingerprint": current, "commands": cfg["tests"]["commands"] if enabled else []}
     checks = verification.context(cfg) if enabled else []
     if checks:
         context["checks"] = checks
+    if enabled and provenance.enabled():
+        configured = verification.checks(cfg)
+        declared = {check.id: verification.inputs_digest(check, workspace)[0] for check in configured if check.inputs}
+        if declared:
+            context["inputs"] = {name: found["sha256"] if found else f"unknown-{uuid.uuid4().hex}"
+                                 for name, found in declared.items()}
+        if any(check.same_environment for check in configured):
+            context["environment"] = verification.environment()["id"]
     return context
 
 
 def _check_test_context(state: dict, cfg: dict, workspace: Path) -> str:
     """Refuse test results that are about other files or other commands. Returns the fingerprint of the files."""
     current = fingerprint(workspace)
-    if state.get("test_context") != _test_context(cfg, current):
+    if state.get("test_context") != _test_context(cfg, current, workspace):
         state["phase"] = "test"
         raise AgentFailure("Files or test commands have changed: resume to rerun tests", "stale_tests")
     return current
@@ -773,6 +796,10 @@ def _feedback(path: Path, state: dict, reason: str, record: criteria.Acceptance 
     if apart:
         extra += ("\n## Not work for the developer\nTracked by the orchestrator and verified by somebody else. Do not attempt "
                   "them and do not simulate their result.\n" + "\n".join(apart) + "\n")
+    if provenance.enabled():
+        # Which checks the orchestrator runs again, and why: from the ledger, never from what an agent said.
+        lines = provenance.brief(evidence.read(path))
+        extra += "\n".join(lines) + ("\n" if lines else "")
     atomic_text(path / "feedback.md", f"# Feedback iteration {state['iteration']}\n\nReason: {reason}\n\n"
                 f"## Tests\n```json\n{tests}\n```\n\n## Review\n```json\n{issues}\n```\n{extra}")
 
@@ -914,7 +941,7 @@ def _validation_moved(root: Path, cfg: dict, path: Path, state: dict, workspace:
         ledger = evidence.read(path)
         current = fingerprint(workspace)
         if ledger.problems or not ledger.anchored(record.ledger.get("count"), record.ledger.get("head")) \
-                or evidence.outdated(ledger, current) or state.get("test_context") != _test_context(cfg, current):
+                or _outdated(cfg, ledger, current, workspace) or state.get("test_context") != _test_context(cfg, current, workspace):
             return True
         before = [(criterion.status, criterion.missing) for criterion in record.criteria]
         record.refresh(ledger, capabilities=_capabilities(root, cfg, state, record))
@@ -923,6 +950,13 @@ def _validation_moved(root: Path, cfg: dict, path: Path, state: dict, workspace:
     return (record.outcome == criteria.Outcome.RELEASE_READY or record.code.get("status") != criteria.Code.APPROVED
             or bool(record.refused_by_user(ledger)) or bool(record.awaiting_commands())
             or before != [(criterion.status, criterion.missing) for criterion in record.criteria])
+
+
+def _outdated(cfg: dict, ledger: evidence.Ledger, current: str, workspace: Path) -> bool:
+    """Whether a record that counts would be invalidated by a run now. Reads only: nothing is written."""
+    if provenance.enabled():
+        return bool(provenance.stale(ledger, provenance.current(cfg, workspace, current)))
+    return bool(evidence.outdated(ledger, current))
 
 
 def _validate_stage(sync, cfg: dict, path: Path, state: dict, workspace: Path) -> bool:
@@ -936,7 +970,7 @@ def _validate_stage(sync, cfg: dict, path: Path, state: dict, workspace: Path) -
     """
     current = fingerprint(workspace)
     record, ledger = sync(current=current)
-    fresh = state.get("test_context") == _test_context(cfg, current)
+    fresh = state.get("test_context") == _test_context(cfg, current, workspace)
     if record.outcome == criteria.Outcome.RELEASE_READY and fresh:
         _complete(path, state)
         return True
@@ -949,7 +983,8 @@ def _validate_stage(sync, cfg: dict, path: Path, state: dict, workspace: Path) -
         _feedback(path, state, "validation_failed", record, refused)
         _event(state, "validation_failed", criteria=[criterion.id for criterion, _ in refused])
         evidence.append(path, "invalidation", executor="runtime", result="invalidated", iteration=state["iteration"],
-                        of=[entry["id"] for _, entry in refused], reason="Handed to the developer as a request for changes")
+                        of=[entry["id"] for _, entry in refused], reason="Handed to the developer as a request for changes",
+                        cause=str(provenance.Cause.HANDED_OVER) if provenance.enabled() else None)
         sync(current=current)
         if state["iteration"] >= cfg["workflow"]["max_iterations"]:
             state["status"] = "blocked"
@@ -1247,7 +1282,7 @@ def _on_criteria(home: Path, task_id: str, agents_root: Path | None, change=None
         _save(path, state)
         _report(path, state)
         completes = state.get("phase") == "validate" and record.outcome == criteria.Outcome.RELEASE_READY \
-            and state.get("test_context") == _test_context(cfg, current)
+            and state.get("test_context") == _test_context(cfg, current, workspace)
     return {"record": entry, "acceptance": record.compact(), "completes": completes}
 
 

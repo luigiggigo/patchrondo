@@ -34,6 +34,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import time
 
 from .activity import clip, redact
@@ -95,9 +96,23 @@ class Ledger:
     def get(self, identifier: str) -> dict | None:
         return next((record for record in self.records if record.get("id") == identifier), None)
 
+    def sound(self, record: dict | None) -> bool:
+        """Whether a record was read intact and has a shape this version writes.
+
+        A record of a schema version this one does not know, of a kind it does
+        not know, or written by another executor than the one of its kind
+        (`EXECUTORS`), is never read as proof: `append` writes none of them, so
+        such a record comes from a later version or from somebody's hand.
+        """
+        if not record or not record["trusted"]:
+            return False
+        kind = record.get("kind")
+        return type(record.get("version")) is int and record["version"] == VERSION and kind in KINDS \
+            and record.get("executor") == EXECUTORS[kind] and (kind != "command" or record.get("result") in COMMAND_RESULTS)
+
     def counts(self, record: dict | None) -> bool:
-        """Whether a record can be used as proof: read intact, and not invalidated since."""
-        return bool(record) and record["trusted"] and record["invalidated"] is None
+        """Whether a record can be used as proof: read intact, of a shape this version writes, and not invalidated since."""
+        return self.sound(record) and record["invalidated"] is None
 
     def last(self, kind: str, criterion: str | None = None) -> dict | None:
         """The most recent record of a kind, optionally about one criterion, whatever its state."""
@@ -239,18 +254,37 @@ def fingerprint_file(path: Path) -> dict:
     return {"path": str(path), "sha256": digest.hexdigest(), "size": info.st_size, "mtime_ns": info.st_mtime_ns}
 
 
-def artifact_changed(artifact: dict) -> bool:
-    """Whether a file recorded as an artifact is gone or no longer the file that was hashed."""
+INTACT, CHANGED, MISSING = "intact", "changed", "missing"
+
+
+def artifact_state(artifact: dict) -> str:
+    """Whether a file recorded as an artifact is still the file that was hashed: intact, changed or missing.
+
+    A file that became a link is changed, whatever it points to: what was
+    hashed was a regular file. Same size and time as when it was hashed is
+    taken as unchanged without reading it again; somebody who can write the
+    file can also set its time, which no check here prevents.
+    """
     try:
         path = Path(artifact["path"])
-        info = path.stat()
-        if info.st_size != artifact["size"]:
-            return True
-        if info.st_mtime_ns == artifact.get("mtime_ns"):
-            return False  # same size and time as when it was hashed: not read again
-        return fingerprint_file(path)["sha256"] != artifact["sha256"]
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return MISSING
     except (OSError, ValueError, KeyError, TypeError):
-        return True
+        return CHANGED
+    try:
+        if not stat.S_ISREG(info.st_mode) or info.st_size != artifact["size"]:
+            return CHANGED
+        if info.st_mtime_ns == artifact.get("mtime_ns"):
+            return INTACT
+        return INTACT if fingerprint_file(path)["sha256"] == artifact["sha256"] else CHANGED
+    except (OSError, ValueError, KeyError, TypeError):
+        return CHANGED
+
+
+def artifact_changed(artifact: dict) -> bool:
+    """Whether a file recorded as an artifact is gone or no longer the file that was hashed."""
+    return artifact_state(artifact) != INTACT
 
 
 def outdated(ledger: Ledger, fingerprint: str | None) -> dict[str, list[str]]:

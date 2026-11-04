@@ -153,6 +153,13 @@ same either way. One
 test runs the real pytest and is skipped where pytest is not installed, as on
 CI; a skip is not a pass.
 
+`tests/test_provenance.py` checks the fingerprint of a task's files, the
+inputs a check declares, each rule of the validity of a record, the
+invalidation records and the loop with the real runner. Junctions and
+reparse points are checked on native Windows; symbolic links, a name that
+is not UTF-8 and a link that keeps the size and time of the file it
+replaced, on POSIX. Run it on both.
+
 ### Browser checks of the interface (no provider quota usage)
 
 ```bash
