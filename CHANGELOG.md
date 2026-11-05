@@ -842,6 +842,71 @@ decisions changed: no acceptance rule, validity rule, event or path to
   *Verification* tab, which follows *Overview*. Eighteen new mutation
   protections.
 
+#### Step 4 hardening: gate freshness, ledger integrity, consistent exports — November 5, 2026
+
+The user's "0.35 Step 4 Hardening", from a review of `8e548b0`. Three
+observations were reproduced on that commit with scripted agents before any
+change; no gate rule, acceptance rule, event, pause or path to `done`
+changed.
+
+- **A saved gate is current only for the task it was evaluated on.** The
+  Verification Center compared the saved gate with the ledger only: after a
+  file of the worktree was edited, a `PASS` was still shown as current with
+  *Complete the task* (pressing it was safe: the backend evaluates again
+  under the lock and `_complete` fingerprints again). `verification_view`
+  now fingerprints the worktree and compares it, the configured checks and
+  the protections with what the gate saw (`core.gate_currency`, the
+  comparisons of `_complete`), and gives `freshness` (what was compared,
+  the causes, `checked_at`). `gate_state` gains `unknown` (files or
+  configuration that cannot be read, a gate evaluated without the files:
+  never shown as current) and `historical` (a task that ended: its gate is
+  not compared again); `behind` now also covers changed files and checks.
+  *Complete the task* is offered only while the gate is `current`; the page
+  says *Not current* or *Not confirmed* with the cause and offers *Evaluate
+  again*, and compares again each time the tab is shown. A fingerprint is
+  never reused across requests: views at once share one reading only if it
+  started after each of them arrived. Evidence pages and live events do not
+  fingerprint. The view reads without the task lock, so it fingerprints
+  with `gitops.fingerprint(…, reader=True)`: `--no-optional-locks` and
+  `core.fsmonitor=false`, as the dashboard's other Git reads, so `git
+  status` writes nothing into the copy; the digest is the engine's.
+- **A damaged ledger is never an intact bundle.** `verify` compared the
+  ledger's problems with the count the manifest declared, so a bundle whose
+  manifest named a broken chain consistently was `INTACT`; an honest export
+  of a damaged ledger was `INCOMPLETE` only through its gate omission, with
+  no reason about the ledger. The ledger is now checked on its own:
+  `LEDGER_DAMAGED` (broken chain, unreadable line, cut-short last record)
+  and `LEDGER_UNANCHORED` (records the state saw are gone) are `MODIFIED`;
+  `NO_GATE` and `GATE_NOT_ABOUT_LEDGER` are `INCOMPLETE` whatever the
+  manifest declares. Exit codes are unchanged; `summary.md` says when the
+  ledger fails its check and what the gate's snapshot does not cover. An
+  export still copies the ledger byte for byte and repairs nothing.
+- **An export holds files of one moment.** `task.md` was read once, after
+  the coherent reading of the state and the ledger, and included unchecked.
+  `consistent` now reads all three twice, and once the bundle is made the
+  three are read again: a bundle made while one of them changed is made
+  again from a new view, and refused (`Inconsistent`) after four attempts.
+  A log is opened without following a link where the system can refuse it,
+  and its name must still lead to the same unchanged file after the reading
+  (`changed_during_export`); a log that is no longer the one its record
+  hashed is named among the omissions.
+- **A state being replaced is read again on Windows.** The new test of an
+  export beside a writing run found that reading `state.json` at the instant
+  `save_json` replaces it raises `PermissionError` on native Windows, which
+  failed the export instead of retrying (also before this change). The
+  export now asks again for a bounded time (`storage._unshared`); a refusal
+  that lasts is still raised.
+- Tests: `tests/test_bundle.py` gains 28 tests (`FreshnessTests`, careful
+  forgeries of the ledger, honest exports of damaged and unanchored
+  ledgers, changes during an export, a writer beside exports, a state being
+  replaced, logs replaced, linked or too large to hash, the dashboard's
+  reading without a lock); the count of readings in the test of a task
+  that keeps changing now follows the three files read. The browser
+  `verification` scenario edits a file of the worktree, sees *Not current*
+  without *Complete*, restores it and completes through the button. Twelve
+  new mutation protections, and the one of a gate older than the ledger
+  follows the new line.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

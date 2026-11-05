@@ -10,15 +10,18 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
+import unittest.mock
 from unittest.mock import patch
 import warnings
 import zipfile
 
-from patchrondo import bundle, evidence, gate
+from patchrondo import acceptance as criteria, bundle, evidence, gate, gitops
 from patchrondo.app import App, Conflict
 from patchrondo.cli import main
 from patchrondo.core import attach_evidence, recheck_acceptance, run_task
@@ -63,6 +66,42 @@ def resealed(files: dict[str, bytes], changed: dict[str, bytes]) -> bytes:
 
 def codes(found: dict) -> set[str]:
     return {entry["code"] for entry in found["problems"]}
+
+
+def reledgered(files: dict[str, bytes], ledger: bytes, *, declare_complete: bool = True) -> bytes:
+    """`files` with another ledger and every other file made to agree with it, hashes recomputed: a careful forgery.
+
+    The manifest names the ledger's count, head and problems as `verify`
+    computes them, the validity rows follow from it, the gate file says
+    truthfully whether it is about it, and (with `declare_complete`) the
+    manifest declares nothing left out.
+    """
+    parsed = evidence.parse(ledger)
+    contract = json.loads(files["task/contract.json"])
+    anchored = parsed.for_state(criteria.Acceptance.load({"acceptance": contract["acceptance"]}).ledger)
+    rows = bundle.validity_rows(anchored)
+    manifest = json.loads(files[bundle.MANIFEST])
+    manifest["ledger"].update(count=anchored.count, head=anchored.head, problems=len(anchored.problems), anchored=anchored is parsed)
+    manifest["validity"] = bundle.counts(rows)
+    changed = {"evidence/ledger.jsonl": ledger, "evidence/validity.json": bundle.canonical({"anchored": anchored is parsed, "records": rows})}
+    if "gate/evaluation.json" in files:
+        gate_file = json.loads(files["gate/evaluation.json"])
+        seen = gate_file["saved"]["ledger"]
+        about = {"count": seen["count"], "head": seen["head"]} == {"count": parsed.count, "head": parsed.head}
+        gate_file.update(about_exported_ledger=about, exported_ledger={"count": parsed.count, "head": parsed.head})
+        manifest["gate"]["about_exported_ledger"] = about
+        changed["gate/evaluation.json"] = bundle.canonical(gate_file)
+    if declare_complete:
+        manifest["omissions"], manifest["complete"] = [], True
+    return resealed({**files, bundle.MANIFEST: bundle.canonical(manifest)}, changed)
+
+
+def edited(ledger: bytes, index: int, old: bytes, new: bytes) -> bytes:
+    """The ledger with one field of record `index` (from 0) changed, its hash left as it was."""
+    lines = ledger.split(b"\n")
+    assert old in lines[index], (index, old)
+    lines[index] = lines[index].replace(old, new, 1)
+    return b"\n".join(lines)
 
 
 class Done(Case):
@@ -113,6 +152,11 @@ class VerifyTests(unittest.TestCase):
         found = self.verify(resealed(self.files, {"evidence/validity.json": bundle.canonical(validity)}))
         self.assertEqual(found["status"], "MODIFIED")
         self.assertIn("VALIDITY_MISMATCH", codes(found))
+        # A forgery that keeps the counts by validity: only the rows themselves contradict the ledger.
+        validity = json.loads(self.files["evidence/validity.json"])
+        validity["records"][0]["causes"] = ["WORKSPACE_CHANGED"]
+        found = self.verify(resealed(self.files, {"evidence/validity.json": bundle.canonical(validity)}))
+        self.assertEqual((found["status"], codes(found)), ("MODIFIED", {"VALIDITY_MISMATCH"}))
         saved = json.loads(self.files["gate/evaluation.json"])
         saved["saved"]["decision"] = "BLOCKED"
         found = self.verify(resealed(self.files, {"gate/evaluation.json": bundle.canonical(saved)}))
@@ -120,6 +164,53 @@ class VerifyTests(unittest.TestCase):
         line = self.files["evidence/ledger.jsonl"].replace(b'"result":"passed"', b'"result":"failed"', 1)
         found = self.verify(resealed(self.files, {"evidence/ledger.jsonl": line}))
         self.assertIn("LEDGER_MISMATCH", codes(found))
+
+    def test_the_forgery_helper_leaves_a_sound_ledger_intact(self):
+        # The helper below recomputes what a careful forger would: on the exported ledger it changes nothing.
+        found = self.verify(reledgered(self.files, self.files["evidence/ledger.jsonl"], declare_complete=False))
+        self.assertEqual((found["status"], found["problems"]), ("INTACT", []))
+
+    def test_a_ledger_whose_chain_is_broken_is_never_intact_even_when_the_manifest_agrees(self):
+        ledger = self.files["evidence/ledger.jsonl"]
+        for name, damaged in (("a field changed", edited(ledger, 1, b'"iteration":1', b'"iteration":7')),
+                              ("a record removed", b"\n".join(line for number, line in enumerate(ledger.split(b"\n")) if number != 0)),
+                              ("a record cut short", b"\n".join(line[:40] if number == 1 else line
+                                                                for number, line in enumerate(ledger.split(b"\n")))),
+                              ("no final newline", ledger.rstrip(b"\n"))):
+            found = self.verify(reledgered(self.files, damaged))
+            self.assertEqual((found["status"], found["exit_code"]), ("MODIFIED", 2), name)
+            self.assertIn("LEDGER_DAMAGED", codes(found), name)
+            self.assertNotIn("LEDGER_MISMATCH", codes(found), name)  # the manifest agrees: the ledger itself is what fails
+
+    def test_a_ledger_that_lost_records_the_state_had_seen_is_not_attested(self):
+        lines = self.files["evidence/ledger.jsonl"].split(b"\n")
+        shorter = b"\n".join(lines[:-2]) + b"\n"  # the last record gone; what is left still chains
+        self.assertEqual(evidence.parse(shorter).problems, [])
+        found = self.verify(reledgered(self.files, shorter))
+        self.assertEqual(found["status"], "MODIFIED")
+        self.assertIn("LEDGER_UNANCHORED", codes(found))
+        self.assertIn("GATE_NOT_ABOUT_LEDGER", codes(found))
+
+    def test_a_record_of_a_later_schema_is_never_promoted_to_valid(self):
+        ledger = evidence.parse(self.files["evidence/ledger.jsonl"])
+        record = {"version": 2, "id": f"E-{ledger.count + 1:04d}", "seq": ledger.count + 1, "at": "2026-11-05T12:00:00+00:00",
+                  "kind": "command", "executor": "runtime", "criteria": ["AC-01"], "result": "passed", "prev": ledger.head}
+        record["hash"] = evidence._digest(record)
+        longer = self.files["evidence/ledger.jsonl"] + json.dumps(record, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        found = self.verify(reledgered(self.files, longer))
+        self.assertNotIn("LEDGER_DAMAGED", codes(found))  # the chain holds it: a later version may have written it
+        rows = {row["id"]: row for row in json.loads(entries(reledgered(self.files, longer))["evidence/validity.json"])["records"]}
+        self.assertEqual((rows[record["id"]]["validity"], rows[record["id"]]["causes"]), ("INVALID", ["RECORD_UNKNOWN_SHAPE"]))
+        self.assertIn("GATE_NOT_ABOUT_LEDGER", codes(found))
+        self.assertNotEqual(found["status"], "INTACT")
+
+    def test_a_bundle_without_a_gate_is_incomplete_whatever_its_manifest_declares(self):
+        files = {name: data for name, data in self.files.items() if name != "gate/evaluation.json"}
+        manifest = json.loads(files[bundle.MANIFEST])
+        manifest["files"] = [entry for entry in manifest["files"] if entry["path"] != "gate/evaluation.json"]
+        manifest.update(gate=None, omissions=[], complete=True)
+        found = self.verify(resealed({**files, bundle.MANIFEST: bundle.canonical(manifest)}, {}))
+        self.assertEqual((found["status"], codes(found)), ("INCOMPLETE", {"NO_GATE"}))
 
     def test_an_edited_manifest_is_found(self):
         manifest = json.loads(self.files[bundle.MANIFEST])
@@ -323,7 +414,7 @@ class ExportTests(Case):
         with patch.object(bundle, "_bytes", side_effect=moving), patch.object(bundle.time, "sleep"):
             with self.assertRaises(bundle.Inconsistent):
                 bundle.build(path, "summary")
-        self.assertEqual(len(calls), 4 * bundle.ATTEMPTS)
+        self.assertEqual(len(calls), 2 * len(bundle.TAKEN) * bundle.ATTEMPTS)  # each file of the view read twice per attempt
 
     def test_a_gate_saved_before_the_ledger_moved_on_is_named_and_makes_the_bundle_incomplete(self):
         _task_id, path, _workspace = self.blocked()
@@ -345,6 +436,218 @@ class ExportTests(Case):
         made = bundle.build(path, "summary", clock=CLOCK)
         self.assertTrue(made.manifest["ledger"]["incomplete_tail"])
         self.assertTrue(entries(made.data)["evidence/ledger.jsonl"].endswith(b"\n"))
+        self.assertEqual(bundle.verify(made.data)["status"], "INCOMPLETE")
+
+    def snapshot(self, path) -> dict[str, bytes | None]:
+        return {name: bundle._bytes(path / name) for name in bundle.TAKEN}
+
+    def test_a_damaged_ledger_is_exported_as_it_is_and_never_checked_as_intact(self):
+        _task_id, path, _workspace = self.blocked()
+        damaged = edited((path / evidence.LEDGER).read_bytes(), 1, b'"iteration":1', b'"iteration":7')
+        (path / evidence.LEDGER).write_bytes(damaged)
+        before = self.snapshot(path)
+        made = bundle.build(path, "summary", clock=CLOCK)
+        self.assertEqual(self.snapshot(path), before)  # nothing repaired, restarted or rewritten by an export
+        files = entries(made.data)
+        self.assertEqual(files["evidence/ledger.jsonl"], damaged)
+        self.assertEqual((made.manifest["ledger"]["problems"], made.manifest["ledger"]["head"]), (1, ""))
+        self.assertIn("fails its integrity check", files["summary.md"].decode())
+        rows = json.loads(files["evidence/validity.json"])["records"]
+        self.assertFalse(any(row["validity"] == "VALID" for row in rows[1:]))  # from the record that does not fit, nothing counts
+        found = bundle.verify(made.data)
+        self.assertEqual((found["status"], found["exit_code"]), ("MODIFIED", 2))
+        self.assertTrue({"LEDGER_DAMAGED", "GATE_NOT_ABOUT_LEDGER"} <= codes(found), found["problems"])
+        self.assertNotIn("LEDGER_MISMATCH", codes(found))
+
+    def test_a_ledger_that_lost_its_last_records_is_exported_unanchored_and_not_attested(self):
+        _task_id, path, _workspace = self.blocked()
+        lines = (path / evidence.LEDGER).read_bytes().split(b"\n")
+        (path / evidence.LEDGER).write_bytes(b"\n".join(lines[:-2]) + b"\n")
+        made = bundle.build(path, "summary", clock=CLOCK)
+        self.assertEqual((made.manifest["ledger"]["anchored"], made.manifest["ledger"]["problems"]), (False, 1))
+        found = bundle.verify(made.data)
+        self.assertEqual(found["status"], "MODIFIED")
+        self.assertIn("LEDGER_UNANCHORED", codes(found))
+
+    def test_a_tampered_invalidation_is_found_even_in_a_careful_forgery(self):
+        task_id, path, workspace = self.blocked()
+        (workspace / "feature.txt").write_text("good, and changed", encoding="utf-8")
+        recheck_acceptance(self.home, task_id)
+        files = entries(bundle.build(path, "summary", clock=CLOCK).data)
+        lines = files["evidence/ledger.jsonl"].split(b"\n")
+        index = next(number for number, line in enumerate(lines) if b'"kind":"invalidation"' in line)
+        self.assertIn(b'"E-0001"', lines[index])
+        # The invalidation no longer names E-0001: the passed check about the earlier files would count again.
+        forged = reledgered(files, edited(files["evidence/ledger.jsonl"], index, b'"E-0001",', b""))
+        found = bundle.verify(forged)
+        self.assertEqual(found["status"], "MODIFIED")
+        self.assertIn("LEDGER_DAMAGED", codes(found))
+        # Removed altogether from the end of the ledger, it leaves a ledger the saved state no longer finds itself in.
+        if index == len(lines) - 2:
+            found = bundle.verify(reledgered(files, b"\n".join(lines[:index]) + b"\n"))
+            self.assertIn("LEDGER_UNANCHORED", codes(found))
+
+    def changing(self, path, change, times=1):
+        """`bundle._build` that calls `change` after the first `times` bundles are made: as a run writing during an export."""
+        real, made = bundle._build, []
+
+        def build(*args, **kwargs):
+            result = real(*args, **kwargs)
+            made.append(result)
+            if len(made) <= times:
+                change(len(made))
+            return result
+
+        return patch.object(bundle, "_build", side_effect=build), made
+
+    def test_a_task_md_changed_while_the_bundle_is_made_is_read_again_never_mixed(self):
+        _task_id, path, _workspace = self.blocked()
+        task = path / "task.md"
+        written = lambda _n: task.write_bytes(task.read_bytes() + b"\nA line added during the export.\n")  # noqa: E731
+        patched, made = self.changing(path, written)
+        with patched, patch.object(bundle.time, "sleep"):
+            result = bundle.build(path, "summary", clock=CLOCK)
+        self.assertEqual(len(made), 2)  # the first bundle was made from a view that no longer held at its end
+        contract = json.loads(entries(result.data)["task/contract.json"])
+        self.assertIn("A line added during the export.", contract["description"])
+        self.assertEqual(bundle.verify(result.data)["status"], "INTACT")
+        patched, made = self.changing(path, written, times=bundle.ATTEMPTS)
+        with patched, patch.object(bundle.time, "sleep"), self.assertRaises(bundle.Inconsistent):
+            bundle.build(path, "summary", clock=CLOCK)
+        self.assertEqual(len(made), bundle.ATTEMPTS)
+
+    def test_a_state_or_ledger_written_while_the_bundle_is_made_is_bundled_from_the_later_view(self):
+        _task_id, path, _workspace = self.blocked()
+        state = read_json(path / "state.json")
+
+        def saved(_n):
+            save_json(path / "state.json", {**state, "updated_at": "2026-11-05T12:30:00+00:00"})
+
+        patched, made = self.changing(path, saved)
+        with patched, patch.object(bundle.time, "sleep"):
+            result = bundle.build(path, "summary", clock=CLOCK)
+        self.assertEqual(len(made), 2)
+        self.assertEqual(json.loads(entries(result.data)["task/contract.json"])["task"]["updated_at"], "2026-11-05T12:30:00+00:00")
+
+        def appended(_n):
+            evidence.append(path, "authorization", executor="user", criteria=["AC-02"], result="denied", iteration=1)
+
+        count = evidence.read(path).count
+        patched, made = self.changing(path, appended)
+        with patched, patch.object(bundle.time, "sleep"):
+            result = bundle.build(path, "detailed", clock=CLOCK)
+        self.assertEqual((len(made), result.manifest["ledger"]["count"]), (2, count + 1))
+        self.assertFalse(result.manifest["gate"]["about_exported_ledger"])  # the gate saw the ledger before that record
+        self.assertEqual(entries(result.data)["evidence/ledger.jsonl"], (path / evidence.LEDGER).read_bytes())
+        self.assertNotIn(bundle.verify(result.data)["status"], {"MODIFIED", "MALFORMED"})
+
+    def test_an_export_beside_a_run_that_writes_is_coherent_or_refused(self):
+        _task_id, path, _workspace = self.blocked()
+        state, stop, outcomes = read_json(path / "state.json"), threading.Event(), []
+        count = evidence.read(path).count
+
+        def run():
+            number = 0
+            while not stop.is_set() and number < 40:
+                number += 1
+                evidence.append(path, "authorization", executor="user", criteria=["AC-02"], result="denied", iteration=1)
+                save_json(path / "state.json", {**state, "updated_at": f"2026-11-05T13:{number:02d}:00+00:00"})
+
+        writer = threading.Thread(target=run)
+        writer.start()
+        try:
+            for _ in range(6):
+                try:
+                    outcomes.append(bundle.verify(bundle.build(path, "detailed", clock=CLOCK).data)["status"])
+                except bundle.Inconsistent:
+                    outcomes.append("refused")
+        finally:
+            stop.set()
+            writer.join(30)
+        self.assertGreater(evidence.read(path).count, count)  # the writer did write beside the exports
+        self.assertEqual(len(outcomes), 6)
+        self.assertFalse({"MODIFIED", "MALFORMED", "UNVERIFIABLE"} & set(outcomes), outcomes)
+
+    def test_a_state_being_replaced_is_read_again_and_a_lasting_refusal_is_raised(self):
+        # Windows refuses to open a file for a moment while `save_json` replaces it: as a run does beside an export.
+        # POSIX has no such refusal and asks nothing again (`storage.SHARING_RETRY_SECONDS` is 0 there): Windows' budget here.
+        busy = SimpleNamespace(read_bytes=unittest.mock.Mock(side_effect=[PermissionError(13, "in use"), b"{}"]))
+        with patch("patchrondo.storage.SHARING_RETRY_SECONDS", 2.0):
+            self.assertEqual(bundle._bytes(busy), b"{}")
+        gone = SimpleNamespace(read_bytes=unittest.mock.Mock(side_effect=FileNotFoundError))
+        self.assertIsNone(bundle._bytes(gone))
+        refused = SimpleNamespace(read_bytes=unittest.mock.Mock(side_effect=PermissionError(13, "denied")))
+        with patch("patchrondo.storage.SHARING_RETRY_SECONDS", 0.05), self.assertRaises(PermissionError):
+            bundle._bytes(refused)
+
+    def test_a_log_replaced_or_grown_while_it_is_read_is_left_out(self):
+        _task_id, path, _workspace = self.blocked()
+        name = self.log_name(path)
+        log = path / "runs" / name
+        real = os.fdopen
+
+        def opening(fd, *args, **kwargs):
+            stream = real(fd, *args, **kwargs)
+            if os.path.samestat(os.fstat(fd), os.stat(log)):
+                replacement = log.with_name(log.name + ".new")
+                replacement.write_bytes(b"another file put in its place\n")
+                try:
+                    os.replace(replacement, log)  # POSIX: the name now leads to another file
+                except PermissionError:
+                    replacement.unlink()          # Windows refuses to replace a file that is open: it grows instead
+                    with open(log, "ab") as grown:
+                        grown.write(b"written while it was read\n")
+            return stream
+
+        with patch("patchrondo.bundle.os.fdopen", side_effect=opening):
+            made = bundle.build(path, "detailed", clock=CLOCK)
+        self.assertIn({"item": f"logs/{name}", "reason": "changed_during_export"}, made.manifest["omissions"])
+        self.assertNotIn(f"logs/{name}", entries(made.data))
+        self.assertEqual(bundle.verify(made.data)["status"], "INCOMPLETE")
+
+    def test_a_log_that_becomes_a_link_after_it_was_checked_is_never_followed(self):
+        _task_id, path, _workspace = self.blocked()
+        name = self.log_name(path)
+        log = path / "runs" / name
+        outside = Path(self.tmp.name) / "outside.txt"
+        outside.write_text("private file outside the task", encoding="utf-8")
+        real, swapped = bundle.winacl.is_reparse_point, []
+
+        def checked(target):
+            answer = real(target)
+            if Path(target) == log and not swapped:
+                swapped.append(True)
+                log.unlink()
+                os.symlink(outside, log)  # between the check of the file and its opening
+            return answer
+
+        try:
+            os.symlink(outside, Path(self.tmp.name) / "probe-link")
+        except OSError:
+            self.skipTest("Symbolic links cannot be created here")
+        with patch("patchrondo.bundle.winacl.is_reparse_point", side_effect=checked):
+            made = bundle.build(path, "detailed", clock=CLOCK)
+        reason = next(entry["reason"] for entry in made.manifest["omissions"] if entry["item"] == f"logs/{name}")
+        self.assertIn(reason, {"outside_the_task", "unreadable", "changed_during_export"})
+        self.assertFalse(any(b"private file" in data for data in entries(made.data).values()))
+
+    def test_a_log_too_large_to_hash_is_cut_and_said_to_be_unknown(self):
+        _task_id, path, _workspace = self.blocked()
+        name = self.log_name(path)
+        with patch.object(bundle, "HASH_BYTES", -1):  # every log is over it, even an empty one
+            made = bundle.build(path, "detailed", clock=CLOCK)
+        source = next(entry["source"] for entry in made.manifest["files"] if entry["path"] == f"logs/{name}")
+        self.assertIsNone(source["matches_record"])  # not hashed: never said to match, never said to differ
+        self.assertFalse(any(entry["item"] == f"logs/{name}" for entry in made.manifest["omissions"]))
+
+    def test_a_log_that_is_no_longer_the_one_its_record_hashed_is_named_as_such(self):
+        _task_id, path, _workspace = self.blocked()
+        name = self.log_name(path)
+        with (path / "runs" / name).open("a", encoding="utf-8") as stream:
+            stream.write("\nwritten after the record\n")
+        made = bundle.build(path, "detailed", clock=CLOCK)
+        self.assertTrue(any(entry["item"] == f"logs/{name}" and "changed after its record hashed it" in entry["reason"]
+                            for entry in made.manifest["omissions"]))
         self.assertEqual(bundle.verify(made.data)["status"], "INCOMPLETE")
 
     def test_stale_evidence_keeps_its_result_beside_its_validity(self):
@@ -407,8 +710,8 @@ class ExportTests(Case):
             bundle.build(path, "everything")
 
 
-class CenterTests(Case):
-    """The Verification Center's read model, and the request's end-to-end scenario through the real loop."""
+class CenterCase(Case):
+    """An interface beside the project, to read the Verification Center as the page does. No tests of its own."""
 
     def setUp(self):
         super().setUp()
@@ -420,6 +723,10 @@ class CenterTests(Case):
 
     def kinds(self, view) -> list[str]:
         return [action["kind"] for action in view["actions"]]
+
+
+class CenterTests(CenterCase):
+    """The Verification Center's read model, and the request's end-to-end scenario through the real loop."""
 
     def test_from_a_blocked_task_to_a_completed_one_backend_center_and_bundles_agree(self):
         task_id, path, workspace = self.task(GOOD, MO2)
@@ -524,6 +831,191 @@ class CenterTests(Case):
         self.assertEqual(self.app.bundle_preview(self.project, task_id, "summary")["manifest"]["task_id"], task_id)
         with self.assertRaises(ValueError):
             self.app.bundle_preview(self.project, task_id, "../../etc")
+
+
+class FreshnessTests(CenterCase):
+    """A saved gate is shown as current only while its ledger, its files and its configuration are what it was evaluated on."""
+
+    def passed(self):
+        """A task whose gate is PASS, paused at validate: the run that would complete it calls no agent."""
+        task_id, path, workspace = self.task(GOOD, MO2)
+        run_task(self.home, task_id, adapter=Agents())
+        attach_evidence(self.home, task_id, "AC-02", summary="Started the mod inside Mod Organizer 2",
+                        reference="https://example.invalid/log")
+        state = read_json(path / "state.json")
+        self.assertEqual((state["status"], state["phase"], state["gate"]["decision"]), ("paused", "validate", "PASS"))
+        return task_id, path, workspace
+
+    def test_a_pass_on_unchanged_files_is_current_and_offers_completion(self):
+        task_id, _path, _workspace = self.passed()
+        view = self.view(task_id)
+        self.assertEqual((view["gate_state"], view["freshness"]["causes"]), ("current", []))
+        self.assertEqual({key: view["freshness"][key] for key in ("ledger", "files", "configuration", "evidence")},
+                         {"ledger": "current", "files": "current", "configuration": "current", "evidence": "current"})
+        self.assertIsNotNone(view["freshness"]["checked_at"])
+        self.assertEqual(self.kinds(view)[0], "complete")
+
+    def test_a_pass_on_files_that_changed_since_is_not_current_and_offers_no_completion(self):
+        task_id, path, workspace = self.passed()
+        before, ledger = read_json(path / "state.json"), (path / evidence.LEDGER).read_bytes()
+        (workspace / "feature.txt").write_text("good, and changed after the gate", encoding="utf-8")
+        view = self.view(task_id)
+        self.assertEqual((view["gate"]["decision"], view["gate_state"], view["freshness"]["files"], view["freshness"]["causes"]),
+                         ("PASS", "behind", "changed", ["WORKSPACE_CHANGED"]))
+        self.assertNotIn("complete", self.kinds(view))
+        self.assertEqual((view["actions"][0]["kind"], view["actions"][0]["label"], view["actions"][0].get("primary")),
+                         ("check_again", "Evaluate again", True))
+        self.assertIn("files changed", view["actions"][0]["detail"])
+        # The view reads only: the saved gate and the ledger are as they were.
+        self.assertEqual((read_json(path / "state.json"), (path / evidence.LEDGER).read_bytes()), (before, ledger))
+
+    def test_a_change_that_keeps_the_size_and_the_time_is_still_seen(self):
+        task_id, _path, workspace = self.passed()
+        target = workspace / "feature.txt"
+        info = target.stat()
+        target.write_bytes(target.read_bytes().replace(b"good", b"gooD"))
+        os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+        self.assertEqual((target.stat().st_size, target.stat().st_mtime_ns), (info.st_size, info.st_mtime_ns))
+        view = self.view(task_id)
+        self.assertEqual((view["gate_state"], view["freshness"]["causes"]), ("behind", ["WORKSPACE_CHANGED"]))
+        self.assertNotIn("complete", self.kinds(view))
+
+    def test_a_pass_older_than_the_ledger_is_not_current(self):
+        task_id, path, _workspace = self.passed()
+        state = read_json(path / "state.json")
+        evidence.append(path, "authorization", executor="user", criteria=["AC-02"], result="denied", iteration=state["iteration"])
+        view = self.view(task_id)
+        self.assertEqual((view["gate_state"], view["freshness"]["ledger"], view["freshness"]["causes"]),
+                         ("behind", "changed", ["LEDGER_CHANGED"]))
+        self.assertNotIn("complete", self.kinds(view))
+
+    def test_a_pass_under_another_configuration_has_to_be_evaluated_again(self):
+        task_id, _path, _workspace = self.passed()
+        self.configure(commands=[self.check, [sys.executable, "-c", "pass"]])
+        view = self.view(task_id)
+        self.assertEqual((view["gate_state"], view["freshness"]["files"], view["freshness"]["configuration"],
+                          view["freshness"]["causes"]), ("behind", "current", "changed", ["CONFIGURATION_CHANGED"]))
+        self.assertNotIn("complete", self.kinds(view))
+        self.assertEqual(view["actions"][0]["label"], "Evaluate again")
+        # Put back, the configuration is again the one the gate was evaluated with.
+        self.configure(commands=[self.check])
+        self.assertEqual(self.view(task_id)["gate_state"], "current")
+
+    def test_files_that_cannot_be_read_leave_the_gate_unknown_never_current(self):
+        task_id, path, workspace = self.passed()
+        with patch("patchrondo.app.fingerprint", side_effect=gitops.FingerprintError("feature.txt cannot be read")):
+            view = self.view(task_id)
+        self.assertEqual((view["gate"]["decision"], view["gate_state"], view["freshness"]["files"], view["freshness"]["causes"]),
+                         ("PASS", "unknown", "unknown", ["FINGERPRINT_UNAVAILABLE"]))
+        self.assertNotIn("complete", self.kinds(view))
+        self.assertIn("check_again", self.kinds(view))
+        with patch("patchrondo.app.fingerprint", side_effect=gitops.GitError("Git: not a repository")):
+            self.assertEqual(self.view(task_id)["gate_state"], "unknown")
+        state = read_json(path / "state.json")
+        save_json(path / "state.json", {**state, "worktree": str(workspace.parent / "gone")})
+        view = self.view(task_id)
+        self.assertEqual((view["gate_state"], view["freshness"]["causes"]), ("unknown", ["WORKTREE_MISSING"]))
+        save_json(path / "state.json", {**state, "gate": {**state["gate"], "snapshot": None}})
+        self.assertEqual(self.view(task_id)["freshness"]["causes"], ["FILES_NOT_COMPARED"])
+        with patch.object(self.app, "_config", return_value=(None, "config.json cannot be read")):
+            save_json(path / "state.json", state)
+            view = self.view(task_id)
+        self.assertEqual((view["gate_state"], view["freshness"]["files"], view["freshness"]["causes"]),
+                         ("unknown", "current", ["CONFIGURATION_UNREADABLE"]))
+
+    def test_evaluating_again_replaces_what_is_shown_and_completes_nothing_by_itself(self):
+        task_id, path, workspace = self.passed()
+        (workspace / "feature.txt").write_text("good, and changed after the gate", encoding="utf-8")
+        old = read_json(path / "state.json")["gate"]["id"]
+        with patch.object(self.app, "start_run") as start:
+            result = self.app.criteria_check(self.project, task_id, {"resume": True})  # what "Complete the task" posts
+        start.assert_not_called()  # the backend decided again, on these files: no run, no `_complete`
+        self.assertIs(result["completes"], False)
+        state = read_json(path / "state.json")
+        self.assertEqual(state["status"], "paused")
+        self.assertNotEqual((state["gate"]["id"], state["gate"]["decision"]), (old, "PASS"))
+        view = self.view(task_id)
+        self.assertEqual((view["gate"]["id"], view["gate_state"]), (state["gate"]["id"], "current"))
+        self.assertEqual(view["gate"]["decision"], "NEEDS_REVERIFICATION")
+        self.assertNotIn("complete", self.kinds(view))
+
+    def test_a_completed_task_keeps_its_gate_as_history_and_is_not_fingerprinted(self):
+        task_id, path, workspace = self.passed()
+        run_task(self.home, task_id, adapter=Agents())
+        saved = read_json(path / "state.json")
+        (workspace / "feature.txt").write_text("changed after completion", encoding="utf-8")
+        with patch("patchrondo.app.fingerprint", side_effect=AssertionError("an ended task is not fingerprinted")):
+            view = self.view(task_id)
+        self.assertEqual((view["task"]["status"], view["gate"]["decision"], view["gate_state"], self.kinds(view)),
+                         ("done", "PASS", "historical", ["export"]))
+        self.assertEqual(read_json(path / "state.json"), saved)
+
+    def test_a_task_from_before_the_gate_gets_no_invented_freshness(self):
+        task_id, path, _workspace = self.task(GOOD)
+        state = read_json(path / "state.json")
+        del state["acceptance"]
+        state.pop("gate", None)
+        save_json(path / "state.json", state)
+        with patch("patchrondo.app.fingerprint", side_effect=AssertionError("nothing to compare")):
+            view = self.view(task_id)
+        self.assertEqual((view["gate"], view["gate_state"], view["freshness"]["causes"]), (None, "not_evaluated", []))
+
+    def test_the_dashboard_reads_the_files_without_a_lock_and_gets_the_engines_digest(self):
+        _task_id, path, workspace = self.passed()
+        (workspace / "feature.txt").write_text("good, and changed", encoding="utf-8")
+        (workspace / "new.txt").write_text("untracked", encoding="utf-8")
+        # A tracked file whose time changes and whose content does not: a plain `git status` refreshes the index then.
+        tracked = workspace / gitops.git("ls-files", cwd=workspace).splitlines()[0]
+        later = tracked.stat().st_mtime_ns + 5_000_000_000
+        os.utime(tracked, ns=(later, later))
+        index = Path(gitops.git("rev-parse", "--git-dir", cwd=workspace))
+        index = (index if index.is_absolute() else workspace / index) / "index"
+        before = index.read_bytes()
+        found = gitops.fingerprint(workspace, reader=True)
+        self.assertEqual(index.read_bytes(), before)  # `git status` refreshed nothing on disk
+        self.assertEqual(found, gitops.fingerprint(workspace))
+        self.assertNotEqual(found, read_json(path / "state.json")["gate"]["snapshot"])
+
+    def test_evidence_pages_never_fingerprint_the_files(self):
+        task_id, _path, _workspace = self.passed()
+        with patch("patchrondo.app.fingerprint", side_effect=AssertionError("evidence pages read the ledger only")):
+            self.app.verification_evidence(self.project, task_id, {})
+            self.app.verification_record(self.project, task_id, "E-0001")
+
+    def test_views_at_once_share_a_reading_only_when_it_started_after_they_asked(self):
+        workspace = Path(self.tmp.name)
+        started, release, calls = threading.Event(), threading.Event(), []
+
+        def slow(_folder, **_options):
+            calls.append(None)
+            number = len(calls)
+            if number == 1:
+                started.set()
+                release.wait(10)
+            return f"reading-{number}"
+
+        found = {}
+
+        def ask(name):
+            found[name] = self.app._fingerprint(workspace)
+
+        with patch("patchrondo.app.fingerprint", side_effect=slow):
+            first = threading.Thread(target=ask, args=("first",))
+            first.start()
+            self.assertTrue(started.wait(10))
+            later = [threading.Thread(target=ask, args=(name,)) for name in ("second", "third")]
+            for thread in later:
+                thread.start()
+            deadline = time.monotonic() + 10
+            while self.app._print_ticket < 3 and time.monotonic() < deadline:  # both asked, and wait for the reading in progress
+                time.sleep(0.01)
+            self.assertEqual(self.app._print_ticket, 3)
+            release.set()
+            for thread in [first, *later]:
+                thread.join(10)
+            self.assertEqual(found, {"first": "reading-1", "second": "reading-2", "third": "reading-2"})
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(self.app._fingerprint(workspace), "reading-3")  # a request after it, a reading of its own
 
 
 if __name__ == "__main__":

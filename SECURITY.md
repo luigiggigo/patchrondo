@@ -398,8 +398,10 @@ you would show the logs to.
 SHA-256 and size and carries a digest of itself without its own identity.
 `patchrondo bundle verify` recomputes them and checks that the ledger's hash
 chain, the validity of each record and the saved gate's ID agree with what
-the bundle says. That shows changes made after the export by somebody who
-did not recompute everything. Nothing is signed (`signature: null`): it does
+the bundle says. It also checks the ledger on its own: one that fails its
+hash chain, or no longer holds the records the task state had seen, is
+`MODIFIED` even when the manifest names the damage. That shows changes made
+after the export by somebody who did not recompute everything. Nothing is signed (`signature: null`): it does
 not prove that PatchRondo produced the bundle, nor that the task's files
 were what the records say.
 

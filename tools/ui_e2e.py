@@ -1803,8 +1803,31 @@ def scenario_verification(env: Env) -> None:
     page.press("Escape")
     page.wait("!q('.dialog')", 5, "the dialog to close")
     status, result = env.api("POST", f"{base}/criteria/AC-02/evidence", {"summary": "Started the mod inside Mod Organizer 2",
-                                                                        "reference": "https://example.invalid/log", "resume": True})
+                                                                        "reference": "https://example.invalid/log", "resume": False})
     env.check("the evidence recorded elsewhere lets a run complete it without an agent", status == 201 and result["completes"] is True, str(result)[:300])
+    complete = "qa('.vc-action button').some((b) => b.textContent.includes('Complete the task'))"
+    env.expect("the open page follows: the gate passes and offers to complete", f"q('.vc-overview').innerText.includes('PASS') && {complete}", 15)
+
+    # The task's files change without the ledger hearing of it: the saved PASS no longer describes them.
+    feature = Path(paused["worktree"]) / "feature.txt"
+    kept = feature.read_bytes()
+    feature.write_bytes(kept + b"\nchanged outside PatchRondo\n")
+    env.go("tasks")
+    env.go(f"tasks/{project['id']}/{task_id}/verification")
+    env.expect("a PASS on files that changed since is not current, and nothing offers to complete it",
+               f"Boolean(q('.vc-overview')) && q('.vc-overview').innerText.includes('Not current') && q('.vc-overview').innerText.includes('files changed') && !{complete}", 15)
+    env.check("the way back is to evaluate again, which calls no agent",
+              page.js("qa('.vc-action-label')[0].innerText === 'Evaluate again' && q('.vc-section').innerText.includes('WORKSPACE_CHANGED')"),
+              page.js("qa('.vc-action-label').map((e) => e.innerText).join(' | ')"))
+    env.shot("verification-not-current")
+    feature.write_bytes(kept)
+    page.js("(byText('Overview', '[role=tab]').click(), true)")
+    page.js("(byText('Verification', '[role=tab]').click(), true)")
+    env.expect("back on the tab with the files as they were, the same PASS is current again",
+               f"q('.vc-overview').innerText.includes('PASS') && !q('.vc-overview').innerText.includes('Not current') && {complete}", 15)
+    env.check("the saved gate was never rewritten by looking at it",
+              json.loads((path / "state.json").read_text(encoding="utf-8"))["gate"]["id"] == result["gate"]["id"])
+    page.js("(byText('Complete the task', '.vc-action button').click(), true)")
     env.wait_state(path, lambda s: s["status"] == "done", 60)
     env.expect("the open page follows: completed, with the gate PASS",
                "q('.vc-overview').innerText.includes('This task is completed') && q('.vc-overview').innerText.includes('PASS')", 15)

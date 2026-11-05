@@ -136,8 +136,10 @@ first, details progressively.
 
 - One card on top: Rondo, one sentence, the gate's decision in words with its
   code beside it and when it was evaluated. Green is used only for a `PASS`
-  that describes the evidence as it is now; a `PASS` saved before newer
-  evidence is amber and says *Not current*.
+  that describes the task as it is now (its evidence, its files and its
+  checks); an evaluation one of them moved past is amber and says *Not
+  current* with the cause, and one that could not be compared says *Not
+  confirmed*.
 - Four figures that are easy to confuse are kept apart: code review, required
   criteria verified, evidence records that count, and what needs attention.
 - *What you can do now* comes second: each action with what it calls (*No

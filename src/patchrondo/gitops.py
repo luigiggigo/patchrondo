@@ -83,9 +83,15 @@ READS = 3           # attempts at reading a file that keeps changing while it is
 MOUNT_POINT = 0xA0000003  # IO_REPARSE_TAG_MOUNT_POINT of winnt.h, a junction; `stat` defines it on Windows only
 
 
-def _names(worktree: Path) -> list[bytes]:
+# Options of a reading by somebody who must not disturb the copy (the dashboard): no optional lock (`git status`
+# then does not write the index it refreshed) and no file-system monitor program named by the repository's
+# configuration. Neither changes what Git prints, so the digest is the same.
+READER = ("--no-optional-locks", "-c", "core.fsmonitor=false")
+
+
+def _names(worktree: Path, options: tuple[str, ...] = ()) -> list[bytes]:
     """What Git does not ignore, as the bytes Git names it with: a name that is not UTF-8 is still the file's name."""
-    proc = subprocess.run(["git", "-C", str(worktree), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    proc = subprocess.run(["git", "-C", str(worktree), *options, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
                           capture_output=True, timeout=45, check=False)
     if proc.returncode:
         raise git_failure((proc.stderr or proc.stdout).decode("utf-8", "replace").strip())
@@ -152,7 +158,7 @@ def content_digest(path: Path, name: str | None = None) -> bytes:
     raise FingerprintError(f"{shown} kept changing while it was read")
 
 
-def fingerprint(worktree: Path, _depth: int = 0) -> str:
+def fingerprint(worktree: Path, _depth: int = 0, *, reader: bool = False) -> str:
     """Digest of HEAD, `git status` and every file Git does not ignore: its name, and its content or link target.
 
     Names are sorted as bytes, so the order of a listing never matters, and a
@@ -166,19 +172,22 @@ def fingerprint(worktree: Path, _depth: int = 0) -> str:
     could not read is never given.
 
     For a copy without links, nested repositories or names Git cannot give as
-    UTF-8, the digest is the one earlier versions computed.
+    UTF-8, the digest is the one earlier versions computed. `reader` reads
+    with `READER`, for a caller that does not hold the task lock: the same
+    digest, without writing anything into the copy's Git directory.
     """
+    options = READER if reader else ()
     digest = hashlib.sha256()
     try:
-        head = git("rev-parse", "HEAD", cwd=worktree)
+        head = git(*options, "rev-parse", "HEAD", cwd=worktree)
     except GitError:
         if not _depth:
             raise
         head = ""  # a nested repository without a commit yet
     digest.update(head.encode("utf-8"))
-    digest.update(git("status", "--porcelain", cwd=worktree).encode("utf-8"))
+    digest.update(git(*options, "status", "--porcelain", cwd=worktree).encode("utf-8"))
     seen: dict = {}
-    for raw in _names(worktree):
+    for raw in _names(worktree, options):
         digest.update(raw + b"\0")
         name = os.fsdecode(raw)
         path = worktree / name
@@ -191,7 +200,7 @@ def fingerprint(worktree: Path, _depth: int = 0) -> str:
                 digest.update(b"file\0" + content_digest(path, name))
             elif _depth < NESTED and path.is_dir() and not _linked(path) and (path / ".git").exists():
                 try:
-                    digest.update(b"repository\0" + bytes.fromhex(fingerprint(path, _depth + 1)))
+                    digest.update(b"repository\0" + bytes.fromhex(fingerprint(path, _depth + 1, reader=reader)))
                 except GitError as exc:
                     raise FingerprintError(f"Git could not describe the repository {name} inside the copy: {exc}") from exc
             else:

@@ -1010,6 +1010,34 @@ def _validation_moved(root: Path, cfg: dict, path: Path, state: dict, workspace:
             or before != [(criterion.status, criterion.missing) for criterion in record.criteria])
 
 
+def gate_currency(cfg: dict, state: dict, ledger: evidence.Ledger, workspace: Path, current: str) -> dict:
+    """Whether the gate saved in `state` still describes the task's files and configuration, given their fingerprint now.
+
+    The comparisons `_complete` makes before it writes `done`, made here to
+    show them: no lock, nothing written, no gate evaluated. `files` compares
+    `current` with the fingerprint the gate was evaluated on; `configuration`
+    whether the test results would still be about these files and checks
+    (the gate's `fresh`) and whether the same protections are switched off;
+    `evidence` whether a record that counts would be invalidated by a run now
+    (an artifact or a declared input changed). Each is `current`, `changed`
+    or `not_compared` (the gate was evaluated without the files).
+    """
+    saved = state.get("gate") if isinstance(state.get("gate"), dict) else {}
+    snapshot = saved.get("snapshot")
+    if not isinstance(snapshot, str) or not snapshot:
+        return {"files": "not_compared", "configuration": "not_compared", "evidence": "not_compared"}
+    files = "current" if current == snapshot else "changed"
+    # The test context compared on the gate's own snapshot, so that only the commands, checks, inputs and environment count.
+    fresh = state.get("test_context") == _test_context(cfg, snapshot, workspace)
+    if saved.get("fresh") is None:
+        configuration = "not_compared"
+    else:
+        configuration = "current" if fresh == saved.get("fresh") and gate.protections(cfg) == (saved.get("protections") or []) \
+            else "changed"
+    found = "not_compared" if files != "current" else "changed" if _outdated(cfg, ledger, current, workspace) else "current"
+    return {"files": files, "configuration": configuration, "evidence": found}
+
+
 def _outdated(cfg: dict, ledger: evidence.Ledger, current: str, workspace: Path) -> bool:
     """Whether a record that counts would be invalidated by a run now. Reads only: nothing is written."""
     if provenance.enabled():

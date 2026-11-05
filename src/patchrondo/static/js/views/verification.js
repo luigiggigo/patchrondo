@@ -36,11 +36,16 @@ const resultBadge = (result) => {
 
 // --- What the gate says ------------------------------------------------------------------
 
+// The saved evaluation no longer describes the task (`behind`), or it could not be compared with it (`unknown`).
+const notCurrent = (view) => view.gate_state === "behind" || view.gate_state === "unknown";
+const freshCauses = (view) => (view.freshness?.causes || []).filter((code) => typeof code === "string");
+const causeWords = (view, code) => view.words?.freshness?.[code] || code;
+
 function mood(view) {
   if (view.task.status === "done") return "done";
   if (view.runtime.active) return "working";
   if (!view.gate) return "idle";
-  if (view.gate_state === "behind") return "waiting";
+  if (notCurrent(view)) return "waiting";
   return decisionOf(view.gate.decision).mood;
 }
 
@@ -57,19 +62,23 @@ function headline(view) {
   if (view.runtime.active) return "A run is working on this task. What you see is its last checkpoint; this page follows it.";
   if (!gate) return view.tracked ? "The completion gate has not evaluated this task yet: it does at the next run, or when you check again."
     : "This task was created before criteria and the completion gate were tracked. Nothing is claimed about it in retrospect.";
-  if (view.gate_state === "behind") return "Evidence was recorded after this evaluation was saved, so it may no longer describe the task. Evaluate it again: no agent is called.";
+  const first = freshCauses(view)[0];
+  if (view.gate_state === "behind") return `Not current: ${causeWords(view, first || "LEDGER_CHANGED").toLowerCase()}, so it no longer describes the task. Evaluate it again: no agent is called.`;
+  if (view.gate_state === "unknown") return `Not confirmed: ${first ? causeWords(view, first).toLowerCase() : "it could not be compared with the task as it is now"}. It is shown as saved, and nothing is completed from it.`;
   if (gate.decision === "PASS") return "Every condition holds: the task can be completed, and completing it calls no agent.";
-  const first = (gate.conditions || []).find((entry) => entry && entry.decision === gate.decision);
-  const named = first?.criteria?.length ? ` (${first.criteria.join(", ")})` : "";
-  return `Not complete yet. ${first ? `${reasonWords(first.reason)}${named}.` : decisionOf(gate.decision).help} Next: ${(GATE_ACTIONS[gate.next_action] || gate.next_action || "").toLowerCase()}.`;
+  const held = (gate.conditions || []).find((entry) => entry && entry.decision === gate.decision);
+  const named = held?.criteria?.length ? ` (${held.criteria.join(", ")})` : "";
+  return `Not complete yet. ${held ? `${reasonWords(held.reason)}${named}.` : decisionOf(gate.decision).help} Next: ${(GATE_ACTIONS[gate.next_action] || gate.next_action || "").toLowerCase()}.`;
 }
 
 function when(view) {
   const gate = view.gate;
   if (!gate) return null;
-  const text = { current: `Evaluated ${ago(gate.at)}, on the evidence as it is now`, behind: `Saved ${ago(gate.at)}, before the latest evidence`,
+  const text = { current: `Evaluated ${ago(gate.at)}, on the task as it is now`, behind: `Saved ${ago(gate.at)}, before the latest changes`,
+    unknown: `Saved ${ago(gate.at)}, not confirmed against the task as it is now`, historical: `Evaluated ${ago(gate.at)}, when the task ended`,
     running: `Last checkpoint ${ago(gate.at)}` }[view.gate_state] || `Evaluated ${ago(gate.at)}`;
-  return h("span", { class: "faint", "data-tip": fullDate(gate.at) }, text);
+  const compared = view.freshness?.checked_at ? ` · files compared ${ago(view.freshness.checked_at)}` : "";
+  return h("span", { class: "faint", "data-tip": fullDate(gate.at) }, text + compared);
 }
 
 function stat(label, value, hint, tone, iconName) {
@@ -95,7 +104,10 @@ function overviewCard(view) {
         h("div", { class: "row wrap" },
           decision ? badge(decision.label, tone, { iconName: decision.icon }) : badge("Not evaluated", "neutral", { iconName: "info" }),
           gate ? h("span", { class: "chip mono", "data-tip": "The gate's decision code" }, gate.decision) : null,
-          gate && gate.decision === "PASS" && view.gate_state !== "current" && view.task.status !== "done" ? badge("Not current", "warn", { dot: true }) : null,
+          gate && view.task.status !== "done" && (view.gate_state === "behind" || (gate.decision === "PASS" && view.gate_state === "running"))
+            ? badge("Not current", "warn", { dot: true, tip: freshCauses(view).map((code) => causeWords(view, code)).join(". ") }) : null,
+          gate && view.task.status !== "done" && view.gate_state === "unknown"
+            ? badge("Not confirmed", "warn", { dot: true, tip: freshCauses(view).map((code) => causeWords(view, code)).join(". ") }) : null,
           when(view)))),
     h("div", { class: "grid c4 vc-stats" },
       stat("Code review", code.label, "The reviewer's verdict about the code. Approval alone does not complete a task.", code.tone, "eye"),
@@ -188,20 +200,28 @@ function gateCard(view, ctx) {
           h("span", { class: "faint" }, `→ ${GATE_ACTIONS[entry.action] || entry.action}`), chips(entry.criteria, ctx), chips(entry.evidence, ctx, "evidence"),
           entry.causes?.length ? entry.causes.map((cause) => h("span", { class: "chip mono", "data-tip": view.words.causes[cause] || "" }, cause)) : null)));
   };
+  const fresh = view.freshness || {};
+  const now = { current: "same now", changed: "changed since", unknown: "could not be compared now" };
   const facts = [
     ["Evaluation", h("span", { class: "row wrap" }, h("span", { class: "mono break" }, gate.id), copyButton(gate.id, "Copy"))],
     ["Evaluated", fullDate(gate.at)],
     ["Decision", h("span", { class: "mono" }, `${gate.decision} · next ${gate.next_action}`)],
     ["Code review", h("span", { class: "mono" }, `${gate.code_review || "none"}${gate.review ? ` · ${gate.review}` : ""}`)],
-    ["Files", gate.snapshot ? h("span", { class: "mono break", "data-tip": "Fingerprint of the task's files the gate was evaluated on" }, String(gate.snapshot).slice(0, 16)) : "Not compared"],
-    ["Tests about these files", gate.fresh === true ? "Yes" : gate.fresh === false ? "No" : "Not compared"],
-    ["Ledger", `${plural(gate.ledger?.count ?? 0, "record")} read${view.gate_state === "behind" ? ` · it holds ${view.ledger.count} now` : ""}`],
+    ["Files", gate.snapshot ? h("span", {}, h("span", { class: "mono break", "data-tip": "Fingerprint of the task's files the gate was evaluated on" }, String(gate.snapshot).slice(0, 16)),
+      now[fresh.files] ? ` · ${now[fresh.files]}` : "") : "Not compared"],
+    ["Tests about these files", `${gate.fresh === true ? "Yes" : gate.fresh === false ? "No" : "Not compared"}${now[fresh.configuration] ? ` · checks ${now[fresh.configuration]}` : ""}`],
+    ["Ledger", `${plural(gate.ledger?.count ?? 0, "record")} read${fresh.ledger === "changed" ? ` · it holds ${view.ledger.count} now` : ""}`],
     ["Policy", h("span", { class: "mono" }, `${gate.policy || "?"} · version ${gate.version ?? "?"}`)],
   ];
+  const causes = freshCauses(view);
+  const stale = notCurrent(view) && causes.length && view.task.status !== "done"
+    ? callout({ tone: "warn", iconName: "alert", title: view.gate_state === "behind" ? "This evaluation is not current" : "This evaluation is not confirmed",
+      body: [causes.map((code) => h("div", { class: "row wrap" }, causeWords(view, code), h("span", { class: "chip mono" }, code))),
+        h("div", { class: "muted" }, "It is kept as it was saved. Only an evaluation of the task as it is now can complete it.")] }) : null;
   const settled = (findings.settled || []).length, waiting = (findings.pending_verification || []).length, openBlocking = (findings.open_blocking || []).length;
   return h("details", { class: "card vc-section", open: gate.decision !== "PASS" || view.gate_state !== "current" },
     h("summary", {}, h("h2", {}, gate.decision === "PASS" ? "Why this task can be completed" : "Why this task is not completed"), icon("chevronDown", "vc-chevron")),
-    h("div", { class: "card-body stack" },
+    h("div", { class: "card-body stack" }, stale,
       conditions.length ? h("ol", { class: "vc-conditions", "aria-label": "What keeps the task from completion, in order of precedence" }, conditions.map(row))
         : h("p", {}, "Nothing keeps it from completion: the code is approved, every required criterion is verified by records that count, and the test results are about these files."),
       h("div", { class: "row wrap" },
@@ -480,7 +500,7 @@ export function verificationPanel(projectId, taskId, { openLog, run, goTab }) {
     // Ages are rebuilt with the view: every detail the page fetches follows a change it heard about.
     memo(parts.overview, [view, ago(view.gate?.at)], () => overviewCard(view));
     memo(parts.actions, [view.actions, view.criteria, task.runtime?.can_start], () => actionsCard(view, task, ctx));
-    memo(parts.gate, [view.gate, view.gate_state, view.ledger, view.words], () => gateCard(view, ctx));
+    memo(parts.gate, [view.gate, view.gate_state, view.freshness, view.ledger, view.words], () => gateCard(view, ctx));
     memo(parts.criteria, [view.criteria, view.tracked, task.developer, task.reviewer], () => criteriaCard(view, task, ctx));
     evidence.refresh(view.ledger);
   }
@@ -507,5 +527,7 @@ export function verificationPanel(projectId, taskId, { openLog, run, goTab }) {
     const history = Array.isArray(detail.state.history) ? detail.state.history : [];
     memo(parts.timeline, [history.length, history[history.length - 1], task.developer, task.reviewer], () => timeline(detail, task));
     render();
-  } };
+  },
+  // Coming back to the tab compares the saved gate with the task's files again: they can change without any event.
+  show() { if (view && !pending) load(); } };
 }

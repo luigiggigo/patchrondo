@@ -28,8 +28,9 @@ from . import __version__, acceptance as criteria, activity, agents, bundle, doc
 from . import recovery, repair, runinfo, streams, verification
 from .commands import join_command, split_command
 from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config, create_task,
-                   decide_authorization, effective_config, preflight, recheck_acceptance, record_environment,
+                   decide_authorization, effective_config, gate_currency, preflight, recheck_acceptance, record_environment,
                    refresh_agent_settings, validate_config, validate_overrides)
+from .gitops import fingerprint
 from .storage import FileMutex, LockBusy, TaskLock, now, private_dir, read_json, save_json
 from .workspace import NotFound, Project, Workspace
 
@@ -63,6 +64,18 @@ EVIDENCE_PAGE = 50          # records of one page of the evidence explorer
 EVIDENCE_PAGE_LIMIT = 200
 EXPORTS_AT_ONCE = 2         # evidence bundles built at the same time; each is held in memory, within `bundle`'s limits
 SEARCH_LIMIT = 80
+# Why a saved gate does not, or may not, describe the task as it is now (`App._freshness`), for people.
+FRESHNESS = {
+    "LEDGER_CHANGED": "Evidence was recorded or invalidated after this evaluation was saved",
+    "WORKSPACE_CHANGED": "The task's files changed after this evaluation was saved",
+    "CONFIGURATION_CHANGED": "The configured checks, the inputs they declare or a protection switch changed after this "
+                             "evaluation was saved",
+    "EVIDENCE_OUTDATED": "A file that evidence refers to, or an input a check declares, changed after this evaluation was saved",
+    "FILES_NOT_COMPARED": "This evaluation was made without the task's files, so it says nothing about them",
+    "FINGERPRINT_UNAVAILABLE": "The task's files could not be read to compare them with this evaluation",
+    "WORKTREE_MISSING": "The task's worktree was not found",
+    "CONFIGURATION_UNREADABLE": "The project's configuration cannot be read, so the checks cannot be compared",
+}
 
 
 class RunsAtExit(NamedTuple):
@@ -323,6 +336,8 @@ class App:
         self._judged: dict[Path, tuple] = {}  # task folder: (signatures of state.json and the ledger, counts, settled)
         self._indexed: dict[Path, tuple] = {}  # task folder: (signatures, ledger as read, ledger as proof, validity rows, settled)
         self._exports = threading.BoundedSemaphore(EXPORTS_AT_ONCE)
+        self._prints: dict[Path, dict] = {}  # worktree: the last fingerprint taken for a view, and the requests it may answer
+        self._print_ticket = 0
         self._configs: dict[str, tuple] = {}
         self._repos: dict[str, tuple[float, dict]] = {}
         self._index_jobs: dict[str, dict] = {}
@@ -1258,9 +1273,94 @@ class App:
             raise FileNotFoundError("Task not found")
         return path, state
 
+    def _fingerprint(self, workspace: Path) -> str:
+        """`gitops.fingerprint` of a worktree, taken after this call began: never a reading made before it.
+
+        Views asked for at once share one reading, and only one that started
+        after each of them arrived: a later request waits for the reading in
+        progress and then takes its own, so no view is told that the files are
+        as they were before it asked. Nothing is kept across requests as proof.
+        Raises what `fingerprint` raises.
+        """
+        with self._cache_lock:
+            self._print_ticket += 1
+            ticket = self._print_ticket
+            entry = self._prints.setdefault(workspace, {"lock": threading.Lock(), "covers": 0, "value": None, "error": None})
+        with entry["lock"]:
+            if entry["covers"] < ticket:
+                with self._cache_lock:
+                    entry["covers"] = self._print_ticket  # every request numbered so far arrived before this reading starts
+                try:
+                    entry["value"], entry["error"] = fingerprint(workspace, reader=True), None  # no lock taken in the copy
+                except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
+                    entry["value"], entry["error"] = None, exc
+            if entry["error"] is not None:
+                raise entry["error"]
+            return entry["value"]
+
+    def _freshness(self, project: Project, state: dict, raw: evidence.Ledger, ledger: evidence.Ledger,
+                   saved: dict | None, active: bool) -> dict:
+        """Whether the saved gate still describes the task as it is now: its ledger, its files and its configuration.
+
+        `state` is `current` only when all three were compared and are what the
+        gate was evaluated on; `behind` when one of them changed (`causes` says
+        which); `unknown` when one could not be compared (the files could not
+        be read, the configuration cannot be read, or the gate was evaluated
+        without the files); `historical` for a task that ended, whose gate
+        describes that moment and is not compared again; `running` and
+        `not_evaluated` as before. The files are fingerprinted only when the
+        ledger has not already moved on, never for a running or ended task.
+        Nothing is written and no gate is evaluated: "Evaluate again" does.
+        """
+        found = {"state": "not_evaluated", "ledger": "not_compared", "files": "not_compared",
+                 "configuration": "not_compared", "evidence": "not_compared", "causes": [], "checked_at": None}
+        if saved is None:
+            return found
+        if active:
+            return {**found, "state": "running"}
+        seen = saved.get("ledger") if isinstance(saved.get("ledger"), dict) else {}
+        ledger_current = (seen.get("count"), seen.get("head")) == (raw.count, raw.head)
+        found["ledger"] = "current" if ledger_current else "changed"
+        if state.get("status") in {"done", "blocked"}:
+            return {**found, "state": "historical"}
+        if not ledger_current:
+            return {**found, "state": "behind", "causes": ["LEDGER_CHANGED"]}
+        snapshot = saved.get("snapshot")
+        workspace = Path(str(state.get("worktree") or ""))
+        if not isinstance(snapshot, str) or not snapshot:
+            return {**found, "state": "unknown", "causes": ["FILES_NOT_COMPARED"]}
+        if not state.get("worktree") or not workspace.is_dir():
+            return {**found, "state": "unknown", "files": "unknown", "causes": ["WORKTREE_MISSING"]}
+        try:
+            current = self._fingerprint(workspace)
+        except (OSError, RuntimeError, subprocess.SubprocessError, ValueError):
+            return {**found, "state": "unknown", "files": "unknown", "causes": ["FINGERPRINT_UNAVAILABLE"],
+                    "checked_at": now()}
+        found["checked_at"] = now()
+        cfg, _error = self._config(project)
+        compared = None
+        if cfg is not None:
+            try:
+                compared = gate_currency(effective_config(cfg, state), state, ledger, workspace, current)
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+                compared = None
+        if compared is None:
+            compared = {"files": "current" if current == snapshot else "changed", "configuration": "unknown",
+                        "evidence": "not_compared"}
+        found.update(compared)
+        causes = [cause for name, cause in (("files", "WORKSPACE_CHANGED"), ("configuration", "CONFIGURATION_CHANGED"),
+                                            ("evidence", "EVIDENCE_OUTDATED")) if found[name] == "changed"]
+        if causes:
+            return {**found, "state": "behind", "causes": causes}
+        if found["configuration"] != "current":
+            return {**found, "state": "unknown", "causes": ["CONFIGURATION_UNREADABLE" if found["configuration"] == "unknown"
+                                                            else "FILES_NOT_COMPARED"]}
+        return {**found, "state": "current"}
+
     def verification_view(self, project: Project, task_id) -> dict:
-        """The Verification Center of one task: the gate as saved and whether it still describes the ledger, the criteria
-        and evidence judged now, what keeps the task open and the actions that address it. Reads only."""
+        """The Verification Center of one task: the gate as saved and whether it still describes the task (its ledger,
+        files and configuration), the criteria and evidence judged now, what keeps the task open and the actions that
+        address it. Reads only: the files are fingerprinted to compare them, and nothing is written or evaluated."""
         path, state = self._task_state(project, task_id)
         raw, ledger, rows = self._evidence_index(path, state)
         runtime = runinfo.runtime(path, state, self._owned((project.id, path.name)))
@@ -1274,13 +1374,8 @@ class App:
             current, saved_status = criteria.judged_now(record, raw, developing=state.get("status") == "running"
                                                         and state.get("phase") == "develop")
         saved = state.get("gate") if isinstance(state.get("gate"), dict) else None
-        if saved is None:
-            gate_state = "not_evaluated"
-        elif runtime["active"]:
-            gate_state = "running"
-        else:
-            seen = saved.get("ledger") if isinstance(saved.get("ledger"), dict) else {}
-            gate_state = "current" if (seen.get("count"), seen.get("head")) == (raw.count, raw.head) else "behind"
+        freshness = self._freshness(project, state, raw, ledger, saved, bool(runtime["active"]))
+        gate_state = freshness["state"]
         conditions = [entry for entry in (saved or {}).get("conditions") or [] if isinstance(entry, dict)]
 
         def named(decision: str) -> list[str]:
@@ -1308,7 +1403,7 @@ class App:
                      "iteration": state.get("iteration"), "updated_at": state.get("updated_at")},
             "tracked": current is not None, "problems": problems, "runtime": {key: runtime.get(key) for key in (
                 "activity", "active", "can_start")},
-            "gate": saved, "gate_state": gate_state,
+            "gate": saved, "gate_state": gate_state, "freshness": freshness,
             "code": current.code.get("status") if current is not None else None,
             "outcome": str(current.outcome) if current is not None else None,
             "summary": summary,
@@ -1317,19 +1412,24 @@ class App:
             "reverify": reverify,
             "criteria": criteria_rows,
             "ledger": {"count": raw.count, "head": raw.head, "anchored": ledger is raw, "problems": len(ledger.problems)},
-            "words": {"causes": {str(cause): text for cause, text in provenance.REASONS.items()}},
+            "words": {"causes": {str(cause): text for cause, text in provenance.REASONS.items()}, "freshness": FRESHNESS},
         }
-        view["actions"] = self._verification_actions(state, runtime, saved, gate_state, current, criteria_rows, conditions)
+        view["actions"] = self._verification_actions(state, runtime, saved, gate_state, current, criteria_rows, conditions,
+                                                     freshness["causes"])
         return view
 
     @staticmethod
     def _verification_actions(state: dict, runtime: dict, saved: dict | None, gate_state: str, current, rows: list[dict],
-                              conditions: list[dict]) -> list[dict]:
+                              conditions: list[dict], causes: list[str] = ()) -> list[dict]:
         """What the user can do about the gate now: only operations the backend carries out, each with why it is (not) possible.
 
         A run is the only thing that evaluates and completes; recording a check
         or a decision is the user's, under the task lock, and never completes
-        anything by itself. Nothing here marks a criterion as verified.
+        anything by itself. Nothing here marks a criterion as verified. An
+        evaluation that is not `current` offers no completion: what it allowed
+        was decided on another ledger, other files or another configuration.
+        Completion is decided again by the backend when it is asked for
+        (`recheck_acceptance`, then `core._complete`).
         """
         status = state.get("status")
         ended = status in {"done", "blocked"}
@@ -1356,11 +1456,13 @@ class App:
             else:
                 action = saved.get("next_action")
                 if gate_state == "behind":
-                    add("check_again", "Evaluate again", "The ledger changed after this evaluation was saved. Checking again "
-                        "judges the criteria and the gate on the evidence as it is now. No agent is called and nothing is run.",
-                        calls_agents=False, primary=True)
+                    said = FRESHNESS.get(causes[0] if causes else "LEDGER_CHANGED", FRESHNESS["LEDGER_CHANGED"])
+                    add("check_again", "Evaluate again", f"{said}. Checking again judges the criteria and the gate on the task "
+                        "as it is now. No agent is called and nothing is run.", calls_agents=False, primary=True)
                 if action == "COMPLETE":
-                    if status == "paused" and state.get("phase") == "validate":
+                    if gate_state != "current":
+                        pass  # it allowed completion of the task as it was; "Evaluate again" or "Check again" says what holds now
+                    elif status == "paused" and state.get("phase") == "validate":
                         add("complete", "Complete the task", "The gate allows completion. The run that completes it fingerprints "
                             "the files and reads the ledger again first. No agent is called.", calls_agents=False, primary=True)
                     else:

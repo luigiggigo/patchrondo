@@ -263,12 +263,19 @@ gate's decision in words and its code:
 | `FAIL` | Changes needed | The review asked for a change, or a required check failed |
 | `ERROR` | Cannot conclude | The evidence does not hold together; nothing can be concluded |
 
-The decision is the one the engine saved at its last checkpoint. When
-evidence was recorded after it (by you, or by another session), the page
-says *before the latest evidence* and offers **Evaluate again**, which calls
-no agent; a `PASS` is never shown as current then. A task that never ran, or
-was created before the gate existed, shows *Not evaluated*: nothing is said
-about it in retrospect.
+The decision is the one the engine saved at its last checkpoint. Each time
+the tab is shown, the page compares it with the task as it is now: the
+evidence ledger, the task's files (fingerprinted again) and the configured
+checks. When one of them changed after the evaluation (evidence recorded by
+you or by another session, a file edited outside PatchRondo, a test command
+changed), the page says *Not current*, names the cause and offers
+**Evaluate again**, which calls no agent; *Complete the task* is not offered
+then, whatever the saved decision was. When the files cannot be read or the
+configuration cannot be read, it says *Not confirmed* and does not offer
+completion either. A completed task keeps the gate it was completed with, as
+history. A task that never ran, or was created before the gate existed,
+shows *Not evaluated*: nothing is said about it in retrospect. Completing is
+decided again by PatchRondo on the files as they are when you press it.
 
 Below it, four figures keep apart what is easy to confuse: the **code
 review** (the reviewer's verdict about the code, which does not complete a
@@ -320,14 +327,17 @@ patchrondo bundle verify bundle.zip --json
 ```
 
 It answers `INTACT` (exit 0), `INCOMPLETE` (1: something listed is missing,
-or the export said what it left out), `MODIFIED` (2), `MALFORMED` (3),
-`UNSUPPORTED` (4: another format or schema version) or `UNVERIFIABLE` (5: too
-large, or unreadable). It reads the archive in memory and extracts nothing.
-**Matching hashes are not a signature:** they show that the files agree with
-the manifest and with each other, not that PatchRondo produced them. A
-bundle of a task that is still running is refused rather than assembled from
-a state and a ledger that were never on disk together; try again when it
-pauses. The format is in [architecture section 19](ARCHITECTURE.md#19-verification-center-and-evidence-bundles).
+the export said what it left out, or no gate evaluation is about the
+exported evidence), `MODIFIED` (2: a file differs, or the records contradict
+each other, including an evidence ledger that fails its own hash chain or
+lost records the task had seen, which `LEDGER_DAMAGED` and
+`LEDGER_UNANCHORED` name), `MALFORMED` (3), `UNSUPPORTED` (4: another format
+or schema version) or `UNVERIFIABLE` (5: too large, or unreadable). It reads
+the archive in memory and extracts nothing. **Matching hashes are not a
+signature:** they show that the files agree with the manifest and with each
+other, not that PatchRondo produced them. A bundle of a task that keeps
+changing while it is exported is refused rather than assembled from files
+that were never on disk together; try again when its run pauses. The format is in [architecture section 19](ARCHITECTURE.md#19-verification-center-and-evidence-bundles).
 
 ### Agents: models and options
 

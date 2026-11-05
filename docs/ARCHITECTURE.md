@@ -2076,6 +2076,12 @@ earlier function). What changed:
   `gitops.FingerprintError` (an `OSError`, kind `fingerprint_unavailable`):
   the run pauses with that kind, and nothing is judged on files that could
   not be read. A time is not content: touching a file changes nothing.
+- `reader=True` (November 5, 2026, for the Verification Center, which
+  reads without the task lock) adds `--no-optional-locks` and
+  `-c core.fsmonitor=false` to its Git commands (`gitops.READER`): `git
+  status` then writes no refreshed index and starts no monitor program.
+  Neither changes what Git prints, so the digest is the same; the engine's
+  calls do not pass it.
 
 Ignored files are not part of it. A check that reads some (a local
 configuration, a model file) declares them:
@@ -2406,15 +2412,44 @@ and no new acceptance rule, validity rule or path to `done` was added.
 
 ### Read model
 
-`App.verification_view` reads the saved state and the ledger, and writes
-nothing. It does not fingerprint the worktree and does not evaluate the gate:
+`App.verification_view` reads the saved state and the ledger, fingerprints
+the worktree to compare it with the saved gate, and writes nothing. It does
+not evaluate the gate:
 
 - `gate` is `state["gate"]` exactly as the last checkpoint saved it, or
-  `None`. `gate_state` says how it relates to the ledger now: `current` (it
-  was evaluated on the ledger's count and head as they are), `behind` (the
-  ledger moved on since), `running` (a verified run is working) or
-  `not_evaluated`. A task from before the gate has no gate, and none is
-  shown as passed or failed.
+  `None`. `gate_state` says whether it still describes the task (Step 4
+  hardening, November 5, 2026): `current` (the ledger's count and head, the
+  fingerprint of the files and the configuration of the checks are the ones
+  it was evaluated on), `behind` (one of them changed since), `unknown` (one
+  of them could not be compared: the files could not be read, the worktree
+  is gone, the configuration cannot be read, or the gate was evaluated
+  without the files), `historical` (the task is `done` or `blocked`: its gate
+  describes that moment and is not compared again), `running` (a verified
+  run is working) or `not_evaluated`. A task from before the gate has no
+  gate, and none is shown as passed or failed.
+- `freshness` says what was compared and with what result: `ledger`,
+  `files`, `configuration` and `evidence`, each `current`, `changed`,
+  `unknown` or `not_compared`; `causes` (`LEDGER_CHANGED`,
+  `WORKSPACE_CHANGED`, `CONFIGURATION_CHANGED`, `EVIDENCE_OUTDATED`,
+  `FILES_NOT_COMPARED`, `FINGERPRINT_UNAVAILABLE`, `WORKTREE_MISSING`,
+  `CONFIGURATION_UNREADABLE`, worded in `words.freshness`); and
+  `checked_at`, when the files were fingerprinted. The comparisons are
+  `core.gate_currency`, the ones `core._complete` makes before it writes
+  `done`: the fingerprint against the gate's `snapshot`; the test context
+  rebuilt on that snapshot (commands, checks, declared inputs, environment)
+  against the one the gate found (`fresh`), and `gate.protections(cfg)`
+  against the saved ones; and `core._outdated` (an artifact or a declared
+  input a record that counts depends on). The files are fingerprinted only
+  for a task that is neither running nor ended, and only when the ledger has
+  not already moved on. A fingerprint is never reused across requests:
+  views asked for at once share one reading only if it started after each
+  of them arrived (`App._fingerprint`), so no view is told the files are as
+  an earlier reading found them. Size and time are never taken as proof:
+  `gitops.fingerprint` reads every file Git does not ignore. The view reads
+  without the task lock, so it fingerprints with `reader=True`
+  (`gitops.READER`: `--no-optional-locks`, `core.fsmonitor=false`, as the
+  dashboard's other Git reads): `git status` writes no refreshed index into
+  the copy and starts no monitor program, and the digest is the engine's.
 - Criteria and counts are `acceptance.judged_now` against the ledger as it
   is now, with the saved status kept apart (`saved_status`), and the typed
   reason of each criterion (`Acceptance.basis`).
@@ -2423,23 +2458,31 @@ nothing. It does not fingerprint the worktree and does not evaluate the gate:
   observed is shown next to its validity, never instead of it.
 - `actions` are only operations the backend carries out, chosen from the
   saved gate's `next_action` and conditions: `complete` (a run that calls no
-  agent; offered only for `COMPLETE` at `validate`), `resume` (the run
-  dialog, which names the quota it uses), `check_again`
-  (`recheck_acceptance`, which also evaluates a gate that is `behind`),
+  agent; offered only for `COMPLETE` at `validate`, and only while
+  `gate_state` is `current`), `resume` (the run dialog, which names the quota
+  it uses), `check_again` (`recheck_acceptance`, which also evaluates a gate
+  that is `behind`, labelled *Evaluate again* with the first cause),
   `authorize` and `attach_evidence` (the existing decision and manual-check
   paths, under the task lock), `allow_tests` (the consent card),
   `open_settings`, `restore_switch` (explained, not done: an environment
   variable) and `export`. Nothing marks a criterion as verified or accepts
   an invalid record. While a run is active only `export` is enabled.
+  Completion is decided again when it is asked for: *Complete the task*
+  posts `criteria/check` with `resume`, which runs `recheck_acceptance`
+  under the task lock on the files as they are and starts a run only when
+  that new gate allows completion; the run's `_complete` fingerprints and
+  reads the ledger once more.
 
 `verification_evidence` pages the ledger on the server (50 rows by default,
 200 at most), newest first, filtered by validity, result, kind, criterion,
 run and a search of ID or check; `verification_record` gives one record with
 its validity, the invalidations that name it, its criteria and its log when
 the Logs tab lists it. Both read through one cache per task, kept while
-`state.json` and `evidence.jsonl` keep their size and time. The page reloads
-the view after each change the event stream reports; the explorer reloads
-only when the ledger's count or head changes.
+`state.json` and `evidence.jsonl` keep their size and time; neither
+fingerprints the files. The page reloads the view after each change the
+event stream reports and each time the tab is shown again (files can change
+without an event); the explorer reloads only when the ledger's count or
+head changes.
 
 Routes, all `GET`, all behind the session token and the Host check:
 `…/tasks/<id>/verification`, `…/verification/evidence`,
@@ -2466,14 +2509,24 @@ nothing is written beside the task. Files:
 | `history/events.json` | The workflow history |
 | `logs/…`, `artifacts/…` | Detailed only: the logs and report copies records name, masked |
 
-**One coherent view.** `consistent` reads `state.json` and `evidence.jsonl`
-whole, then both again; equal readings were on disk together at one moment.
-After four unequal readings the export is refused (`Inconsistent`, HTTP 409):
-a task that is being written is never bundled as coherent. No lock is taken,
-so an export never holds up a run. A line the ledger had not finished is
-left out and named. A saved gate whose ledger count and head are not the
-exported ones is kept as saved, marked `about_exported_ledger: false`, and
-the bundle is incomplete.
+**One coherent view.** `consistent` reads `state.json`, `evidence.jsonl`
+and `task.md` whole (`bundle.TAKEN`), then all three again; equal readings
+were on disk together at one moment. The bundle is made from those bytes
+only, and when it is made the three files are read once more: if they are
+no longer those bytes (a run saved its state or appended a record while the
+logs were read, somebody edited `task.md`), the bundle is discarded and made
+again from a new view (Step 4 hardening, November 5, 2026). After four
+attempts the export is refused (`Inconsistent`, HTTP 409): a task that is
+being written is never bundled as coherent. No lock is taken, so an export
+never holds up a run. On Windows a file a run is replacing at that moment
+refuses to be opened for an instant: it is asked again for a bounded time
+(`storage._unshared`), never taken for a missing file. A line the ledger had
+not finished is left out and named. A saved gate whose ledger count and head
+are not the exported ones
+is kept as saved, marked `about_exported_ledger: false`, and the bundle is
+incomplete. A damaged ledger is exported as it is, never repaired or
+started again: its problems are counted in the manifest and said in
+`summary.md`, and checking the bundle reports them.
 
 **Identity and determinism.** Every JSON file is serialized one way (sorted
 keys, two-space indent, UTF-8, final newline); ZIP entries have a fixed time,
@@ -2489,11 +2542,17 @@ manifest alone.
 and says how many it left out. A detailed one adds each log and report copy
 a trusted record names, only under `runs/iteration-NNN/` of the task (a name
 pattern; every folder and the file checked with `lstat` and
-`winacl.is_reparse_point`; the file opened compared with the file checked;
-size and time compared after reading), its last 256 KiB (1 MiB for a
-report), masked with `verification.scrub`. Each copy names its record and
-whether the file on disk was still the one the record hashed
-(`matches_record`). At most 60 such files and 24 MiB. Agent transcripts the
+`winacl.is_reparse_point`; opened with `O_NOFOLLOW` where the system has
+it; the file opened compared with the file checked; size and time compared
+after reading, and the name checked again to still lead to that same file,
+unchanged and not a link), its last 256 KiB (1 MiB for a report), masked
+with `verification.scrub`. A file replaced, grown or turned into a link
+while it was read is left out (`changed_during_export`). Each copy names its
+record and whether the file on disk was still the one the record hashed
+(`matches_record`: `null` when it was too large to hash or the record kept
+no hash); a copy that is not the one its record hashed is also named among
+the omissions, so the bundle is incomplete. At most 60 such files and
+24 MiB. Agent transcripts the
 ledger does not name, the worktree, and files a manual check names outside
 the task are never included.
 
@@ -2516,13 +2575,32 @@ a compression ratio of 250 for an entry over 1 MiB. Then:
   that ledger; the saved gate's ID recomputed from its body (`gate.Gate.id`);
   the manifest's gate decision, `about_exported_ledger` and
   `completion_allowed` (only a `PASS` allows it) as the gate file holds them;
-  each log naming a record that names it.
+  each log naming a record that names it;
+- the ledger on its own, whatever the manifest says of it (Step 4
+  hardening, November 5, 2026): a ledger that fails its hash chain, has a
+  line that cannot be read, more records than are read or a last record cut
+  short is `LEDGER_DAMAGED`; one whose chain holds but that no longer holds
+  the records the exported acceptance record had seen is
+  `LEDGER_UNANCHORED`. Both are `MODIFIED`: the records contradict each
+  other or the state, and the bundle cannot tell whether that happened
+  before or after the export. A manifest that names the damage agrees with
+  the ledger (no `LEDGER_MISMATCH`) and still does not make it intact;
+- completeness on its own: a bundle with no gate file (`NO_GATE`) or whose
+  gate is about another state of the ledger (`GATE_NOT_ABOUT_LEDGER`) is
+  `INCOMPLETE` even when its manifest declares nothing left out.
+
+Archive integrity (the files equal the manifest), ledger integrity (the
+chain, and the records the state saw), completeness and authenticity are
+four questions; a bundle answers the first three and never the fourth.
+Records of a schema version this one does not know stay in a ledger whose
+chain holds them; they are `INVALID` (`RECORD_UNKNOWN_SHAPE`) in
+`evidence/validity.json` and never counted.
 
 | Verdict | Exit code | Meaning |
 |---|---|---|
-| `INTACT` | 0 | Everything listed is there, unchanged, and agrees |
-| `INCOMPLETE` | 1 | What is there agrees; a listed file is missing, or the export declared omissions |
-| `MODIFIED` | 2 | A file differs, an unlisted one was added, or the records contradict each other |
+| `INTACT` | 0 | Everything listed is there, unchanged, and agrees; the ledger passes its own check and holds what the state saw; the gate is about it |
+| `INCOMPLETE` | 1 | What is there agrees; a listed file is missing, the export declared omissions, or no gate evaluates the exported ledger |
+| `MODIFIED` | 2 | A file differs, an unlisted one was added, or the records contradict each other, including a ledger that fails its hash chain or lost records the state had seen |
 | `MALFORMED` | 3 | Not a ZIP, an unsafe or duplicate name, a link, or a manifest that cannot be read |
 | `UNSUPPORTED` | 4 | Another format or schema version: nothing is taken as checked |
 | `UNVERIFIABLE` | 5 | The file cannot be read, or it exceeds the limits |
@@ -2539,7 +2617,18 @@ bundle and never replaces an existing file.
   other, not a consistent forgery. The ledger itself has the same limit
   (section 14).
 - The bundle says what was saved, not whether the worktree changed since:
-  it does not fingerprint the files, and its snapshot is the gate's.
+  it does not fingerprint the files, and its snapshot is the gate's
+  (`summary.md` says so). The Verification Center compares them when it is
+  read; that comparison describes the moment of `checked_at` only.
+- Exit codes are unchanged. Bundles made before the Step 4 hardening are
+  read by the same rules: one of a damaged ledger, or one without an
+  evaluation of its own ledger whose manifest declared nothing, which was
+  `INTACT` then, is now `MODIFIED` or `INCOMPLETE`.
+- A forger who rewrites the whole chain, the acceptance record and the gate
+  consistently and recomputes every hash is not detected: nothing is signed.
+- The check that a log's name still leads to the file that was read matters
+  on POSIX; native Windows refuses to replace or remove a file that is open,
+  and a file that grows is found by its size there.
 - Masking recognizes the secret values of PatchRondo's own environment and
   common shapes; a detailed bundle can still hold a secret of another shape.
 - Bundles and pages are built in memory within the limits above, two

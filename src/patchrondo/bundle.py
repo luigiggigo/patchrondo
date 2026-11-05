@@ -15,12 +15,16 @@ is not read. What goes in:
     history/events.json         the workflow history as saved
     logs/…, artifacts/…         detailed bundles only: sanitized copies of the logs and report copies the ledger names
 
-A consistent view: the state and the ledger are each read whole, then both
-again; the export goes on only when the second reading equals the first, so
-the bundle holds a state and a ledger that were on disk together at one
-moment. A task that keeps changing is refused (`Inconsistent`) after a few
-attempts. A gate saved before the ledger moved on is kept as saved and named
-as such: the bundle is then incomplete, never silently coherent.
+A consistent view: the state, the ledger and task.md are each read whole,
+then all three again; the export goes on only when the second reading equals
+the first, so the bundle holds files that were on disk together at one
+moment. Once the bundle is made, the three are read again and must still be
+those bytes; otherwise it is made again from a new view. A task that keeps
+changing is refused (`Inconsistent`) after a few attempts. Logs and report
+copies are checked one by one (the same file before, during and after the
+reading) and compared with the hash their record kept. A gate saved before
+the ledger moved on is kept as saved and named as such: the bundle is then
+incomplete, never silently coherent.
 
 A summary bundle (the default) holds records, decisions and references. A
 detailed bundle adds the logs and report copies the ledger names, read from
@@ -32,10 +36,13 @@ user would show the logs to.
 What a bundle establishes, and what it does not: each file's SHA-256 and the
 manifest's own content digest show whether the file was changed after the
 export, as far as somebody did not recompute them; `verify` also checks the
-ledger's hash chain and that the gate, validity and counts agree with the
-ledger they describe. Nothing is signed (`signature` is null): integrity is
-not authenticity, and a bundle with matching hashes does not prove that
-PatchRondo produced it.
+ledger's hash chain on its own (a ledger that fails it is MODIFIED whatever
+the manifest says) and that the gate, validity and counts agree with the
+ledger they describe. Archive integrity (files equal to the manifest), ledger
+integrity (the chain, and the records the state saw), completeness (nothing
+missing or left out, a gate about the exported ledger) are each reported.
+Nothing is signed (`signature` is null): integrity is not authenticity, and a
+bundle with matching hashes does not prove that PatchRondo produced it.
 """
 from __future__ import annotations
 
@@ -52,7 +59,7 @@ import time
 import zipfile
 
 from . import __version__, acceptance as criteria, evidence, provenance, verification, winacl
-from .storage import now
+from .storage import _unshared, now
 
 FORMAT = "patchrondo-evidence-bundle"
 VERSION = 1
@@ -118,29 +125,47 @@ def gate_id(saved: dict) -> str | None:
 # --- reading the task once ------------------------------------------------------------------
 
 def _bytes(file: Path) -> bytes | None:
+    """The bytes of a file of the task, or None when it does not exist.
+
+    On Windows a file that a run is replacing at that moment (`save_json`)
+    refuses to be opened for a moment: that is asked again for a bounded
+    time (`storage._unshared`), never taken for a missing file. A refusal
+    that lasts is raised.
+    """
+    found: list[bytes] = []
     try:
-        return file.read_bytes()
+        _unshared(lambda: found.append(file.read_bytes()))
     except FileNotFoundError:
         return None
+    return found[0]
 
 
-def consistent(task_path: Path, attempts: int = ATTEMPTS, pause: float = 0.05) -> tuple[bytes, bytes]:
-    """The bytes of state.json and of the ledger as they were on disk together, or `Inconsistent`.
+TAKEN = ("state.json", evidence.LEDGER, "task.md")  # the files of one coherent view, in the order they are read
+CHANGING = ("The task changed while it was being read for the export. Nothing was exported: try again, or export it when "
+            "its run pauses")
 
-    Each file is read whole, then both again. Equal readings mean that each
-    file stayed the same over an interval that covers the other's reading:
-    there was a moment when both held these bytes. A missing ledger is empty.
+
+def _reading(task_path: Path) -> tuple[bytes | None, bytes, bytes | None]:
+    """One reading of the files of `TAKEN`: a missing ledger is empty, a missing state or task.md is None."""
+    state, ledger, task = (_bytes(task_path / name) for name in TAKEN)
+    return state, ledger or b"", task
+
+
+def consistent(task_path: Path, attempts: int = ATTEMPTS, pause: float = 0.05) -> tuple[bytes, bytes, bytes | None]:
+    """The bytes of state.json, of the ledger and of task.md as they were on disk together, or `Inconsistent`.
+
+    Each file is read whole, then all of them again. Equal readings mean that
+    each file stayed the same over an interval that covers the others'
+    readings: there was a moment when all of them held these bytes.
     """
     for attempt in range(attempts):
-        first = (_bytes(task_path / "state.json"), _bytes(task_path / evidence.LEDGER) or b"")
-        second = (_bytes(task_path / "state.json"), _bytes(task_path / evidence.LEDGER) or b"")
+        first, second = _reading(task_path), _reading(task_path)
         if first[0] is None:
             raise FileNotFoundError("Task not found")
         if first == second:
             return first
         time.sleep(pause * (attempt + 1))
-    raise Inconsistent("The task changed while it was being read for the export. Nothing was exported: try again, or "
-                       "export it when its run pauses")
+    raise Inconsistent(CHANGING)
 
 
 def _masked(value, secrets):
@@ -159,8 +184,11 @@ def _part(task_path: Path, folder: str, name: str, limit: int) -> tuple[bytes | 
 
     Only `runs/iteration-NNN/<name>`: every part of the way is checked not to
     be a link or a junction, the file must be a regular file, and the file
-    opened must be the one checked (no swap in between). The whole file is
-    hashed to say whether it is still the one its record names.
+    opened must be the one checked (no swap in between; a link is never
+    followed where the system can refuse it). After the reading the name must
+    still lead to that same file, unchanged: a file replaced, grown or turned
+    into a link while it was read is left out. The whole file is hashed to say
+    whether it is still the one its record names.
     """
     if not LOG_NAME.fullmatch(name):
         return None, {"reason": "unsafe_name"}
@@ -178,7 +206,8 @@ def _part(task_path: Path, folder: str, name: str, limit: int) -> tuple[bytes | 
             return None, {"reason": "not_a_regular_file"}
         if not target.resolve().is_relative_to(task_path.resolve()):
             return None, {"reason": "outside_the_task"}
-        with open(target, "rb") as stream:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(target, flags), "rb") as stream:
             opened = os.fstat(stream.fileno())
             if (opened.st_dev, opened.st_ino, opened.st_size) != (checked.st_dev, checked.st_ino, checked.st_size):
                 return None, {"reason": "changed_during_export"}
@@ -191,6 +220,11 @@ def _part(task_path: Path, folder: str, name: str, limit: int) -> tuple[bytes | 
             data = stream.read(limit)
             after = os.fstat(stream.fileno())
         if (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
+            return None, {"reason": "changed_during_export"}
+        again = os.lstat(target)
+        if stat.S_ISLNK(again.st_mode) or winacl.is_reparse_point(target) or (
+                again.st_dev, again.st_ino, again.st_size, again.st_mtime_ns) != (
+                opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns):
             return None, {"reason": "changed_during_export"}
     except FileNotFoundError:
         return None, {"reason": "missing"}
@@ -269,6 +303,9 @@ def _summary(manifest: dict, contract: dict, gate_file: dict | None) -> bytes:
         if not gate_["about_exported_ledger"]:
             lines.append("This evaluation was saved before the ledger reached the state exported here: it does not describe "
                          "the exported evidence.")
+        if manifest.get("snapshot"):
+            lines.append(f"It was evaluated on the task's files with fingerprint {str(manifest['snapshot'])[:16]}…; this bundle "
+                         "does not compare them with the files as they are now.")
         for entry in (gate_file or {}).get("saved", {}).get("conditions") or []:
             if isinstance(entry, dict):
                 named = ", ".join([*(entry.get("criteria") or []), *(entry.get("evidence") or [])])
@@ -287,6 +324,9 @@ def _summary(manifest: dict, contract: dict, gate_file: dict | None) -> bytes:
     lines += ["## Evidence", "", f"{ledger['count']} records in the ledger" + (f", {ledger['problems']} problem(s) found when it was read"
                                                                                  if ledger["problems"] else ""),
               "Validity: " + ", ".join(f"{name} {number}" for name, number in manifest["validity"].items()), ""]
+    if ledger["problems"]:
+        lines += ["The ledger fails its integrity check, or no longer holds the records the task state had seen: its records "
+                  "from the first problem on prove nothing, and checking this bundle reports it.", ""]
     lines += ["A passed check that is not VALID passed when it was recorded and does not count for the task as it is now.", ""]
     if manifest["omissions"]:
         lines += ["## Left out", ""] + [f"- {entry['item']}: {entry['reason']}" for entry in manifest["omissions"]] + [""]
@@ -296,12 +336,31 @@ def _summary(manifest: dict, contract: dict, gate_file: dict | None) -> bytes:
 
 
 def build(task_path: Path, mode: str = "summary", *, clock=now, secrets=None, deadline: float | None = None) -> Bundle:
-    """Export the evidence of one task. Reads only; raises `BundleError`, `Inconsistent` or FileNotFoundError."""
+    """Export the evidence of one task. Reads only; raises `BundleError`, `Inconsistent` or FileNotFoundError.
+
+    The bundle is made from one coherent view (`consistent`), then the files
+    of that view are read once more: a bundle is returned only when they are
+    still the bytes it was made from. Otherwise it is made again from a new
+    view, up to `ATTEMPTS` times, and then refused: logs and report copies
+    read while a run wrote the state or the ledger are never bundled as if
+    they belonged to one moment.
+    """
     if mode not in MODES:
         raise BundleError(f"mode must be one of {', '.join(MODES)}")
     deadline = deadline if deadline is not None else time.monotonic() + EXPORT_SECONDS
     secrets = verification.known_secrets() if secrets is None else secrets
-    state_bytes, ledger_bytes = consistent(task_path)
+    for attempt in range(ATTEMPTS):
+        taken = consistent(task_path)
+        made = _build(task_path, mode, taken, clock=clock, secrets=secrets, deadline=deadline)
+        if _reading(task_path) == taken:
+            return made
+        time.sleep(0.05 * (attempt + 1))
+    raise Inconsistent(CHANGING)
+
+
+def _build(task_path: Path, mode: str, taken: tuple[bytes, bytes, bytes | None], *, clock, secrets, deadline: float) -> Bundle:
+    """One bundle made from the bytes of one coherent view; the files of the task's runs are read here."""
+    state_bytes, ledger_bytes, task_bytes = taken
     try:
         state = json.loads(state_bytes.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
@@ -332,7 +391,7 @@ def build(task_path: Path, mode: str = "summary", *, clock=now, secrets=None, de
                                 "saved_status": saved[item.id], "basis": current.basis.get(item.id), "reason": item.reason,
                                 "evidence": list(item.evidence), "categories": list(item.categories),
                                 "verifier": item.verifier} for item in current.criteria]}
-    description = (_bytes(task_path / "task.md") or b"").decode("utf-8", errors="replace")
+    description = (task_bytes or b"").decode("utf-8", errors="replace")
     contract = _masked({"task": {"id": task_id, **{key: state.get(key) for key in (
         "title", "status", "phase", "iteration", "developer", "reviewer", "created_at", "updated_at", "base_sha")}},
         "description": description[:DESCRIPTION_CHARS], "description_truncated": len(description) > DESCRIPTION_CHARS,
@@ -403,9 +462,12 @@ def build(task_path: Path, mode: str = "summary", *, clock=now, secrets=None, de
             total += len(copy)
             files[path] = copy
             roles[path] = "log" if folder == "logs" else "report"
+            matches = None if info["sha256"] is None or not said.get("sha256") else info["sha256"] == said["sha256"]
             detail[path] = {"record": owner, "sanitized": True, "truncated": info["truncated"], "source_size": info["size"],
-                            "matches_record": None if info["sha256"] is None or not said.get("sha256")
-                            else info["sha256"] == said["sha256"]}
+                            "matches_record": matches}
+            if matches is False:
+                omissions.append({"item": path, "reason": "the file changed after its record hashed it: the copy is of the file "
+                                  "as it is now, not of the one the record observed"})
             if info["truncated"]:
                 omissions.append({"item": path, "reason": f"only the last {LOG_BYTES if folder == 'logs' else REPORT_BYTES} bytes are kept"})
 
@@ -447,7 +509,9 @@ def _zip(files: dict[str, bytes]) -> bytes:
 class Verdict(StrEnum):
     INTACT = "INTACT"                # every file matches the manifest and the records agree with each other
     INCOMPLETE = "INCOMPLETE"        # what is there matches, and something is missing or was left out at the export
+    #                                  (also: no gate, or only a gate about another state of the ledger)
     MODIFIED = "MODIFIED"            # a file differs from the manifest, one was added, or the records contradict each other
+    #                                  (also: the ledger fails its own hash chain, or lost records the state had seen)
     MALFORMED = "MALFORMED"          # not a ZIP, an unsafe or duplicate name, or a manifest that cannot be read
     UNSUPPORTED = "UNSUPPORTED"      # another format, or a schema version this one does not know
     UNVERIFIABLE = "UNVERIFIABLE"    # the file cannot be read, or it is larger than the limits allow
@@ -633,6 +697,15 @@ def _agree(manifest: dict, content: dict, problem) -> None:
         if (said.get("count"), said.get("head"), said.get("problems")) != (anchored.count, anchored.head, len(anchored.problems)):
             problem(Verdict.MODIFIED, "LEDGER_MISMATCH", "The ledger's records, hash chain or problems are not those the manifest names",
                     "evidence/ledger.jsonl")
+        # The ledger is checked on its own, whatever the manifest says of it: a manifest that names the damage
+        # agrees with the ledger, and the records still prove nothing from the first one that does not fit.
+        if ledger.problems or ledger.incomplete:
+            problem(Verdict.MODIFIED, "LEDGER_DAMAGED", f"The ledger fails its own check ({(ledger.problems or ['its last record is cut short'])[0]}). "
+                    "From there its records prove nothing. It was changed before or after the export: the bundle cannot tell which",
+                    "evidence/ledger.jsonl")
+        elif anchored.problems:
+            problem(Verdict.MODIFIED, "LEDGER_UNANCHORED", "The ledger no longer holds, unchanged, the records the exported task "
+                    "state had seen: one was removed or replaced, so none of its records proves anything", "evidence/ledger.jsonl")
         if isinstance(validity, dict) and isinstance(validity.get("records"), list):
             if validity["records"] != validity_rows(anchored):
                 problem(Verdict.MODIFIED, "VALIDITY_MISMATCH", "The validity of the records does not follow from the ledger",
@@ -661,9 +734,15 @@ def _agree(manifest: dict, content: dict, problem) -> None:
             problem(Verdict.MODIFIED, "GATE_MISMATCH", "The manifest names another gate decision, or another permission to "
                     "complete, than the bundle holds", "gate/evaluation.json")
         seen = saved_gate.get("ledger") if isinstance(saved_gate.get("ledger"), dict) else {}
-        if ledger is not None and gate_file.get("about_exported_ledger") != (
-                {"count": seen.get("count"), "head": seen.get("head")} == {"count": ledger.count, "head": ledger.head}):
+        about = ledger is not None and {"count": seen.get("count"), "head": seen.get("head")} == {"count": ledger.count, "head": ledger.head}
+        if ledger is not None and gate_file.get("about_exported_ledger") != about:
             problem(Verdict.MODIFIED, "GATE_MISMATCH", "The bundle says the gate is about the exported ledger otherwise than it is",
                     "gate/evaluation.json")
-    elif shown is not None and "gate/evaluation.json" not in {entry.get("path") for entry in manifest.get("files") or [] if isinstance(entry, dict)}:
-        problem(Verdict.MODIFIED, "GATE_MISMATCH", "The manifest names a gate decision the bundle does not hold")
+        if ledger is not None and not about:
+            # Found here whatever the manifest declares: the bundle holds no evaluation of the evidence it exports.
+            problem(Verdict.INCOMPLETE, "GATE_NOT_ABOUT_LEDGER", "The saved gate evaluation is about another state of the ledger "
+                    "than the exported one: nothing in the bundle evaluates the exported evidence", "gate/evaluation.json")
+    elif "gate/evaluation.json" not in {entry.get("path") for entry in manifest.get("files") or [] if isinstance(entry, dict)}:
+        if shown is not None:
+            problem(Verdict.MODIFIED, "GATE_MISMATCH", "The manifest names a gate decision the bundle does not hold")
+        problem(Verdict.INCOMPLETE, "NO_GATE", "The bundle holds no gate evaluation: nothing in it says whether the task may be completed")
