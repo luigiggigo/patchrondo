@@ -8,6 +8,7 @@ For installation and requirements, see the [README](../README.md#quick-start).
 - [Dashboard](#the-interface)
 - [Preparation and repairs](#preparation-and-repairs)
 - [Criteria and checks](#criteria-and-checks)
+- [Verification Center](#verification-center)
 - [Agent settings](#agents-models-and-options)
 - [Live activity](#live-activity)
 - [Command line](#command-line)
@@ -242,6 +243,91 @@ the evidence ledger as it is when you look; a criterion saved as verified
 whose evidence no longer counts says so. A ledger that no longer holds what
 was saved, for example after a line was removed from it, counts for nothing
 there until the next run or *Check again* starts it again.
+
+### Verification Center
+
+The **Verification** tab of a task answers, from what PatchRondo recorded:
+is the task complete, and if not, why, and what can you do about it. It
+shows; it never decides. Only the completion gate completes a task, and only
+a run does that.
+
+At the top, Rondo and one sentence say where the task stands, beside the
+gate's decision in words and its code:
+
+| Decision | In words | What it means |
+|---|---|---|
+| `PASS` | Can be completed | Every condition holds; completing calls no agent |
+| `PENDING` | Work in progress | The agents or the project's checks still have work to do |
+| `BLOCKED` | Needs you | A decision, something missing, or a check by a person |
+| `NEEDS_REVERIFICATION` | Verification to repeat | Evidence it relied on no longer counts for the files as they are |
+| `FAIL` | Changes needed | The review asked for a change, or a required check failed |
+| `ERROR` | Cannot conclude | The evidence does not hold together; nothing can be concluded |
+
+The decision is the one the engine saved at its last checkpoint. When
+evidence was recorded after it (by you, or by another session), the page
+says *before the latest evidence* and offers **Evaluate again**, which calls
+no agent; a `PASS` is never shown as current then. A task that never ran, or
+was created before the gate existed, shows *Not evaluated*: nothing is said
+about it in retrospect.
+
+Below it, four figures keep apart what is easy to confuse: the **code
+review** (the reviewer's verdict about the code, which does not complete a
+task), the **required criteria** verified, the **evidence that counts**
+(records, not criteria), and what **needs attention** (verifications to
+repeat, criteria waiting for you).
+
+- **What you can do now** lists only what PatchRondo carries out, with what
+  each one calls: *Attach the evidence*, *Authorize or decline*, *Complete the
+  task*, *Resume* (with the usual confirmation, since it uses your plan
+  quota), *Check again*, *Open settings*, *Export evidence*. A disabled action
+  says why. None of them marks a criterion as verified: evidence does.
+- **Why this task is not completed** lists the gate's conditions in order of
+  precedence, each with its reason in words, its code, the criteria and the
+  evidence it names (a click opens the record), the findings it reports and
+  the evaluation ID, time, files and ledger it was decided on.
+- **Acceptance criteria**: each criterion's status, why, who verifies it, the
+  evidence that counts for it and the records about it. An optional one says
+  *never blocks completion*.
+- **Evidence explorer**: every record of the ledger, newest first, with what
+  it observed and whether it counts now, side by side. A passed check that is
+  *stale* passed then, about files or a configuration that changed since: it
+  does not count now, and the check runs again at the next run. *Invalid*
+  means its integrity cannot be confirmed; *unknown*, that what is needed to
+  judge it is missing. Search by ID or check, filter by validity, result,
+  kind, criterion or run; a record opens with its provenance (run, check,
+  command, files, configuration, environment), the later records that
+  invalidated it and its log.
+- **Verification timeline**: the events about verification. An event that
+  names a gate says *the gate then*: it describes that moment, not the
+  decision of now.
+
+**Export evidence** builds a ZIP of what was recorded. Choose **Summary**
+(the default: records, decisions, references, validity, no logs) or
+**Detailed** (also copies of the logs and test reports the evidence names,
+from this task's folder only, cut to their last part, with values that look
+like secrets masked; masking recognizes common shapes only, so share a
+detailed bundle only with people you would show these logs to). The dialog
+previews the files, the gate, what was left out and the size; the file is
+built again when you download it, and success is said only once it arrived.
+Neither mode includes the project's files.
+
+Each bundle carries a `manifest.json` that lists every file with its SHA-256
+and size. Check one anywhere PatchRondo is installed:
+
+```bash
+patchrondo bundle verify patchrondo-evidence-T-0123456789ab-summary.zip
+patchrondo bundle verify bundle.zip --json
+```
+
+It answers `INTACT` (exit 0), `INCOMPLETE` (1: something listed is missing,
+or the export said what it left out), `MODIFIED` (2), `MALFORMED` (3),
+`UNSUPPORTED` (4: another format or schema version) or `UNVERIFIABLE` (5: too
+large, or unreadable). It reads the archive in memory and extracts nothing.
+**Matching hashes are not a signature:** they show that the files agree with
+the manifest and with each other, not that PatchRondo produced them. A
+bundle of a task that is still running is refused rather than assembled from
+a state and a ledger that were never on disk together; try again when it
+pauses. The format is in [architecture section 19](ARCHITECTURE.md#19-verification-center-and-evidence-bundles).
 
 ### Agents: models and options
 
@@ -648,6 +734,15 @@ patchrondo authorize T-a1b2c3d4e5f6 AC-04 --grant        # or --deny; nothing is
 patchrondo evidence T-a1b2c3d4e5f6 AC-04 --summary "Opened the pull request" --reference https://example.com/pull/7
 patchrondo evidence T-a1b2c3d4e5f6 AC-03 --summary "Built the archive" --artifact dist/release.zip
 patchrondo resume T-a1b2c3d4e5f6                         # completes the task once every required criterion is verified
+```
+
+An evidence bundle of a task, from the command line as from the
+[Verification Center](#verification-center); no model is called:
+
+```bash
+patchrondo bundle export T-a1b2c3d4e5f6                  # summary bundle, written in the current folder
+patchrondo bundle export T-a1b2c3d4e5f6 --detailed -o evidence.zip  # with masked logs; never replaces a file
+patchrondo bundle verify evidence.zip                    # exit 0 intact, 1 incomplete, 2 modified, 3-5 not checkable
 ```
 
 To let the same process wait for a usage limit to reset and retry by itself, see

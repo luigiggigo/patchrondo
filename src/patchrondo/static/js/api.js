@@ -54,6 +54,37 @@ export const api = {
   del: (path) => request("DELETE", path, {}),
 };
 
+// A file the API builds for this request (an evidence bundle). Fetched with the token in its header, like every call,
+// and handed to the browser to save only once it arrived whole: an error answer never becomes a file.
+export async function download(path, signal) {
+  let response;
+  try {
+    response = await fetch(path, { headers: { "X-PatchRondo-Token": token }, cache: "no-store", signal });
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
+    throw new ApiError("PatchRondo is not reachable. Is it still running in your terminal?", 0, "offline");
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new ApiError(data.error || `Request failed (${response.status})`, response.status, data.code || "failed");
+  }
+  const blob = await response.blob();
+  const name = ((response.headers.get("Content-Disposition") || "").match(/filename="([A-Za-z0-9._-]+)"/) || [])[1] || "patchrondo-evidence.zip";
+  return { blob, name, id: response.headers.get("X-PatchRondo-Bundle") };
+}
+
+export function saveFile({ blob, name }) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
 export function requestId() {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

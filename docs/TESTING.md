@@ -178,8 +178,12 @@ The check starts the real server and drives a headless Chrome or Edge on your
 computer through the DevTools protocol, with the Python standard library only.
 Runs it starts are real `patchrondo run` processes whose provider commands
 reach a synthetic executable only; the runner refuses to start while a real
-`claude` or `codex` is reachable. Twelve scenarios compare the page with the
-files on disk: the criteria of a task from the preflight of the form to their
+`claude` or `codex` is reachable. Thirteen scenarios compare the page with the
+files on disk: the Verification Center of a task from no gate to a gate that
+waits for a person and then passes, its explorer filtered on the server and
+opened from the keyboard, an export whose bundle checks as intact, a check
+recorded from another session that the open page follows, and a title that
+stays text; the criteria of a task from the preflight of the form to their
 evidence, with approved code that waits instead of going back to the
 developer, an authorization declined and then granted, a statement refused as
 evidence and the task completed by the user's checks without another agent

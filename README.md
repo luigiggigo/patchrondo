@@ -83,8 +83,12 @@ separate. Findings and history do not themselves prove success.
 The package metadata remains **0.2.1**. **0.3.0 is in development**; this is
 experimental software, with no stable release established. The planned next
 phase is Progress & Stagnation Detection. The separate 0.35 Evidence Engine
-proposal already has a verification runner in the source; it is not that
-next phase. See the [record boundaries](docs/ARCHITECTURE.md#03-record-boundaries)
+proposal already has a verification runner, provenance and invalidation, the
+acceptance gate, and a **Verification Center** with **evidence bundles** in
+the source; it is not that next phase. The Verification tab of a task says
+what was verified, what still counts, why the task is not complete and what
+unblocks it; *Export evidence* writes a ZIP whose manifest
+`patchrondo bundle verify` checks (integrity, not a signature). See the [record boundaries](docs/ARCHITECTURE.md#03-record-boundaries)
 and [validation record](docs/REVIEW.md) for evidence and remaining limits.
 CI results are recorded per commit: the failed history import in `15750e6`
 is corrected in `753d957`; its newer run has its own status in that record.

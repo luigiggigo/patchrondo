@@ -147,6 +147,11 @@ def read(task_path: Path) -> Ledger:
         return Ledger()
     except OSError as exc:
         return Ledger(problems=[f"The evidence ledger cannot be read: {exc}"])
+    return parse(data)
+
+
+def parse(data: bytes) -> Ledger:
+    """Check the bytes of a ledger as `read` does: the file read once by somebody else (an export, a bundle's copy)."""
     lines = data.split(b"\n")
     incomplete = bool(lines[-1])  # every record ends with a newline: what follows the last one was cut short
     records, problems, previous, trusted = [], [], "", True

@@ -130,6 +130,29 @@ logs:
   each capability with *Observed*, *Configured*, *Not available* or *Unknown*
   and where that was read from.
 
+**Verification** (`js/views/verification.js`), the Verification Center, is
+the task's answer to "is it done, and if not, why": status and actions
+first, details progressively.
+
+- One card on top: Rondo, one sentence, the gate's decision in words with its
+  code beside it and when it was evaluated. Green is used only for a `PASS`
+  that describes the evidence as it is now; a `PASS` saved before newer
+  evidence is amber and says *Not current*.
+- Four figures that are easy to confuse are kept apart: code review, required
+  criteria verified, evidence records that count, and what needs attention.
+- *What you can do now* comes second: each action with what it calls (*No
+  agent is called*, or *Calls the agents · uses plan quota*) and, when it is
+  disabled, why.
+- *Why this task is not completed* is a native `details`, open unless the
+  gate passes: one row per condition, reason in words, code, the criteria and
+  evidence it names (an evidence ID is a button that opens the record).
+- The explorer shows a record's result and its validity as two badges, never
+  one; a record that does not count has a dashed border. Every row is a
+  button, so the keyboard reaches each record. Filters are native `select`s
+  with labels.
+- Past decisions in the timeline say *the gate then*, so a historical `PASS`
+  is never read as the current one.
+
 The *New task* form shows the preflight under the criteria while they are
 typed: counts by what each one will take, then one line per criterion. It is
 information, never an obstacle: the form says that nothing in it stops the
@@ -212,6 +235,7 @@ motion and a status mark on the avatar, not by a different drawing.
 | Error, blocked, stale lock | Task note | head | slight tilt, static | alert, red | The cause in plain words |
 | Review completed, task done | Task note, dashboard | head / full | two small hops | check, green | The result |
 | Live Activity header | Task, Live Activity tab | head | the motion of the task's verified state | the same mark | Nothing of his own: the lines beside him name the agent and its latest event |
+| Verification Center | Task, Verification tab | head | of the saved gate: hops for a completed task, bob while a verified run works, rest for a gate older than the evidence | check, bolt, clock, pause or alert | Nothing of his own: the sentence beside him says where the task stands and what comes next |
 | About | About page | full | none | none | Who he is |
 
 Also: the brand mark in the sidebar, the page icon and the boot screen.

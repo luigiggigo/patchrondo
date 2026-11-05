@@ -24,8 +24,8 @@ import threading
 import time
 from typing import NamedTuple
 
-from . import __version__, acceptance as criteria, activity, agents, doctor, environment, evidence, providers, rag, recovery, repair
-from . import runinfo, streams, verification
+from . import __version__, acceptance as criteria, activity, agents, bundle, doctor, environment, evidence, provenance, providers, rag
+from . import recovery, repair, runinfo, streams, verification
 from .commands import join_command, split_command
 from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config, create_task,
                    decide_authorization, effective_config, preflight, recheck_acceptance, record_environment,
@@ -59,6 +59,10 @@ QUICK_TITLE = 80
 ENVIRONMENT_FIELDS = ("status", "stage", "error_kind", "cause", "message", "provider", "repair", "repair_available",
                       "repair_applied", "requires_user_action", "checked_at")
 CONFIRMABLE_REPAIRS = {"git_trust"}  # repairs that are a decision of the user and never run unattended
+EVIDENCE_PAGE = 50          # records of one page of the evidence explorer
+EVIDENCE_PAGE_LIMIT = 200
+EXPORTS_AT_ONCE = 2         # evidence bundles built at the same time; each is held in memory, within `bundle`'s limits
+SEARCH_LIMIT = 80
 
 
 class RunsAtExit(NamedTuple):
@@ -317,6 +321,8 @@ class App:
         self._cache_lock = threading.Lock()
         self._states: dict[Path, tuple] = {}
         self._judged: dict[Path, tuple] = {}  # task folder: (signatures of state.json and the ledger, counts, settled)
+        self._indexed: dict[Path, tuple] = {}  # task folder: (signatures, ledger as read, ledger as proof, validity rows, settled)
+        self._exports = threading.BoundedSemaphore(EXPORTS_AT_ONCE)
         self._configs: dict[str, tuple] = {}
         self._repos: dict[str, tuple[float, dict]] = {}
         self._index_jobs: dict[str, dict] = {}
@@ -1032,6 +1038,8 @@ class App:
                 del self._states[file]
             for folder in set(self._judged) - {file.parent for file in seen}:
                 del self._judged[folder]
+            for folder in set(self._indexed) - {file.parent for file in seen}:
+                del self._indexed[folder]
         return {"projects": projects, "tasks": tasks, "settings": settings, "error": error,
                 "providers": self.providers.view()}
 
@@ -1217,6 +1225,277 @@ class App:
             raise ValueError("Authorizing an operation is your explicit decision: confirm must be true")
         return self._on_criteria(project, task_id, payload, {"decision", "confirm"}, lambda: decide_authorization(
             project.home, task_id, criterion, granted=decision == "granted", agents_root=self.ws.root))
+
+    # --- verification center --------------------------------------------------------
+    #
+    # What the Verification Center shows, read from what the engine saved: the gate as the last checkpoint saved it,
+    # the criteria and the validity of each record judged against the ledger as it is now (`judged_now`,
+    # `provenance.recorded`), and the actions the backend carries out from there. Nothing is written, no file of the
+    # worktree is read and no gate is evaluated here: a run, or "Check again", evaluates it.
+
+    def _evidence_index(self, path: Path, state: dict) -> tuple[evidence.Ledger, evidence.Ledger, list[dict]]:
+        """The ledger as read, as proof for the saved state, and each record's validity; kept while both files are unchanged."""
+        key = (_signature(path / "state.json"), _signature(path / evidence.LEDGER))
+        with self._cache_lock:
+            cached = self._indexed.get(path)
+        if cached and cached[0] == key and cached[4]:
+            return cached[1], cached[2], cached[3]
+        raw = evidence.read(path)
+        try:
+            record = criteria.Acceptance.load(state)
+        except ValueError:
+            record = None
+        ledger = raw.for_state(record.ledger) if record is not None else raw
+        rows = bundle.validity_rows(ledger)
+        with self._cache_lock:
+            self._indexed[path] = (key, raw, ledger, rows, all(signature is None or _settled(signature) for signature in key))
+        return raw, ledger, rows
+
+    def _task_state(self, project: Project, task_id) -> tuple[Path, dict]:
+        path = self.task_path(project, task_id)
+        state = self._state(path / "state.json")
+        if state is None:
+            raise FileNotFoundError("Task not found")
+        return path, state
+
+    def verification_view(self, project: Project, task_id) -> dict:
+        """The Verification Center of one task: the gate as saved and whether it still describes the ledger, the criteria
+        and evidence judged now, what keeps the task open and the actions that address it. Reads only."""
+        path, state = self._task_state(project, task_id)
+        raw, ledger, rows = self._evidence_index(path, state)
+        runtime = runinfo.runtime(path, state, self._owned((project.id, path.name)))
+        problems = list(ledger.problems)
+        try:
+            record = criteria.Acceptance.load(state)
+        except ValueError as exc:
+            record, problems = None, [*problems, str(exc)]
+        current = None
+        if record is not None:
+            current, saved_status = criteria.judged_now(record, raw, developing=state.get("status") == "running"
+                                                        and state.get("phase") == "develop")
+        saved = state.get("gate") if isinstance(state.get("gate"), dict) else None
+        if saved is None:
+            gate_state = "not_evaluated"
+        elif runtime["active"]:
+            gate_state = "running"
+        else:
+            seen = saved.get("ledger") if isinstance(saved.get("ledger"), dict) else {}
+            gate_state = "current" if (seen.get("count"), seen.get("head")) == (raw.count, raw.head) else "behind"
+        conditions = [entry for entry in (saved or {}).get("conditions") or [] if isinstance(entry, dict)]
+
+        def named(decision: str) -> list[str]:
+            return sorted({name for entry in conditions if entry.get("decision") == decision for name in entry.get("criteria") or []})
+
+        overview = provenance.overview(ledger)
+        reverify = [{"check": name, "records": [item.evidence for item in found],
+                     "causes": sorted({str(cause) for item in found for cause in item.causes})}
+                    for name, found in overview["reverify"].items()]
+        criteria_rows = []
+        if current is not None:
+            for item in current.criteria:
+                refusal = current.manual_refusal(item)
+                open_ = item.status != criteria.Status.VERIFIED
+                criteria_rows.append({
+                    "id": item.id, "text": item.text, "required": item.required, "status": str(item.status),
+                    "saved_status": saved_status[item.id], "basis": current.basis.get(item.id), "reason": item.reason,
+                    "evidence": list(item.evidence), "categories": list(item.categories), "verifier": item.verifier,
+                    "missing": list(item.missing), "records": [row["id"] for row in rows if item.id in row["criteria"]][-12:],
+                    "actions": {"evidence": open_ and refusal is None, "evidence_refusal": refusal if open_ else None,
+                                "authorize": open_ and item.authorization_required}})
+        summary = current.summary() if current is not None else None
+        view = {
+            "task": {"id": path.name, "title": state.get("title"), "status": state.get("status"), "phase": state.get("phase"),
+                     "iteration": state.get("iteration"), "updated_at": state.get("updated_at")},
+            "tracked": current is not None, "problems": problems, "runtime": {key: runtime.get(key) for key in (
+                "activity", "active", "can_start")},
+            "gate": saved, "gate_state": gate_state,
+            "code": current.code.get("status") if current is not None else None,
+            "outcome": str(current.outcome) if current is not None else None,
+            "summary": summary,
+            "counts": {"validity": bundle.counts(rows), "reverify": len(reverify), "blocked": named("BLOCKED"),
+                       "needs_reverification": named("NEEDS_REVERIFICATION"), "failed": named("FAIL")},
+            "reverify": reverify,
+            "criteria": criteria_rows,
+            "ledger": {"count": raw.count, "head": raw.head, "anchored": ledger is raw, "problems": len(ledger.problems)},
+            "words": {"causes": {str(cause): text for cause, text in provenance.REASONS.items()}},
+        }
+        view["actions"] = self._verification_actions(state, runtime, saved, gate_state, current, criteria_rows, conditions)
+        return view
+
+    @staticmethod
+    def _verification_actions(state: dict, runtime: dict, saved: dict | None, gate_state: str, current, rows: list[dict],
+                              conditions: list[dict]) -> list[dict]:
+        """What the user can do about the gate now: only operations the backend carries out, each with why it is (not) possible.
+
+        A run is the only thing that evaluates and completes; recording a check
+        or a decision is the user's, under the task lock, and never completes
+        anything by itself. Nothing here marks a criterion as verified.
+        """
+        status = state.get("status")
+        ended = status in {"done", "blocked"}
+        can = bool(runtime.get("can_start")) and not ended
+        why = None if can else "The task has ended" if ended else "Available when the task is not running"
+        error = state.get("last_error")
+        kind = error.get("kind") if isinstance(error, dict) else error
+        found: list[dict] = []
+
+        def add(name: str, label: str, detail: str, *, enabled: bool = can, reason: str | None = None, **extra) -> None:
+            found.append({"kind": name, "label": label, "detail": detail, "enabled": enabled,
+                          "why": None if enabled else (reason or why), **extra})
+
+        if runtime.get("active"):
+            add("wait", "The run is working", "It evaluates the gate again at each checkpoint, and this page follows it.",
+                enabled=False, reason="Nothing to do while the run works")
+        elif not ended:
+            if kind == "tests_disabled":
+                add("allow_tests", "Allow this project's tests", "Without them the task can never be completed. The decision "
+                    "is yours, on the Overview; nothing runs until you make it.", calls_agents=False)
+            if saved is None:
+                add("resume", "Run" if status == "ready" else "Resume", "The gate is evaluated by the run, at every judgement "
+                    "of the criteria. This calls the agents and uses your plan quota.", calls_agents=True)
+            else:
+                action = saved.get("next_action")
+                if gate_state == "behind":
+                    add("check_again", "Evaluate again", "The ledger changed after this evaluation was saved. Checking again "
+                        "judges the criteria and the gate on the evidence as it is now. No agent is called and nothing is run.",
+                        calls_agents=False, primary=True)
+                if action == "COMPLETE":
+                    if status == "paused" and state.get("phase") == "validate":
+                        add("complete", "Complete the task", "The gate allows completion. The run that completes it fingerprints "
+                            "the files and reads the ledger again first. No agent is called.", calls_agents=False, primary=True)
+                    else:
+                        add("resume", "Resume", "The gate allows completion; the run completes the task after checking the "
+                            "files and the ledger again.", calls_agents=False, primary=True)
+                elif action in {"DEVELOP", "REVIEW", "CONTINUE", "RUN_CHECKS"} and kind != "tests_disabled":
+                    text = {"DEVELOP": "The developer changes the code, then the tests and the review run again.",
+                            "REVIEW": "The reviewer reads the files as they are now: an earlier approval does not count for them.",
+                            "RUN_CHECKS": "PatchRondo runs the project's configured checks again, under your consent; the "
+                                          "review that follows calls the reviewer.",
+                            "CONTINUE": "The workflow continues from its last checkpoint."}[action]
+                    add("resume", "Run" if status == "ready" else "Resume", f"{text} This calls the agents and uses your plan quota.",
+                        calls_agents=True, primary=True)
+                elif action == "RESTORE_CONFIGURATION":
+                    switches = sorted({entry.get("switch") for entry in saved.get("protections") or [] if isinstance(entry, dict)})
+                    add("restore_switch", "Put back a switched-off protection",
+                        f"Unset {' and '.join(str(name) for name in switches) or 'the switch'} (or set it to anything but 0) where "
+                        "PatchRondo runs, then resume. It is an environment variable: the interface does not change it.",
+                        enabled=False, reason="Only you can change the environment PatchRondo runs in")
+                elif action == "REPAIR_EVIDENCE":
+                    add("check_again", "Check again", "A ledger that failed its check is put aside unchanged and started again; "
+                        "what it verified has to be verified again. No agent is called.", calls_agents=False, primary=True)
+                by_id = {row["id"]: row for row in rows}
+                done: set[tuple[str, str]] = set()
+                for entry in conditions:
+                    wanted = entry.get("action")
+                    for name in entry.get("criteria") or []:
+                        row = by_id.get(name)
+                        if row is None or row["status"] == "VERIFIED":
+                            continue
+                        if wanted == "WAIT_FOR_AUTHORIZATION" and row["actions"]["authorize"] and ("authorize", name) not in done:
+                            done.add(("authorize", name))
+                            add("authorize", f"Authorize or decline the operation of {name}", "Your decision is recorded; nothing "
+                                "is run either way, and the criterion then waits for the evidence that it was done.",
+                                criterion=name, calls_agents=False)
+                        elif wanted in {"WAIT_FOR_USER_VALIDATION", "WAIT_FOR_EXTERNAL_VERIFICATION"} and ("evidence", name) not in done:
+                            done.add(("evidence", name))
+                            refused = row["actions"]["evidence_refusal"]
+                            add("attach_evidence", f"Attach the evidence for {name}", "Say what you checked and where the proof is "
+                                "(a reference, or a file PatchRondo hashes). A statement alone is refused.", criterion=name,
+                                calls_agents=False, enabled=can and row["actions"]["evidence"], reason=refused)
+                        elif wanted == "PROVIDE_CAPABILITY" and ("settings", name) not in done:
+                            done.add(("settings", name))
+                            section = "agents" if row["basis"] == "REVIEWER_CAPABILITY_BLOCKED" else "tests"
+                            add("open_settings", f"Provide what {name} needs", "A tool, a command or a setting nobody in this "
+                                "workflow has. Change it in the settings, then check again: PatchRondo does not install anything.",
+                                criterion=name, section=section, calls_agents=False, enabled=True)
+            if current is not None and not any(item["kind"] == "check_again" for item in found):
+                add("check_again", "Check again", "Looks at this computer and at the evidence again, judges the criteria and "
+                    "evaluates the gate. No agent is called and nothing is run.", calls_agents=False)
+        add("export", "Export evidence", "A ZIP of what was recorded, with a manifest of SHA-256 hashes you can check.",
+            enabled=True, calls_agents=False)
+        return found
+
+    def verification_evidence(self, project: Project, task_id, query: dict) -> dict:
+        """One page of the task's evidence, newest first, filtered on the server so that a large ledger stays quick."""
+        path, state = self._task_state(project, task_id)
+        raw, _ledger, rows = self._evidence_index(path, state)
+
+        def one(name: str) -> str | None:
+            value = (query.get(name) or [None])[0]
+            return value if value else None
+
+        text = (one("q") or "").strip().casefold()
+        if len(text) > SEARCH_LIMIT:
+            raise ValueError(f"Search at most {SEARCH_LIMIT} characters")
+        validity, result, kind, criterion, run = (one(name) for name in ("validity", "result", "kind", "criterion", "run"))
+        if validity is not None and validity not in provenance.Validity.__members__:
+            raise ValueError("validity must be VALID, STALE, INVALID or UNKNOWN")
+        if kind is not None and kind not in provenance.JUDGED:
+            raise ValueError(f"kind must be one of {', '.join(provenance.JUDGED)}")
+        try:
+            offset, limit = int(one("offset") or 0), int(one("limit") or EVIDENCE_PAGE)
+        except ValueError:
+            raise ValueError("offset and limit must be whole numbers") from None
+        if offset < 0 or not 1 <= limit <= EVIDENCE_PAGE_LIMIT:
+            raise ValueError(f"offset must be 0 or more and limit between 1 and {EVIDENCE_PAGE_LIMIT}")
+        matched = [row for row in reversed(rows)
+                   if (validity is None or row["validity"] == validity) and (result is None or row["result"] == result)
+                   and (kind is None or row["kind"] == kind) and (criterion is None or criterion in row["criteria"])
+                   and (run is None or row["run"] == run)
+                   and (not text or text in row["id"].casefold() or text in str(row["check"] or "").casefold())]
+        facets = {"results": sorted({str(row["result"]) for row in rows if row["result"] is not None}),
+                  "kinds": sorted({row["kind"] for row in rows}), "runs": sorted({row["run"] for row in rows if row["run"]}),
+                  "criteria": sorted({name for row in rows for name in row["criteria"]})}
+        return {"total": len(rows), "matched": len(matched), "offset": offset, "limit": limit,
+                "items": matched[offset:offset + limit], "facets": facets, "ledger": {"count": raw.count, "head": raw.head}}
+
+    def verification_record(self, project: Project, task_id, record_id) -> dict:
+        """One record of the ledger with its provenance, validity, the invalidations that name it and its criteria."""
+        path, state = self._task_state(project, task_id)
+        if not isinstance(record_id, str) or not evidence.RECORD_ID.fullmatch(record_id):
+            raise FileNotFoundError("Evidence record not found")
+        _raw, ledger, _rows = self._evidence_index(path, state)
+        record = ledger.get(record_id)
+        if record is None:
+            raise FileNotFoundError("Evidence record not found")
+        shown = {key: value for key, value in record.items() if key != "prev"}
+        assessed = provenance.recorded(ledger, record).dump() if record.get("kind") in provenance.JUDGED else None
+        later = [{key: entry.get(key) for key in ("id", "at", "cause", "reason", "validity", "snapshot", "reverify", "detector")}
+                 for entry in ledger.records if entry.get("kind") == "invalidation" and record_id in (entry.get("of") or [])]
+        try:
+            saved = criteria.Acceptance.load(state)
+        except ValueError:
+            saved = None
+        named = [{"id": item.id, "text": item.text, "required": item.required, "counts": record_id in item.evidence}
+                 for item in (saved.criteria if saved is not None else [])
+                 if item.id in (record.get("criteria") or []) or record_id in item.evidence]
+        logs = {entry["id"] for entry in self._logs(path)}
+        log = record.get("log") if isinstance(record.get("log"), str) else None
+        return {"record": shown, "assessment": assessed, "invalidations": later, "criteria": named,
+                "log": {"id": log, "available": log in logs} if log else None,
+                "words": {"causes": {str(cause): text for cause, text in provenance.REASONS.items()}}}
+
+    def _bundle(self, project: Project, task_id, mode) -> bundle.Bundle:
+        path = self.task_path(project, task_id)
+        if mode not in bundle.MODES:
+            raise ValueError(f"mode must be one of {', '.join(bundle.MODES)}")
+        if not self._exports.acquire(blocking=False):
+            raise Conflict("Other evidence bundles are being made: try again in a moment")
+        try:
+            return bundle.build(path, mode)
+        except bundle.Inconsistent as exc:
+            raise Conflict(str(exc)) from exc
+        finally:
+            self._exports.release()
+
+    def bundle_preview(self, project: Project, task_id, mode) -> dict:
+        """What an export would hold now: built in memory and described, never written anywhere."""
+        made = self._bundle(project, task_id, mode)
+        return {"name": made.name, "size": len(made.data), "manifest": made.manifest}
+
+    def bundle_export(self, project: Project, task_id, mode) -> bundle.Bundle:
+        """An evidence bundle of the task as it is now, to be downloaded. Nothing is written to disk."""
+        return self._bundle(project, task_id, mode)
 
     def log_chunk(self, project: Project, task_id, file_id, offset, limit) -> dict:
         """A bounded slice of one listed log file, by byte offset; a negative offset reads from the end."""

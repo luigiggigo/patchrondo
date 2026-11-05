@@ -125,11 +125,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     # --- responses ------------------------------------------------------------------
 
-    def _headers(self, status: int, content_type: str, length: int | None, nonce: str = "") -> None:
+    def _headers(self, status: int, content_type: str, length: int | None, nonce: str = "", extra: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         if length is not None:
             self.send_header("Content-Length", str(length))
+        for name, value in (extra or {}).items():
+            self.send_header(name, value)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
@@ -211,7 +213,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if match := re.fullmatch(TASK + "/activity/stream", path):
             self._activity(match.group(1), unquote(match.group(2)), parse_qs(url.query))
             return
+        if match := re.fullmatch(TASK + "/verification/bundle", path):
+            self._download(match.group(1), unquote(match.group(2)), parse_qs(url.query))
+            return
         self._guarded(lambda: self._read(path, parse_qs(url.query)))
+
+    def _download(self, project_id: str, task_id: str, query: dict) -> None:
+        """An evidence bundle as a file: built in memory for this request, sent once, kept nowhere.
+
+        A failure answers in JSON like every other API call. The name of the
+        file is the task ID and the mode, both checked, so it holds no path.
+        """
+        app = self.server.app
+        try:
+            found = app.bundle_export(app.ws.get(project_id), task_id, (query.get("mode") or ["summary"])[0])
+        except Exception as exc:  # noqa: BLE001 - answered like any other call, through the same translation
+            def again():
+                raise exc
+            self._guarded(again)
+            return
+        self._headers(200, "application/zip", len(found.data), extra={
+            "Content-Disposition": f'attachment; filename="{found.name}"', "X-PatchRondo-Bundle": found.manifest["bundle_id"]})
+        self.wfile.write(found.data)
 
     def _read(self, path: str, query: dict) -> tuple[int, dict]:
         app, hub = self.server.app, self.server.hub
@@ -229,6 +252,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return 200, app.task_detail(app.ws.get(match.group(1)), unquote(match.group(2)))
         if match := re.fullmatch(TASK + "/files", path):
             return 200, app.task_files(app.ws.get(match.group(1)), unquote(match.group(2)))
+        if match := re.fullmatch(TASK + "/verification", path):
+            return 200, app.verification_view(app.ws.get(match.group(1)), unquote(match.group(2)))
+        if match := re.fullmatch(TASK + "/verification/evidence", path):
+            return 200, app.verification_evidence(app.ws.get(match.group(1)), unquote(match.group(2)), query)
+        if match := re.fullmatch(TASK + r"/verification/evidence/([^/]+)", path):
+            return 200, app.verification_record(app.ws.get(match.group(1)), unquote(match.group(2)), unquote(match.group(3)))
+        if match := re.fullmatch(TASK + "/verification/bundle/preview", path):
+            return 200, app.bundle_preview(app.ws.get(match.group(1)), unquote(match.group(2)), (query.get("mode") or ["summary"])[0])
         if match := re.fullmatch(TASK + "/activity", path):
             def one(name: str):
                 return (query.get(name) or [None])[0] or None

@@ -20,20 +20,22 @@ Sections [14](#14-acceptance-criteria-capabilities-and-evidence) and
 [16](#16-verification-runner), [17](#17-provenance-and-invalidation) and
 [18](#18-acceptance-gate) describe the implemented runner, the provenance
 and invalidation of its evidence and the acceptance gate that decides
-completion, of the separate 0.35 proposal. Progress & Stagnation Detection
-remains planned.
+completion, and section [19](#19-verification-center-and-evidence-bundles)
+the page and the export that show them, of the separate 0.35 proposal.
+Progress & Stagnation Detection remains planned.
 
 ## 1. Components
 
 | Module | Responsibility |
 |---|---|
-| `cli.py` | CLI parsing, user input validation, project resolution, `init/new/run/resume/status/report/list/projects/index/search/ui/doctor` commands; no command opens the interface |
+| `cli.py` | CLI parsing, user input validation, project resolution, `init/new/run/resume/status/report/criteria/evidence/authorize/bundle/list/projects/index/search/ui/doctor` commands; no command opens the interface |
 | `core.py` | Deterministic state machine and completion criteria; configuration and task-override validation; the operations a person has on a task's criteria |
 | `acceptance.py` | The acceptance criteria of a task as typed records: classification by fixed rules, planning against the detected capabilities, verification against the evidence ledger, the settling of a review, the results of the task |
 | `capabilities.py` | What each executor of a task can do (developer, reviewer, PatchRondo itself, the user), read from settings and from the computer; nothing is started |
 | `evidence.py` | The evidence ledger of a task: append-only, hash-chained records of commands, reviews, checks by the user and decisions; invalidation and integrity; the one executor allowed to write each kind |
 | `verification.py` | The verification runner: the project's configured checks (tests, build, static analysis, repository checks), run by PatchRondo, judged from their exit code or JUnit XML report, each result recorded in the ledger as it ends |
 | `provenance.py` | Whether a record of the ledger can still be used (`VALID`, `STALE`, `INVALID`, `UNKNOWN`) and why, apart from its result; the invalidations that put it on record; what the reviewer and the developer are told about it |
+| `bundle.py` | Evidence bundles: a portable ZIP of what was recorded about one task (summary or detailed), read from one coherent view of the state and the ledger; and the check of such a file without extracting it |
 | `findings.py` | The findings of a task's reviews: an ID for each problem that it keeps across iterations, links by fixed rules only, and its history; it decides nothing |
 | `history.py` | The workflow history of a task: versioned events with an ID each, saved with the checkpoints, naming ledger records, findings and criteria; it proves and decides nothing |
 | `providers.py` | Claude/Codex CLI adapters, structured JSON output, error classification and parsing of stated quota resets; asks the CLIs to stream and falls back when they refuse; starts each step with its agent settings |
@@ -2393,3 +2395,153 @@ lapses and the loop's events and pauses are those of sections 14 to 17
   a review and the pauses for checks without a result are unchanged.
 - `evidence_refs` and the outcomes per criterion have not been confirmed
   with an authorized real run.
+
+## 19. Verification Center and evidence bundles
+
+The Verification tab of a task (the user's "0.35 Phase 2 / Step 4",
+November 5, 2026) shows what sections 14 to 18 recorded, and `bundle.py`
+exports it as a file that can be checked elsewhere. Neither decides
+anything: the gate stays the only authority for completion (section 18),
+and no new acceptance rule, validity rule or path to `done` was added.
+
+### Read model
+
+`App.verification_view` reads the saved state and the ledger, and writes
+nothing. It does not fingerprint the worktree and does not evaluate the gate:
+
+- `gate` is `state["gate"]` exactly as the last checkpoint saved it, or
+  `None`. `gate_state` says how it relates to the ledger now: `current` (it
+  was evaluated on the ledger's count and head as they are), `behind` (the
+  ledger moved on since), `running` (a verified run is working) or
+  `not_evaluated`. A task from before the gate has no gate, and none is
+  shown as passed or failed.
+- Criteria and counts are `acceptance.judged_now` against the ledger as it
+  is now, with the saved status kept apart (`saved_status`), and the typed
+  reason of each criterion (`Acceptance.basis`).
+- The validity of each record is `provenance.recorded` on the ledger as
+  proof for the saved state (`Ledger.for_state`): the result a record
+  observed is shown next to its validity, never instead of it.
+- `actions` are only operations the backend carries out, chosen from the
+  saved gate's `next_action` and conditions: `complete` (a run that calls no
+  agent; offered only for `COMPLETE` at `validate`), `resume` (the run
+  dialog, which names the quota it uses), `check_again`
+  (`recheck_acceptance`, which also evaluates a gate that is `behind`),
+  `authorize` and `attach_evidence` (the existing decision and manual-check
+  paths, under the task lock), `allow_tests` (the consent card),
+  `open_settings`, `restore_switch` (explained, not done: an environment
+  variable) and `export`. Nothing marks a criterion as verified or accepts
+  an invalid record. While a run is active only `export` is enabled.
+
+`verification_evidence` pages the ledger on the server (50 rows by default,
+200 at most), newest first, filtered by validity, result, kind, criterion,
+run and a search of ID or check; `verification_record` gives one record with
+its validity, the invalidations that name it, its criteria and its log when
+the Logs tab lists it. Both read through one cache per task, kept while
+`state.json` and `evidence.jsonl` keep their size and time. The page reloads
+the view after each change the event stream reports; the explorer reloads
+only when the ledger's count or head changes.
+
+Routes, all `GET`, all behind the session token and the Host check:
+`…/tasks/<id>/verification`, `…/verification/evidence`,
+`…/verification/evidence/<record>`, `…/verification/bundle/preview?mode=` and
+`…/verification/bundle?mode=` (the ZIP, `Content-Disposition: attachment`
+with a name built from the checked task ID and mode only). A failure answers
+in JSON as every call does.
+
+### The bundle
+
+`bundle.build(task_path, mode)` returns the ZIP in memory and its manifest;
+nothing is written beside the task. Files:
+
+| Path | Content |
+|---|---|
+| `manifest.json` | Format, schema version 1, bundle ID, content digest, creation time, task, mode, snapshot, gate summary, ledger count/head/problems, counts by validity, files with SHA-256 and size, omissions, `excluded_by_mode`, limits, `signature: null` |
+| `summary.md` | The same for people, from fixed words and saved values |
+| `task/contract.json` | Task fields, `task.md` (masked, at most 64,000 characters), the saved acceptance record, the criteria judged against the exported ledger |
+| `gate/evaluation.json` | The saved gate as saved, whether it is about the exported ledger, the exported count and head |
+| `evidence/ledger.jsonl` | The ledger's complete lines, byte for byte |
+| `evidence/validity.json` | Each record's result, validity, causes, check, criteria and run |
+| `reviews/references.json` | The last review's verdict, settlement and references; review records; the saved findings |
+| `verification/checks.json` | The last test stage's results without their output, and the test context |
+| `history/events.json` | The workflow history |
+| `logs/…`, `artifacts/…` | Detailed only: the logs and report copies records name, masked |
+
+**One coherent view.** `consistent` reads `state.json` and `evidence.jsonl`
+whole, then both again; equal readings were on disk together at one moment.
+After four unequal readings the export is refused (`Inconsistent`, HTTP 409):
+a task that is being written is never bundled as coherent. No lock is taken,
+so an export never holds up a run. A line the ledger had not finished is
+left out and named. A saved gate whose ledger count and head are not the
+exported ones is kept as saved, marked `about_exported_ledger: false`, and
+the bundle is incomplete.
+
+**Identity and determinism.** Every JSON file is serialized one way (sorted
+keys, two-space indent, UTF-8, final newline); ZIP entries have a fixed time,
+permissions and system, the manifest first and the rest by name.
+`content_sha256` is the SHA-256 of the manifest's compact canonical JSON
+without `bundle_id`, `content_sha256` and `created_at` (the manifest cannot
+contain its own hash); `bundle_id` is `EB-` and its first 16 hex digits. The
+same state, ledger and mode give the same files and the same ID; two
+exports differ only in `created_at`, so their ZIP bytes differ in the
+manifest alone.
+
+**Summary and detailed.** A summary bundle holds no logs or report copies
+and says how many it left out. A detailed one adds each log and report copy
+a trusted record names, only under `runs/iteration-NNN/` of the task (a name
+pattern; every folder and the file checked with `lstat` and
+`winacl.is_reparse_point`; the file opened compared with the file checked;
+size and time compared after reading), its last 256 KiB (1 MiB for a
+report), masked with `verification.scrub`. Each copy names its record and
+whether the file on disk was still the one the record hashed
+(`matches_record`). At most 60 such files and 24 MiB. Agent transcripts the
+ledger does not name, the worktree, and files a manual check names outside
+the task are never included.
+
+### Checking a bundle
+
+`bundle.verify(path or bytes)` opens the ZIP in memory and extracts nothing.
+Limits: a 128 MiB archive, 400 entries, 64 MiB per entry, 192 MiB in all, and
+a compression ratio of 250 for an entry over 1 MiB. Then:
+
+- every entry's raw name must be a relative path of known characters, with
+  no `..`, drive, colon, backslash or directory entry (checked on the name as
+  stored: on Windows `zipfile` turns a backslash into a slash), no link, no
+  encryption, and no name twice, also ignoring case;
+- the manifest must be this format and schema version 1 exactly, and list
+  safe, distinct paths with a SHA-256 and a size;
+- each listed file must be present with that size and hash, no other file
+  may be present, and the content digest and bundle ID must match;
+- the records must agree: the ledger's chain, count, head and problems as
+  the manifest names them; validity as `provenance.recorded` gives it from
+  that ledger; the saved gate's ID recomputed from its body (`gate.Gate.id`);
+  the manifest's gate decision, `about_exported_ledger` and
+  `completion_allowed` (only a `PASS` allows it) as the gate file holds them;
+  each log naming a record that names it.
+
+| Verdict | Exit code | Meaning |
+|---|---|---|
+| `INTACT` | 0 | Everything listed is there, unchanged, and agrees |
+| `INCOMPLETE` | 1 | What is there agrees; a listed file is missing, or the export declared omissions |
+| `MODIFIED` | 2 | A file differs, an unlisted one was added, or the records contradict each other |
+| `MALFORMED` | 3 | Not a ZIP, an unsafe or duplicate name, a link, or a manifest that cannot be read |
+| `UNSUPPORTED` | 4 | Another format or schema version: nothing is taken as checked |
+| `UNVERIFIABLE` | 5 | The file cannot be read, or it exceeds the limits |
+
+`patchrondo bundle verify FILE [--json]` prints the verdict and exits with
+its code; `patchrondo bundle export TASK [--detailed] [-o FILE]` writes a
+bundle and never replaces an existing file.
+
+### Limits
+
+- Integrity is not authenticity. Nothing is signed: somebody who can write
+  the bundle can rewrite every file and recompute every hash and digest. The
+  cross-checks catch an edit that leaves the records contradicting each
+  other, not a consistent forgery. The ledger itself has the same limit
+  (section 14).
+- The bundle says what was saved, not whether the worktree changed since:
+  it does not fingerprint the files, and its snapshot is the gate's.
+- Masking recognizes the secret values of PatchRondo's own environment and
+  common shapes; a detailed bundle can still hold a secret of another shape.
+- Bundles and pages are built in memory within the limits above, two
+  exports at a time per interface (HTTP 409 beyond that).
+- The views were exercised with scripted providers only.

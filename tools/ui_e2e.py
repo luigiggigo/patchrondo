@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -46,14 +47,15 @@ sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import browser  # noqa: E402
-from patchrondo import activity, doctor, environment, history  # noqa: E402
+from patchrondo import activity, bundle, doctor, environment, history  # noqa: E402
 from patchrondo.commands import join_command  # noqa: E402
 from patchrondo.core import config, create_task, initialize  # noqa: E402
 from patchrondo.process import Result as browser_result  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
 from patchrondo.ui import DashboardServer  # noqa: E402
 
-SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality", "start", "agents", "criteria")
+SCENARIOS = ("wizard", "run", "live", "restart", "reconnect", "recovery", "projects", "legacy", "quality", "start", "agents", "criteria",
+             "verification")
 TEST_CODE = "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"
 
 # Receives the provider name explicitly; it never searches PATH. Asked to stream, it prints its
@@ -929,10 +931,11 @@ def scenario_quality(env: Env) -> None:
     page.wait("Boolean(q('[role=tablist]'))", 8, "the task tabs")
     page.js("(q('[role=tab][aria-selected=true]').focus(), true)")
     page.press("ArrowRight")
-    env.expect("arrow keys move between tabs", "q('[role=tab][aria-selected=true]').textContent.includes('Criteria and checks') && document.activeElement === q('[role=tab][aria-selected=true]')")
+    env.expect("arrow keys move between tabs", "q('[role=tab][aria-selected=true]').textContent.includes('Verification') && document.activeElement === q('[role=tab][aria-selected=true]')")
 
     # Accessible names, landmarks, responsive layout and themes on every page.
-    routes = ["", "tasks", f"tasks/{project_id}/T-000000000002", f"tasks/{project_id}/T-000000000002/activity",
+    routes = ["", "tasks", f"tasks/{project_id}/T-000000000002", f"tasks/{project_id}/T-000000000002/verification",
+              f"tasks/{project_id}/T-000000000002/activity",
               f"tasks/{project_id}/T-000000000002/live", f"tasks/{project_id}/{seeded_live}/live", "new", "projects",
               "settings/global/general", "settings/global/agents", f"settings/{project_id}/workflow", f"settings/{project_id}/tests",
               f"settings/{project_id}/recovery", f"settings/{project_id}/rag", f"settings/{project_id}/advanced", "about", "welcome"]
@@ -1714,9 +1717,117 @@ def scenario_criteria(env: Env) -> None:
     env.stop()
 
 
+def scenario_verification(env: Env) -> None:
+    """The Verification Center from a gate that waits for a person to a completed task: explorer, export and a change made elsewhere."""
+    page = env.page
+    repo = make_repo(env.root / "evidence")
+    env.start()
+    env.open()
+    page.take_problems()  # what the page of the previous, stopped server logged while it was being replaced
+    status, project = env.api("POST", "/api/projects", {"path": str(repo), "name": "evidence"})
+    env.api("PATCH", f"/api/projects/{project['id']}/config", {"tests": {
+        "enabled": True, "trust_acknowledged": True, "commands": [join_command([sys.executable, "-c", TEST_CODE])]}})
+    env.api("PATCH", "/api/settings", {"selected_project": project["id"], "onboarding_completed": True})
+    title = "Ship <img src=x onerror=alert(1)> safely"
+    status, created = env.api("POST", f"/api/projects/{project['id']}/tasks", {
+        "title": title, "description": "Create feature.txt containing the word good.", "developer": "claude", "reviewer": "codex",
+        "acceptance": ["feature.txt contains the word good", "Verified inside Mod Organizer 2", "[optional] Update the changelog"]})
+    task_id = created["id"]
+    path = Path(project["home"]) / "tasks" / task_id
+    base = f"/api/projects/{project['id']}/tasks/{task_id}"
+    env.go(f"tasks/{project['id']}/{task_id}/verification")
+    env.expect("a task that never ran has no gate and none is invented",
+               "Boolean(q('.vc-overview')) && q('.vc-overview').innerText.includes('Not evaluated') && !q('.vc-overview').innerText.includes('Can be completed')", 10)
+    env.check("the title written by a person stays text", page.js(f"!qa('img').some((img) => img.getAttribute('src') === 'x') && q('.task-head').innerText.includes({json.dumps(title)})"))
+
+    before = len(env.calls())
+    env.control(mode="ok", develop_seconds=0.4, review_seconds=0.4, verdict="APPROVED", outcomes={}, issues=[])
+    env.api("POST", f"{base}/run", {})
+    paused = env.wait_state(path, lambda s: s["status"] == "paused", 90)
+    env.check("the run waits at Validate and the gate says BLOCKED",
+              (paused["phase"], paused["gate"]["decision"], paused["gate"]["next_action"]) == ("validate", "BLOCKED", "WAIT_FOR_EXTERNAL_VERIFICATION"),
+              str(paused.get("last_error")))
+    env.expect("the open page follows the run to the blocked gate", "q('.vc-overview').innerText.includes('Needs you') && q('.vc-overview').innerText.includes('BLOCKED')", 15)
+    overview = page.js("q('.vc-overview').innerText")
+    env.check("the approval of the code is shown apart from completion, and nothing is green for completion",
+              "Approved" in overview and "1 of 2 verified" in overview and "Can be completed" not in overview, overview[:600])
+    env.check("the first action is the check a person can attach, and nothing offers to complete",
+              page.js("qa('.vc-action-label')[0].innerText.includes('Attach the evidence for AC-02') && !qa('.vc-action button').some((b) => b.textContent.includes('Complete'))"),
+              page.js("qa('.vc-action-label').map((e) => e.innerText).join(' | ')"))
+    env.check("the gate inspector says why in words and keeps the code",
+              page.js("q('.vc-conditions').innerText.includes('Needs a check outside the project') && q('.vc-conditions').innerText.includes('EXTERNAL_VERIFICATION_REQUIRED')"))
+    env.check("an optional criterion is shown as one that never blocks", page.js("q('.vc-criteria').innerText.includes('Optional · never blocks completion')"))
+    env.shot("verification-blocked")
+
+    # The explorer: filtered on the server, opened from the keyboard.
+    env.expect("the explorer lists records with their result and their validity apart",
+               "qa('.vc-record').length >= 2 && q('.vc-records').innerText.includes('Valid') && q('.vc-records').innerText.includes('counts now')", 10)
+    choose = "(el, value) => { el.value = value; el.dispatchEvent(new Event('change')); return true; }"
+    page.js(f"({choose})(q('[aria-label=\"Filter by validity\"]'), 'STALE')")
+    env.expect("a filter is applied on the server", "q('.vc-records').innerText.includes('No record matches these filters')", 10)
+    page.js(f"({choose})(q('[aria-label=\"Filter by validity\"]'), '')")
+    env.expect("and taken off again", "qa('.vc-record').length >= 2", 10)
+    env.check("each record is a button, reachable with the keyboard", page.js("qa('.vc-record').every((el) => el.tagName === 'BUTTON' && el.getAttribute('aria-label'))"))
+    page.js("(qa('.vc-record')[qa('.vc-record').length - 1].focus(), true)")
+    # A real Enter: a key-down that carries its character, which is what activates a focused button.
+    for kind in ("keyDown", "keyUp"):
+        page.call("Input.dispatchKeyEvent", {"type": kind, "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13,
+                                             **({"text": "\r"} if kind == "keyDown" else {})})
+    env.expect("a record opens with its result and its validity apart",
+               "Boolean(q('.dialog')) && q('.dialog').innerText.includes('Result when recorded') && q('.dialog').innerText.includes('Validity now') && q('.dialog').innerText.includes('E-0001')", 10)
+    page.press("Escape")
+    env.expect("Escape closes it", "!q('.dialog')", 5)
+
+    # The export: a preview first, and success only once the file arrived.
+    page.js("(byText('Export…', '.vc-action button').click(), true)")
+    env.expect("the export dialog previews the bundle and its gate", "Boolean(q('.dialog')) && q('.dialog').innerText.includes('BLOCKED') && q('.dialog').innerText.includes('Integrity, not authenticity')", 15)
+    page.click(text="Detailed", selector=".dialog [role=radio]")
+    env.expect("the detailed mode says that logs are included and masked at best effort", "q('.dialog').innerText.includes('Logs are included') && q('.dialog').innerText.includes('common shapes only')", 10)
+    page.click(text="Summary", selector=".dialog [role=radio]")
+    page.wait("Boolean(byText('Download', '.dialog button')) && !byText('Download', '.dialog button').disabled", 15, "the preview")
+    page.click(text="Download", selector=".dialog button")
+    env.expect("the export is confirmed once the file arrived", "!q('.dialog') && q('#toasts').innerText.includes('Exported patchrondo-evidence-')", 15)
+    connection = http.client.HTTPConnection("127.0.0.1", env.server.server_address[1], timeout=20)
+    connection.request("GET", f"{base}/verification/bundle?mode=summary",
+                       headers={"Host": f"127.0.0.1:{env.server.server_address[1]}", "X-PatchRondo-Token": env.server.token})
+    data = connection.getresponse().read()
+    connection.close()
+    found = bundle.verify(data)
+    env.check("the bundle the page offers is intact and says BLOCKED, with completion not allowed",
+              (found["status"], found["manifest"]["gate"]["decision"], found["manifest"]["gate"]["completion_allowed"]) == ("INTACT", "BLOCKED", False),
+              str(found["problems"])[:400])
+
+    # The required action opens the path a person has; the check itself is recorded from another session.
+    page.js("(byText('Attach…', '.vc-action button').click(), true)")
+    env.expect("the action opens the dialog that records a check by a person", "Boolean(q('.dialog')) && q('.dialog').innerText.includes('Attach evidence for AC-02')", 10)
+    page.press("Escape")
+    page.wait("!q('.dialog')", 5, "the dialog to close")
+    status, result = env.api("POST", f"{base}/criteria/AC-02/evidence", {"summary": "Started the mod inside Mod Organizer 2",
+                                                                        "reference": "https://example.invalid/log", "resume": True})
+    env.check("the evidence recorded elsewhere lets a run complete it without an agent", status == 201 and result["completes"] is True, str(result)[:300])
+    env.wait_state(path, lambda s: s["status"] == "done", 60)
+    env.expect("the open page follows: completed, with the gate PASS",
+               "q('.vc-overview').innerText.includes('This task is completed') && q('.vc-overview').innerText.includes('PASS')", 15)
+    env.check("after completion only the export is offered", page.js("qa('.vc-action-label').map((e) => e.innerText).join('|') === 'Export evidence'"),
+              page.js("qa('.vc-action-label').map((e) => e.innerText).join('|')"))
+    env.check("the timeline keeps the earlier BLOCKED decision as history",
+              page.js("q('.vc-timeline').innerText.includes('The gate then: BLOCKED') && q('.vc-timeline').innerText.includes('Task completed')"))
+    env.check("no agent was called after the pause", len(env.calls()) == before + 2, str([call["role"] for call in env.calls()[before:]]))
+    env.shot("verification-done")
+    page.viewport(390, 844)
+    time.sleep(0.4)
+    wide = page.js("qa('.verification *').filter(visible).filter((el) => el.getBoundingClientRect().right > innerWidth + 1 && !el.closest('pre, .tabs')).map((el) => el.className || el.tagName).slice(0, 3)")
+    env.check("on a phone-sized window nothing of the Verification Center runs off the screen", not wide, str(wide))
+    env.shot("verification-phone")
+    page.viewport(1440, 900)
+    env.clean_console("verification")
+    env.stop()
+
+
 SCENARIO_FUNCTIONS = {"wizard": scenario_wizard, "run": scenario_run, "live": scenario_live, "restart": scenario_restart, "reconnect": scenario_reconnect,
                       "recovery": scenario_recovery, "projects": scenario_projects, "legacy": scenario_legacy, "quality": scenario_quality,
-                      "start": scenario_start, "agents": scenario_agents, "criteria": scenario_criteria}
+                      "start": scenario_start, "agents": scenario_agents, "criteria": scenario_criteria,
+                      "verification": scenario_verification}
 
 
 def main(argv: list[str] | None = None) -> int:

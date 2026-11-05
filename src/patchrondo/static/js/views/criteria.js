@@ -19,13 +19,13 @@ function post(task, path, body) {
 
 // What happened after something was recorded. A task is completed only by a run, which the backend
 // starts by itself only when that run would call no agent.
-function said(result, text) {
+export function said(result, text) {
   if (result.run) toast(`${text} Every required criterion is verified: the task is completing.`);
   else if (result.completes) toast(`${text} ${result.run_error || "Press Complete to close the task."}`, { tone: "warn" });
   else toast(text);
 }
 
-function evidenceDialog(task, criterion) {
+export function evidenceDialog(task, criterion) {
   let passed = true;
   const summary = h("textarea", { class: "input", rows: 3, placeholder: "I installed the build in a clean profile and played for ten minutes without errors." });
   const reference = h("input", { class: "input", type: "text", placeholder: "A link, a commit, the path of a log or of a screenshot" });
@@ -62,7 +62,7 @@ function evidenceDialog(task, criterion) {
     } });
 }
 
-function authorizeDialog(task, criterion) {
+export function authorizeDialog(task, criterion) {
   return dialog({ title: `Authorize the operation of ${criterion.id}?`, description: criterion.text,
     build: (close) => {
       const decide = (el, decision) => busy(el, async () => {

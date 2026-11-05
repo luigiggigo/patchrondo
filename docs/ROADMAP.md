@@ -6,7 +6,7 @@
 |---|---|---|
 | 0.2.1 | Published experimental source; current package metadata | Environment check, repairs, agent settings and the dated maintenance history |
 | 0.3.0 | In development; not a tagged release | Phase 1 functionally implemented; later phases planned |
-| 0.35 | Separate Evidence Engine proposal | Verification runner step implemented in `753d957`; provenance and invalidation step and acceptance gate step implemented (November 4, 2026); remaining proposal not completed |
+| 0.35 | Separate Evidence Engine proposal | Verification runner step implemented in `753d957`; provenance and invalidation step and acceptance gate step implemented (November 4, 2026); Verification Center and evidence bundles implemented (November 5, 2026); remaining proposal not completed |
 
 No stable release is established by the available publication record. On
 November 4, 2026, GitHub `main` was checked at `abfb476` (its CI run failed
@@ -70,9 +70,18 @@ the configured checks rely on. See
 [architecture section 18](ARCHITECTURE.md#18-acceptance-gate). Gate profiles
 (fast, standard, strict) are not implemented; the one policy is `standard`.
 
+Implemented on November 5, 2026 (the request's "Phase 2, step 4", which
+places the Verification Center and the evidence bundle in this proposal): a
+Verification tab on the task page that shows the saved gate, the criteria and
+the validity of every record with the actions the backend carries out, and
+decides nothing; an exporter of summary and detailed evidence bundles with a
+manifest of SHA-256 hashes, and `patchrondo bundle verify`, which checks one
+without extracting it. Hashes are integrity, not authenticity: bundles are not
+signed. See [architecture section 19](ARCHITECTURE.md#19-verification-center-and-evidence-bundles).
+
 Still proposed: invalidation based on the files a check actually depends on
-(test impact analysis), signed attestations, gate profiles, the Verification
-Center and the other later steps. Invalidation compares states: any change to a file Git
+(test impact analysis), signed attestations (of bundles too), gate profiles
+and the other later steps. Invalidation compares states: any change to a file Git
 does not ignore makes every check result stale. The reserved `stale` result
 stays unused: validity is not a result. No independent executor or new
 authorization is granted by this roadmap.

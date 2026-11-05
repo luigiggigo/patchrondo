@@ -362,6 +362,63 @@ task is completed. The gate trusts the ledger as far as its chain does: a
 process with your account's rights can rewrite the ledger and `state.json`
 together.
 
+## Evidence bundles and the Verification Center
+
+An export takes files of the task's private directory and makes them a file
+that leaves it, so it is a boundary of its own.
+
+**What goes in.** A summary bundle (the default) holds the task's records:
+the state's task fields and description, the criteria, the saved gate, the
+evidence ledger byte for byte, the validity of each record, the last review's
+verdict and references, the findings, the test results without their output
+and the history. A detailed bundle also holds copies of the logs and test
+report copies that records of the ledger name. Never included: the worktree
+or the repository, agent transcripts the ledger does not name, the files a
+check by the user names (only their size and SHA-256, already in the
+ledger), configuration files, and anything a request names: the page and
+the API choose a task and a mode, never a path.
+
+**How files are read.** A log or report is read only when its name matches
+`iteration-NNN/<name>` under the task's own `runs` folder; every folder of
+the way and the file are checked not to be a link or a junction and the
+file to be a regular file, the file opened is compared with the file
+checked, and its size and time after reading with those before. Anything
+else is left out and named in the manifest (`unsafe_name`, `link_refused`,
+`not_a_regular_file`, `changed_during_export`, `missing`). Only the last
+256 KiB of a log (1 MiB of a report) are copied, at most 60 files and 24 MiB.
+
+**Masking.** Copies of logs and the text taken from the state pass through
+`verification.scrub`: the values of PatchRondo's own environment variables
+whose names say they hold a secret, then common credential shapes. This is
+best effort; a secret in another shape stays. The ledger is copied as it is,
+already filtered when it was written. Share a detailed bundle only with people
+you would show the logs to.
+
+**Integrity, not authenticity.** The manifest lists every file with its
+SHA-256 and size and carries a digest of itself without its own identity.
+`patchrondo bundle verify` recomputes them and checks that the ledger's hash
+chain, the validity of each record and the saved gate's ID agree with what
+the bundle says. That shows changes made after the export by somebody who
+did not recompute everything. Nothing is signed (`signature: null`): it does
+not prove that PatchRondo produced the bundle, nor that the task's files
+were what the records say.
+
+**Checking an untrusted bundle.** `verify` reads the archive in memory and
+extracts nothing. It refuses names that are absolute, use `..`, a drive, a
+colon or a backslash (checked on the name as stored), directory entries,
+links, encrypted entries and names given twice, also ignoring case; it reads
+at most 128 MiB of archive, 400 entries, 64 MiB per entry and 192 MiB in all,
+and refuses an entry that expands more than 250 times. A manifest of another
+format or schema version is not checked at all (`UNSUPPORTED`).
+
+**The page.** The routes of the Verification Center are reads behind the
+same token and Host checks as every call; the download is fetched with the
+token in its header and handed to the browser only once it arrived whole.
+Records, criteria, titles and reviews are inserted as text nodes. An export
+takes no lock and writes nothing; at most two run at a time per interface.
+No action of the page marks a criterion as verified or accepts a record the
+ledger does not count.
+
 ## Local interface
 
 `patchrondo` starts an HTTP server for the browser interface. It is meant for

@@ -14,9 +14,10 @@ import { activityBadge, badge, busy, button, callout, confirm, copyButton, dialo
   toast, toastError, toggle } from "../ui.js";
 import { criteriaPanel } from "./criteria.js";
 import { livePanel } from "./live.js";
+import { verificationPanel } from "./verification.js";
 
 const TABS = [
-  ["overview", "Overview", "home"], ["criteria", "Criteria and checks", "tasks"], ["live", "Live Activity", "bolt"], ["activity", "Timeline", "activity"], ["logs", "Logs", "terminal"],
+  ["overview", "Overview", "home"], ["verification", "Verification", "shield"], ["criteria", "Criteria and checks", "tasks"], ["live", "Live Activity", "bolt"], ["activity", "Timeline", "activity"], ["logs", "Logs", "terminal"],
   ["tests", "Tests", "flask"],
   ["review", "Review", "eye"], ["files", "Files changed", "diff"], ["handoff", "Handoff", "file"], ["report", "Report", "book"],
   ["raw", "Advanced", "code"],
@@ -285,7 +286,8 @@ function validationCard(task, detail, error) {
       })) : null,
       open.length > 6 ? h("div", { class: "muted" }, `and ${open.length - 6} more`) : null,
       h("div", { class: "muted" }, "The work done so far is kept as it is. No agent is called while the task waits here.")],
-    actions: [button("Open criteria and checks", { size: "sm", variant: "primary", iconName: "tasks", href: href("tasks", task.project, task.id, "criteria") })] });
+    actions: [button("Open criteria and checks", { size: "sm", variant: "primary", iconName: "tasks", href: href("tasks", task.project, task.id, "criteria") }),
+      h("a", { class: "link", href: href("tasks", task.project, task.id, "verification") }, "Why it is not complete")] });
 }
 
 function recoveryCard(task, plan) {
@@ -748,6 +750,11 @@ export default function mount(root, route, ctx) {
     if (!panels.has(key)) {
       panels.set(key, {
         overview: overviewPanel, criteria: () => criteriaPanel(projectId, taskId, { openLog }), live: () => livePanel(projectId, taskId),
+        verification: () => verificationPanel(projectId, taskId, { openLog, goTab: selectTab, run: () => {
+          // The same confirmation as the Run button: it says what will be called and that it uses plan quota.
+          const task = getTask(projectId, taskId) || detail?.summary;
+          if (task && detail) runDialog(task, detail);
+        } }),
         activity: activityPanel, logs: () => logsPanel(projectId, taskId), tests: testsPanel, review: reviewPanel,
         files: () => filesPanel(projectId, taskId),
         handoff: () => documentPanel("handoff", "Developer handoff", ["No handoff yet", "The developer agent writes it at the end of each development step."]),
@@ -761,8 +768,12 @@ export default function mount(root, route, ctx) {
   // Evidence refers to a log by the name the Logs tab lists it under.
   function openLog(id) {
     panelFor("logs").choose(id);
-    tab = "logs";
-    replace("tasks", projectId, taskId, tab);
+    selectTab("logs");
+  }
+
+  function selectTab(key) {
+    tab = key;
+    replace("tasks", projectId, taskId, tab === "overview" ? null : tab);
     tabList.update(undefined, tab);
     showPanel();
   }
@@ -844,7 +855,9 @@ export default function mount(root, route, ctx) {
     const waiting = task.acceptance ? task.acceptance.required - task.acceptance.required_verified : 0;
     const counts = { activity: task.events || null, review: task.issues || null, logs: detail?.logs.length || null, criteria: waiting || null };
     tabList.update(TABS.map(([key, label, iconName]) => ({ key, label, icon: iconName, count: counts[key],
-      alert: (key === "review" && task.verdict && task.verdict !== "APPROVED") || (key === "criteria" && task.acceptance?.code === "APPROVED") })), tab);
+      alert: (key === "review" && task.verdict && task.verdict !== "APPROVED")
+        || (key === "criteria" && task.acceptance?.code === "APPROVED")
+        || (key === "verification" && task.acceptance?.code === "APPROVED" && task.status !== "done") })), tab);
     showPanel();
   }
 

@@ -25,7 +25,8 @@ duration change, the CI run of `533ba8a`, a correction of the test fixtures
 it showed, and publication-status update: October 18, 2026. A timeout is
 not a refused start, and publication-status update: October 18, 2026. A
 refused stop said by agent steps and the earlier test stage, and
-publication-status update: October 18, 2026.
+publication-status update: October 18, 2026. Verification Center and evidence bundles:
+November 5, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -264,6 +265,116 @@ and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
 
+## Verification Center and evidence bundles (November 5, 2026)
+
+This section covers a working tree on top of `73858c1`: the new modules
+`bundle.py` and `static/js/views/verification.js`; `evidence.parse` (the
+check of `evidence.read`, now on given bytes); the read model and export
+operations in `app.py`; the `/verification…` routes and the download in
+`ui.py`; `patchrondo bundle export|verify` in `cli.py`; the Verification tab
+in `static/js/views/task.js`, wording in `static/js/tasks.js`, `download` in
+`static/js/api.js`, styles in `views.css`; `tests/test_bundle.py` (29 tests),
+`tests/test_verification_center.py` (6); the `verification` scenario of
+`tools/ui_e2e.py` and the new tab in `quality`; eighteen mutation protections;
+ARCHITECTURE section 19, USAGE, DESIGN, TESTING, SECURITY, ROADMAP, README and
+the changelog. No decision of the loop changed: no engine module other than
+`evidence.py` (a pure split of `read`) was edited, and `gate.py`,
+`provenance.py`, `acceptance.py` and `core.py` are unchanged. The package
+version is unchanged, 0.2.1.
+
+**Asked for.** The user's "0.35 Phase 2 / Step 4": a Verification Center in
+the dashboard that explains the gate, the criteria and the evidence and
+offers only actions the backend supports, and an exporter of portable,
+checkable evidence bundles, with a verifier; no new acceptance rule, no
+bypass of the gate, no commit or push.
+
+**Audit.** Remote `main` was `73858c1` at the start, equal to the local HEAD,
+with a clean working tree; run 41923687095 for it had succeeded, and there
+were no tags or Releases (checked on November 5, 2026). The two conditions
+left open by Step 3 were checked against the code and its tests, not
+changed: an open blocking finding cannot coexist with a `PASS` that nothing
+settles, and an approval of an earlier snapshot is not reused after the
+files change (`tests/test_gate.py`, `WorkflowTests`, lines 423–600, passed
+with Python 3.13 and 3.11 below). No defect allowing a false completion was
+found. The dashboard already carried the saved gate in `state.json`, the
+criteria judged now and the last 200 records with their validity in the
+task detail; what was missing was the gate's conditions in words, a paged
+view of a large ledger, record provenance, and an export.
+
+**Decisions.**
+
+- The page shows the gate as the engine saved it, with `gate_state` saying
+  whether it is about the ledger as it is now; it never evaluates a gate
+  (that needs the worktree's fingerprint, which only a run or *Check again*
+  takes under the lock). A `PASS` saved before newer evidence is shown amber
+  as *Not current*, with *Evaluate again*.
+- Actions come from the backend (`_verification_actions`), each mapped to an
+  existing path; *Complete* only for a saved `COMPLETE` at `validate`.
+- An export takes no lock: it reads both files twice and refuses when they
+  differ four times. Holding the task lock would have stopped runs during an
+  export; a coherent pair of readings is enough because both files are
+  written whole (`save_json` replaces; ledger lines are appended whole).
+- The ledger is copied byte for byte, so the verifier can check the hash
+  chain again; the state's text is masked. Detailed bundles hold only what
+  records name, from the task's `runs` folder.
+- The CLI uses `bundle` rather than `evidence verify`: `evidence` already
+  records a check by the user.
+- On native Windows `zipfile` turns a backslash in an entry name into a
+  slash when it reads an archive; a first version of the verifier read
+  `a\b.txt` as an unexpected `a/b.txt` (`MODIFIED`) on Windows and as an
+  unsafe name on POSIX. It now checks the name as stored (`orig_filename`).
+  Found by the first run of the new tests.
+
+**Checks run** (November 5, 2026; native Windows 11 Pro 10.0.26300, Python
+3.13.3 and 3.11.3, Git 2.50.1; WSL2 Ubuntu, Python 3.12.3, Git 2.43.0;
+scripted or synthetic providers only, no real provider call):
+
+| Check | Platform | Result |
+|---|---|---|
+| Baseline before any edit: `test_gate.py`, `test_criteria_ui.py`, `test_frontend.py` | Windows, 3.13.3 | 34, 10 and 6 passed, exit 0 |
+| `py_compile` of every changed Python file | Windows, 3.11.3 | exit 0 |
+| 15 focused modules (`test_bundle`, `test_verification_center`, `test_frontend`, `test_ui`, `test_criteria_ui`, `test_gate`, `test_cli`, `test_browser_tools`, `test_recovery_checks`, `test_run_tests`, `test_provenance`, `test_acceptance`, `test_coherence`, `test_publication`, `test_verification`) | Windows, 3.13.3 and 3.11.3 | 350 tests each, all passed, exit 0; 6 skipped each (1 in `test_ui`, 1 in `test_provenance`, 4 in `test_verification`: tests of the other platform, and real pytest) |
+| `test_bundle.py`, `test_verification_center.py` | WSL2, 3.12.3 | 29 and 6 passed, 0 skipped, exit 0 |
+| `test_coherence.py` with `PATCHRONDO_ALL_CHECKPOINTS=1` | Windows, 3.13.3 | 9 passed in 83 s, exit 0 |
+| New mutations alone (scratch runner over `run_mutation`) | Windows, 3.13.3 | 18 of 18 detected, 86 s |
+| `tools/recovery_checks.py protections --jobs 8` | WSL2, 3.12.3 | 320 of 320 removed protections detected, exit 0 |
+| `tools/recovery_checks.py real-clock` | WSL2, 3.12.3 | 10/10 checks passed, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | WSL2, 3.12.3 | 42 passed, 0 failed, 0 skipped, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | Windows, 3.13.3 | 30 passed, 0 failed, 12 skipped (crash and interrupt scenarios need POSIX signals), exit 0 |
+| `tools/ui_e2e.py`, all 13 scenarios | Windows, 3.13.3, Chrome 156.0.8078.80 headless | 381 passed, 0 failed, exit 0 |
+| `tools/check_publication.py` | Windows, 3.13.3 | exit 1, 6 findings, all pre-existing: `.claude/` and `debug.log` (ignored local files), four unchanged images for manual review |
+
+The `verification` scenario's first run failed one check of 26 because the
+driver's `press("Enter")` sends a key-down without its character, which does
+not activate a focused button; the scenario now sends a full Enter through
+the DevTools protocol, and passed 26 of 26 alone before the full run.
+
+New regression coverage fails against the previous behavior: each of the
+eighteen mutations removes one safeguard of this change from a copy of the
+sources and the named tests fail. The `quality` expectation that ArrowRight
+from *Overview* reaches *Criteria and checks* now expects *Verification*,
+the tab inserted after *Overview*.
+
+**Measurements** (Windows, 3.13.3, a ledger of 4,991 records, 3.0 MB, in
+process, no HTTP): the Verification view 289 ms the first time and about
+104 ms after (validity is cached; the criteria and overview are judged each
+time); a page of 50 or 200 records 1–2 ms once the files settled (about
+175 ms while they were less than two seconds old, which the cache does not
+trust); one record 1 ms; a summary bundle 0.7 s, 311 KB compressed from
+5.1 MB of files, 23.8 MiB peak traced memory; its verification 0.2 s. In the
+browser scenario the page followed a check recorded from another session
+within the usual event-stream delay.
+
+**Not run, and why.** The full unittest matrix and package build and
+`twine check` belong to CI and were not run locally; CI has not run on this
+working tree. The opt-in real-sandbox tests concern the environment check,
+which did not change. No real provider was called. The browser check runs on
+native Windows only (no browser in WSL2), and in Chrome only.
+
+**Limits.** Bundles are not signed: integrity, not authenticity. The page and
+the bundle show what was saved and do not fingerprint the worktree. Masking
+of detailed bundles is best effort. The view recomputes the criteria on each
+request (about 0.1 s for 5,000 records here).
 ## The gate checks its own snapshot (November 4, 2026)
 
 This section covers `268b82d` (on top of `a0bc8b5`) and one test added on

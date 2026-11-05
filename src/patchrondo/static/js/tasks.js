@@ -311,6 +311,62 @@ export const REVIEW_OUTCOMES = {
   MANUAL_ACTION_REQUIRED: "a person has to do something", NOT_ASSESSED: "not assessed",
 };
 
+// The acceptance gate's decision, its next action and its reasons, in words. The codes come from the backend
+// (`gate.py`, `acceptance.Basis`) and are always shown beside these words; nothing is decided here.
+export const GATE_DECISIONS = {
+  PASS: { label: "Can be completed", tone: "ok", icon: "check", mood: "done", help: "Every condition for completing the task holds." },
+  FAIL: { label: "Changes needed", tone: "danger", icon: "x", mood: "attention", help: "The review asked for a change to the code, or a required check failed." },
+  NEEDS_REVERIFICATION: { label: "Verification to repeat", tone: "warn", icon: "repeat", mood: "waiting", help: "Evidence the task relied on no longer counts for the files and checks as they are now." },
+  PENDING: { label: "Work in progress", tone: "accent", icon: "clock", mood: "working", help: "The workflow still has work its agents and checks can do." },
+  BLOCKED: { label: "Needs you", tone: "warn", icon: "user", mood: "attention", help: "What is left needs you: a decision, something missing, or a check by a person." },
+  ERROR: { label: "Cannot conclude", tone: "danger", icon: "alert", mood: "error", help: "The evidence recorded for this task does not hold together: nothing can be concluded from it until it is repaired." },
+};
+export const GATE_ACTIONS = {
+  COMPLETE: "Complete the task", DEVELOP: "The developer changes the code", RUN_CHECKS: "PatchRondo runs the project's checks again",
+  REVIEW: "The reviewer reads the code again", CONTINUE: "The workflow continues", WAIT_FOR_AUTHORIZATION: "Your decision about an operation",
+  PROVIDE_CAPABILITY: "Something missing has to be provided", WAIT_FOR_USER_VALIDATION: "A check by you",
+  WAIT_FOR_EXTERNAL_VERIFICATION: "A check outside the project, by you", RESTORE_CONFIGURATION: "A switched-off protection has to be put back",
+  REPAIR_EVIDENCE: "The evidence ledger has to be repaired",
+};
+export const GATE_REASONS = {
+  LEDGER_PROBLEM: "The evidence ledger failed its integrity check",
+  EVIDENCE_INCONSISTENT: "A criterion counted as verified names a record that does not count",
+  CODE_CHANGES_REQUIRED: "The review asked for a change to the code",
+  CODE_NOT_APPROVED: "The code is not approved yet",
+  APPROVAL_NO_LONGER_COUNTS: "The approval of the code is about other files than these",
+  TESTS_NOT_CURRENT: "The test results are about other files, checks or inputs",
+  FILES_NOT_CHECKED: "The files have not been compared with the test results yet",
+  EVIDENCE_STALE: "Evidence it relied on became stale: what it was about changed",
+  EVIDENCE_INVALID: "Evidence it relied on is invalid: its integrity cannot be confirmed",
+  EVIDENCE_UNKNOWN: "Evidence it relied on cannot be judged: what is needed to judge it is missing",
+  VERIFICATION_DISABLED: "PATCHRONDO_VERIFICATION=0 turns off the configured checks",
+  PROVENANCE_DISABLED: "PATCHRONDO_PROVENANCE=0 turns off what the checks declare",
+  VERIFIED: "Verified", WAITING_FOR_DEPENDENCY: "Waits for another criterion", IN_DEVELOPMENT: "Being developed",
+  CODE_CHANGE_REQUIRED: "The reviewer asked for a change to the code", CHECK_FAILED: "A project check failed",
+  USER_CHECK_FAILED: "Your check did not pass", CHECK_UNSETTLED: "A check gave no usable result",
+  AUTHORIZATION_DENIED: "You did not authorize the operation", AUTHORIZATION_REQUIRED: "Needs your authorization",
+  CHECKS_NOT_ALLOWED: "The project's checks are configured, without your consent", NO_TEST_COMMANDS: "No test command is configured",
+  TOOL_MISSING: "A tool it needs is not installed", NO_COMMAND: "No allowed command does it",
+  REVIEWER_CAPABILITY_BLOCKED: "The reviewer cannot check it with its tools", UNCLASSIFIED: "Unclear what it needs: you decide",
+  HANDED_OVER_BY_REVIEW: "The reviewer could not settle it by reading the code", MANUAL_VALIDATION_REQUIRED: "Needs a check by you",
+  EXTERNAL_VERIFICATION_REQUIRED: "Needs a check outside the project", AWAITING_REVIEW: "Waits for the review",
+  AWAITING_CHECKS: "Waits for the project's checks",
+};
+export const VALIDITY = {
+  VALID: { label: "Valid", tone: "ok", help: "It counts for the task as it is now." },
+  STALE: { label: "Stale", tone: "warn", help: "True when it was recorded; what it was about changed since. It no longer counts." },
+  INVALID: { label: "Invalid", tone: "danger", help: "Its integrity cannot be confirmed. It does not count." },
+  UNKNOWN: { label: "Unknown", tone: "neutral", help: "What is needed to judge it is missing. It does not count." },
+};
+
+// What a record says it observed, and whether that still counts: never one without the other.
+export function evidenceWords(row) {
+  const [result] = EVIDENCE_RESULTS[row.result] || [row.result || "Recorded"];
+  if (row.validity === "VALID") return `${result} · counts now`;
+  if (["passed", "approved", "granted"].includes(row.result)) return `${result} earlier · no longer valid for the current state`;
+  return `${result} · does not count now`;
+}
+
 export function executorName(name, task) {
   return { developer: `${agentName(task?.developer)} · developer`, reviewer: `${agentName(task?.reviewer)} · reviewer`,
            runtime: "PatchRondo", user: "You" }[name] || humanize(name);

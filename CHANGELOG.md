@@ -425,8 +425,10 @@ for the distinction between executed checks and CI failures.
 ### Separate development — Evidence Engine proposal (0.35)
 
 `753d957` implements the verification runner requested as the proposal's
-"Phase 2, step 1"; the entry of November 4, 2026 below implements its
-"Phase 2, step 2", provenance and invalidation. This is separate from the
+"Phase 2, step 1"; the entries of November 4, 2026 below implement its
+"Phase 2, step 2", provenance and invalidation, and "step 3", the acceptance
+gate; the entry of November 5, 2026 implements "step 4", the Verification
+Center and evidence bundles. This is separate from the
 planned 0.3 Progress & Stagnation Detection phase; it does not mean that
 phase or the whole 0.35 proposal is implemented. The existing ledger is
 extended, not replaced.
@@ -774,6 +776,70 @@ nothing, and the pause of a timed-out check said only "Tests timed out".
   added); `tests/test_coherence.py` also checks that a task that is done, or
   whose saved gate passes, has no unsettled open blocking finding and is
   approved by a review of the files of its test results. Three new mutation
+  protections.
+
+#### The Verification Center and evidence bundles — November 5, 2026
+
+The request's "Phase 2, step 4". The Verification Center and the evidence
+bundle are placed in this proposal by that request; nothing in the engine's
+decisions changed: no acceptance rule, validity rule, event or path to
+`done` was added, and the gate stays the one authority for completion.
+
+- **A Verification tab on the task page** (`static/js/views/verification.js`,
+  `App.verification_view`, `GET …/tasks/<id>/verification`). Rondo and one
+  sentence say where the task stands, beside the saved gate's decision in
+  words and its code. The figures keep apart the code review, the required
+  criteria verified, the evidence records that count and what needs
+  attention. *Why this task is not completed* lists the gate's conditions in
+  order of precedence with their codes, the criteria and evidence they name,
+  the findings and the evaluation it was decided on. A saved gate older than
+  the ledger is shown as *before the latest evidence* with **Evaluate again**
+  (no agent), never as a current `PASS`; a task with no saved gate shows *Not
+  evaluated*. The timeline marks each saved gate decision as *the gate then*.
+- **Only actions the backend carries out**, chosen from the saved gate:
+  attach evidence, authorize or decline, complete (only for `COMPLETE` at
+  `validate`; a run that calls no agent), resume (through the usual
+  confirmation), check again, open settings, export. A disabled action says
+  why; none marks a criterion as verified.
+- **An evidence explorer** paged and filtered on the server
+  (`…/verification/evidence`, 50 rows, at most 200), newest first, showing
+  what each record observed beside whether it counts now; a record opens with
+  its provenance, the invalidations that name it, its criteria and its log
+  (`…/verification/evidence/<record>`).
+- **Evidence bundles** (`bundle.py`): a summary bundle (records, decisions,
+  references, validity, no logs) or a detailed one (also masked copies of
+  the logs and report copies the ledger names, from the task's own `runs`
+  folder, no link followed, cut to their end), with a versioned
+  `manifest.json` of every file's SHA-256 and size, omissions, limits, a
+  content digest and `signature: null`. Built in memory from one coherent
+  view of `state.json` and the ledger, read twice: a task that keeps changing
+  is refused (HTTP 409) rather than bundled; a gate saved before the ledger
+  moved on is named and makes the bundle incomplete. The same state gives the
+  same files and bundle ID; only `created_at` differs. Downloaded from the
+  page after a preview (`…/verification/bundle?mode=`), or written with
+  `patchrondo bundle export TASK [--detailed] [-o FILE]`, which never
+  replaces a file.
+- **`patchrondo bundle verify FILE [--json]`** checks a bundle without
+  extracting it: safe raw names (on Windows `zipfile` turns a backslash into a
+  slash, so the stored name is checked), no links, duplicates or encrypted
+  entries, size, entry and compression-ratio limits, the format and schema
+  version, every hash and size, no unlisted file, the content digest, and that
+  the ledger's chain, the validity of each record, the saved gate's own ID and
+  the manifest's gate decision and permission to complete agree. Verdicts
+  `INTACT` 0, `INCOMPLETE` 1, `MODIFIED` 2, `MALFORMED` 3, `UNSUPPORTED` 4,
+  `UNVERIFIABLE` 5. Integrity is not authenticity: nothing is signed.
+- `evidence.parse` checks the bytes of a ledger as `evidence.read` does
+  (`read` now calls it), so that an export and a check read exactly the bytes
+  they hold.
+- Tests: `tests/test_bundle.py` (29: the checks of a bundle, the exporter's
+  limits and refusals, the read model, and the request's end-to-end scenario
+  through the real loop with scripted agents, from a gate that waits for an
+  external check to a completed task, bundled before and after) and
+  `tests/test_verification_center.py` (6: the routes behind the token and
+  Host checks, errors, downloads, a ledger of about 5,000 records read in
+  pages). The browser check gains a `verification` scenario, and `quality`
+  checks the new tab at every width; its keyboard check now lands on the
+  *Verification* tab, which follows *Overview*. Eighteen new mutation
   protections.
 
 ### Documentation alignment — October 17, 2026

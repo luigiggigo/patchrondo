@@ -9,7 +9,7 @@ import signal
 import sqlite3
 import sys
 
-from . import __version__, acceptance, agents, doctor, evidence, rag, recovery, runinfo
+from . import __version__, acceptance, agents, bundle, doctor, evidence, rag, recovery, runinfo
 from .core import attach_evidence, config, create_task, decide_authorization, initialize, recheck_acceptance, task_config, task_dir
 from .storage import read_json
 from .workspace import REGISTRY, Project, Workspace
@@ -70,6 +70,17 @@ def parser() -> argparse.ArgumentParser:
     choice = decide.add_mutually_exclusive_group(required=True)
     choice.add_argument("--grant", action="store_true", help="You take the operation on yourself, and its evidence")
     choice.add_argument("--deny", action="store_true", help="The operation is not done; the criterion stays open")
+    bundled = sub.add_parser("bundle", help="Export the evidence of a task as a ZIP, or check such a file (no model calls)")
+    steps = bundled.add_subparsers(dest="bundle_command", required=True)
+    exported = steps.add_parser("export", help="Write an evidence bundle of a task: its records, decisions and a manifest of hashes")
+    exported.add_argument("task_id", help="Task ID such as T-0123456789ab")
+    exported.add_argument("--detailed", action="store_true",
+                          help="Also sanitized copies of the logs and report copies the ledger names (masking is best effort)")
+    exported.add_argument("-o", "--output", type=Path, help="The ZIP to write (default: its own name in the current folder); "
+                                                           "an existing file is never replaced")
+    checked = steps.add_parser("verify", help="Check an evidence bundle: hashes, names, manifest and the records it holds")
+    checked.add_argument("file", type=Path, help="The bundle (.zip)")
+    checked.add_argument("--json", action="store_true", help="Print the whole result as JSON")
     sub.add_parser("list", help="List tasks")
     sub.add_parser("projects", help="List the projects registered in this home")
     index = sub.add_parser("index", help="Update the local retrieval index (no model calls)")
@@ -139,6 +150,25 @@ def _print_criteria(path: Path) -> None:
         print(f"Warning: {problem}")
 
 
+def _verify_bundle(file: Path, as_json: bool) -> int:
+    """Check an evidence bundle and print the verdict. The exit code is the verdict's (`bundle.EXIT_CODES`)."""
+    found = bundle.verify(file)
+    if as_json:
+        print(json.dumps(found, indent=2, ensure_ascii=False))
+        return found["exit_code"]
+    shown = found["manifest"] or {}
+    print(f"{found['status']} · {shown.get('bundle_id') or 'no bundle ID'} · task {shown.get('task_id') or '?'} · "
+          f"{found['files_checked']} file(s) checked")
+    gate = shown.get("gate")
+    if isinstance(gate, dict):
+        print(f"Gate as exported: {gate.get('decision')}" + ("" if gate.get("about_exported_ledger") else
+                                                              " (saved before the ledger moved on)"))
+    for entry in found["problems"]:
+        print(f"- {entry['code']}: {entry['detail']}" + (f" ({entry['path']})" if entry.get("path") else ""))
+    print(f"Authenticity: {found['note']}")
+    return found["exit_code"]
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -168,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
         elif command == "doctor":
             for name in doctor.PROVIDERS:
                 print("\n".join(doctor.report_lines(doctor.check(name))))
+        elif command == "bundle" and opts.bundle_command == "verify":
+            return _verify_bundle(opts.file, opts.json)
         elif command == "list" and not opts.project and (root / REGISTRY).exists() \
                 and len(projects := workspace.projects()) > 1:
             for project in projects:
@@ -219,6 +251,19 @@ def main(argv: list[str] | None = None) -> int:
                 _print_criteria(task_dir(home, opts.task_id))
                 if done and done["completes"]:
                     print(f"Every required criterion is verified. To complete the task: patchrondo resume {opts.task_id}")
+            elif command == "bundle":
+                made = bundle.build(task_dir(home, opts.task_id), "detailed" if opts.detailed else "summary")
+                target = opts.output or Path(made.name)
+                with open(target, "xb") as stream:  # never replaces a file
+                    stream.write(made.data)
+                manifest = made.manifest
+                gate = manifest["gate"]
+                print(f"Wrote {target} ({len(made.data)} bytes) · {manifest['bundle_id']} · {manifest['mode']}")
+                print(f"Gate: {gate['decision'] if gate else 'not evaluated'}" + ("" if not gate or gate["about_exported_ledger"]
+                                                                                   else " (saved before the ledger moved on)"))
+                for entry in manifest["omissions"]:
+                    print(f"Left out: {entry['item']}: {entry['reason']}")
+                print("Hashes show changes after the export; nothing is signed. Check it with: patchrondo bundle verify FILE")
             elif command == "status":
                 print(json.dumps(read_json(task_dir(home, opts.task_id) / "state.json"), indent=2, ensure_ascii=False))
             elif command == "report":
