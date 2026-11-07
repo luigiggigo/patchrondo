@@ -9,8 +9,8 @@
 | 0.35 | Separate Evidence Engine proposal | Verification runner step implemented in `753d957`; provenance and invalidation step and acceptance gate step implemented (November 4, 2026); Verification Center and evidence bundles implemented (November 5, 2026); remaining proposal not completed |
 
 No stable release is established by the available publication record. On
-November 7, 2026, GitHub `main` was checked at `fa3e615` (its CI run
-succeeded in all 17 jobs), with no version tags or GitHub Releases. On
+November 7, 2026, GitHub `main` was checked at `fa3e615`, then at `b429da0`
+(the CI run of each succeeded in all 17 jobs), with no version tags or GitHub Releases. On
 November 4, 2026, it was checked at `abfb476` (its CI run failed
 one test of the fingerprint with Python 3.13 on Ubuntu and macOS), with no
 version tags or GitHub Releases. On October 18, 2026 it was checked at

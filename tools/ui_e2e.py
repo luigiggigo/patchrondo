@@ -47,7 +47,7 @@ sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import browser  # noqa: E402
-from patchrondo import activity, bundle, doctor, environment, history  # noqa: E402
+from patchrondo import activity, bundle, doctor, environment, history, picker  # noqa: E402
 from patchrondo.commands import join_command  # noqa: E402
 from patchrondo.core import config, create_task, initialize  # noqa: E402
 from patchrondo.process import Result as browser_result  # noqa: E402
@@ -653,8 +653,34 @@ def scenario_projects(env: Env) -> None:
     env.go("projects")
     page.click(text="Add project")
     page.wait("Boolean(q('.dialog'))", 5, "the add project dialog")
+    # The system's folder dialog, scripted: a child process that "chooses" beta after a second, longer than one
+    # request of the page waits, so the page has to ask again. The typed path is where the dialog starts.
+    started = []
+
+    def scripted(initial):
+        started.append(initial)
+        return "windows", [sys.executable, "-c", "import json, sys, time; time.sleep(1.2); print(json.dumps({'status': 'picked', 'path': sys.argv[1]}))",
+                           str(beta)]
+
+    env.server.app.picker = picker.Picker(planner=scripted, wait_seconds=0.4)
+    page.fill(".dialog input.mono", str(beta.parent))
+    page.click(text="Browse…")
+    env.expect("Browse opens the system's folder dialog and the page says so while it is open",
+               "q('.dialog .picker-note').innerText.includes('folder dialog of your system is open')", 8)
+    env.expect("the folder chosen in the system's dialog fills the field and validates",
+               f"q('.dialog input.mono').value === {json.dumps(str(beta))} && Boolean(q('.dialog .repo-ok')) && !q('.dialog .picker-note').innerText", 10)
+    env.check("the dialog started in the folder typed in the field", started == [str(beta.parent)], str(started))
+    env.check("no folder list was shown while the system's dialog worked", page.js("!q('.dialog .browser-list')"))
+    # Where the system has no dialog the page lists the folders itself.
+    def headless(initial):
+        raise picker.Unavailable("No graphical session was found")
+
+    env.server.app.picker = picker.Picker(planner=headless)
+    page.fill(".dialog input.mono", "")
     page.click(text="Browse…")
     page.wait("Boolean(q('.browser-list'))", 8, "the folder list")
+    env.expect("without a system dialog the page says why and lists folders itself",
+               "q('.dialog .picker-note').innerText.includes('No graphical session was found. Choose the folder from this list instead')", 8)
     page.fill(".dialog input.mono", str(beta.parent))
     page.click(text="Browse…")
     page.click(text="Browse…")
@@ -1870,6 +1896,8 @@ def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")  # page text is printed when a check fails
+    # No scenario may open a real folder dialog of the system: the one that tests it gives its own.
+    os.environ[picker.SWITCH] = "0"
     executable = browser.find_browser()
     if executable is None:
         print("ui-e2e: SKIPPED (no Chromium-based browser found; set PATCHRONDO_BROWSER to its executable)")

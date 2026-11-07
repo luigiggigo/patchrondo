@@ -121,6 +121,21 @@ $env:PATCHRONDO_REAL_SANDBOX = '1'
 python -m unittest discover -s tests -p test_sandbox_real.py -v
 ```
 
+No automated test opens the system's folder dialog: `ServerCase` and
+`tools/ui_e2e.py` set `PATCHRONDO_NATIVE_PICKER=0`, and the tests of
+`tests/test_picker.py` play the dialog with Python child processes. On a
+native Windows desktop the Explorer dialog itself can be opened and answered
+by messages to its window (*Select Folder*, then *Cancel*); a dialog appears
+for about a second each time:
+
+```powershell
+$env:PATCHRONDO_REAL_PICKER = '1'
+python -m unittest discover -s tests -p test_picker.py -v
+```
+
+The macOS and Linux dialogs are checked through their commands and answers
+only; they have not been opened by an automated test.
+
 `tests/test_coherence.py` checks the acceptance record, the findings, the
 workflow history and the evidence ledger together: after whole scripted runs
 it rebuilds every review from its event and checks each reference both

@@ -44,9 +44,35 @@ export function repositoryField({ onChange } = {}) {
   const input = h("input", { class: "input mono", type: "text", placeholder: navigator.platform.startsWith("Win") ? "C:\\src\\my-project" : "/home/you/src/my-project",
     autocomplete: "off", spellcheck: "false", autofocus: true });
   const status = h("div", { class: "repo-status", "aria-live": "polite" });
+  const note = h("div", { class: "faint picker-note", "aria-live": "polite" });
   const browser = folderBrowser((path) => { input.value = path; browser.hidden = true; check(); });
   browser.hidden = true;
-  const browse = button("Browse…", { iconName: "folder", onClick: () => { browser.hidden = !browser.hidden; if (!browser.hidden) browser.open(input.value.trim() || null); } });
+  const showList = (why) => {
+    browser.hidden = false;
+    browser.open(input.value.trim() || null);
+    note.textContent = why ? `${why}. Choose the folder from this list instead.` : "";
+  };
+  // The system's own folder dialog, opened by PatchRondo on this computer; the list in the page when there is none.
+  const browse = button("Browse…", { iconName: "folder", onClick: () => {
+    if (!browser.hidden) { browser.hidden = true; note.textContent = ""; return; }
+    busy(browse, async () => {
+      try {
+        let answer = await api.post("/api/fs/pick", { path: input.value.trim() || null });
+        while (answer.status === "open") {
+          note.textContent = "The folder dialog of your system is open. If you do not see it, it may be behind this window.";
+          answer = await api.post("/api/fs/pick", { id: answer.id });
+        }
+        note.textContent = "";
+        if (answer.status === "picked") { input.value = answer.path; check(); }
+        else if (answer.status === "unavailable") showList(answer.message);
+        else if (answer.status === "failed") showList(answer.message || "The folder dialog failed");
+      } catch (error) {
+        note.textContent = "";
+        if (error.status === 404) return; // the dialog was closed elsewhere
+        showList(error.message);
+      }
+    });
+  } });
   let timer = null, serial = 0, result = null;
   async function check() {
     const path = input.value.trim();
@@ -74,7 +100,7 @@ export function repositoryField({ onChange } = {}) {
   const el = h("div", { class: "stack" },
     field({ label: "Repository folder", control: input, error: false,
       hint: "The root folder of a local Git repository with at least one commit. PatchRondo never commits, pushes or edits your checkout." }),
-    h("div", { class: "row" }, browse), browser, status);
+    h("div", { class: "row" }, browse), note, browser, status);
   el.input = input;
   el.check = check;
   Object.defineProperty(el, "result", { get: () => result });

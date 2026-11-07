@@ -147,6 +147,10 @@ class ServerCase(unittest.TestCase):
         system = patch("patchrondo.app.environment.system", return_value=SYSTEM)
         system.start()
         self.addCleanup(system.stop)
+        # No server test opens a real folder dialog of the system; tests of the dialog give their own picker.
+        no_dialog = patch.dict(os.environ, {"PATCHRONDO_NATIVE_PICKER": "0"})
+        no_dialog.start()
+        self.addCleanup(no_dialog.stop)
         self.addCleanup(self.tmp.cleanup)
         self.server = None
         self.start()

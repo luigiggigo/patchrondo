@@ -15,7 +15,7 @@ October 10, 2026, live activity on October 11, 2026, in commit `c9f6e1e`, and
 the failure classification correction the same day in commit `6937d9f`.
 [REVIEW.md](REVIEW.md#current-source-and-ci-status-november-7-2026) records the
 current commit's CI status and the dated local checks. The GitHub repository
-has no version tags or GitHub Releases as checked on November 7, 2026.
+has no version tags or GitHub Releases as checked on November 7, 2026 (19:56 +01:00).
 Source publication, a versioned release and publishing to PyPI are separate
 steps.
 
@@ -108,6 +108,10 @@ which followed `73858c1`: the Verification Center, evidence bundles and their
 hardening. Tags and GitHub Releases were still empty. The CI runs of all four commits
 succeeded in all 17 jobs; run 42388191688 of `fa3e615` took 5 min 43 s,
 the package check included. Each result belongs to its own commit only.
+At 19:56 +01:00 the same day the remote `main` was at `b429da0`, committed by
+the user at 19:11 +01:00 on top of `fa3e615` (the browser check waiting for
+the run to end, and that status). Tags and GitHub Releases were still empty;
+its CI run 42400016581 succeeded in all 17 jobs in 5 min 5 s.
 
 The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
 Workflow Events and their integration under **0.3.0 — Unreleased**, preserving

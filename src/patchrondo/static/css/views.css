@@ -188,6 +188,7 @@ details.advanced .card-body { border-top: 1px solid var(--border); }
 .browser-roots { display: flex; gap: var(--space-1); flex-wrap: wrap; padding: var(--space-1) var(--space-1) var(--space-2); }
 .browser-roots .chip:hover { color: var(--text); background: var(--border-strong); }
 .browser-list { max-height: 240px; overflow-y: auto; border-top: 1px solid var(--border); padding-top: var(--space-1); }
+.picker-note:empty { display: none; }
 .repo-status { display: flex; flex-direction: column; gap: var(--space-1); min-height: 20px; font-size: var(--text-sm); }
 .repo-ok, .repo-warn { display: flex; gap: 6px; align-items: flex-start; }
 .repo-ok { color: var(--ok); }

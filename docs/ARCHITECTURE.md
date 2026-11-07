@@ -55,6 +55,7 @@ Progress & Stagnation Detection remains planned.
 | `environment.py` | The environment check before any provider call: agents, Git, review sandbox; one saved record per check |
 | `preflight.py` | The reviewer preflight: the probe run in the Codex sandbox self-check and the judgment of its answers against the disk |
 | `winacl.py` | Windows access control lists of the folders agents read: inspect, grant narrowly, restore (`ctypes`, Windows only) |
+| `picker.py` | The operating system's folder dialog for *Browse…*: Explorer (`IFileOpenDialog` through `ctypes`, in a child Python process), `osascript` on macOS, `zenity`/`kdialog` on Linux; one at a time, answered through short requests |
 | `repair.py` | The catalogue of environment problems and the two repairs: one unattended, one that needs the user's decision |
 | `commands.py` | Test command lines to and from argument arrays, with Windows or POSIX quoting |
 | `app.py` | Application layer: every operation of the interface (projects, settings, tasks, bounded file views, run start and stop) |
@@ -249,7 +250,7 @@ has not read when that happens.
 | `GET …/tasks/{task}/activity?cursor=&before=&limit=` | A page of the task's activity journal: its end, or what follows or precedes a cursor |
 | `GET …/tasks/{task}/activity/stream?cursor=` | Server-sent events with what is appended to that journal |
 | `POST …/tasks/{task}/run`, `…/stop` | Start `patchrondo run`; interrupt it |
-| `POST /api/fs/list`, `GET /api/providers`, `POST /api/providers/refresh` | Folder names for the picker; cached CLI status |
+| `POST /api/fs/list`, `POST /api/fs/pick`, `GET /api/providers`, `POST /api/providers/refresh` | Folder names for the list in the page; the system's folder dialog (`{"path"}` opens it, `{"id"}` asks for its answer, each request waiting at most 20 s); cached CLI status |
 
 A task is always addressed through its project, so one project cannot reach
 another's tasks. Task creation delegates to `create_task`. Configuration edits

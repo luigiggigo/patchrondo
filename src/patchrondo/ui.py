@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
 from . import activity
-from .app import PACKAGE_ROOT, App, Conflict, RunsAtExit, browse, inspect_repository  # noqa: F401 - re-exported
+from .app import PACKAGE_ROOT, App, Conflict, RunsAtExit, browse, inspect_repository, pick_folder  # noqa: F401 - re-exported
 from .commands import join_command, split_command  # noqa: F401 - re-exported
 from .live import Hub
 from .workspace import NotFound
@@ -82,8 +82,9 @@ class DashboardServer(ThreadingHTTPServer):
         return f"http://127.0.0.1:{self.server_address[1]}/#token={self.token}"
 
     def close_runs(self, timeout: float = 30) -> RunsAtExit:
-        """Refuse new run starts, wait for those in progress and report what may still run."""
+        """Refuse new run starts, wait for those in progress and report what may still run; close a folder dialog left open."""
         self.hub.close()
+        self.app.picker.close()
         return self.app.close_runs(timeout)
 
     def handle_error(self, request, client_address) -> None:
@@ -400,6 +401,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return 200, inspect_repository(app.ws, payload.get("path"))
         if path == "/api/fs/list":
             return 200, browse(payload.get("path"))
+        if path == "/api/fs/pick":
+            return 200, pick_folder(app.picker, payload)
         if path == "/api/providers/refresh":
             return 202, app.providers.view(refresh=True)
         if path == "/api/agents/test":

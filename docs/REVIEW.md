@@ -27,8 +27,8 @@ not a refused start, and publication-status update: October 18, 2026. A
 refused stop said by agent steps and the earlier test stage, and
 publication-status update: October 18, 2026. Verification Center and evidence bundles:
 November 5, 2026. Bundle structure and untrusted ledger records, the browser
-check waiting for the run to end, and publication-status update: November 7,
-2026.
+check waiting for the run to end, the system's folder dialog for Browse, and
+publication-status update: November 7, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -39,16 +39,19 @@ working tree at its date.
 ## Current source and CI status (November 7, 2026)
 
 `git ls-remote`, `git ls-remote --tags`, `gh release list`, `gh run list`
-and `gh run view` were checked on November 7, 2026 at 18:23 +01:00. Remote
-`main` returned `fa3e6155a99d759f922cc6a2cf845be823a653f3`, committed by the
-user at 16:48 +01:00: the [bundle structure and untrusted ledger
-records](#bundle-structure-and-untrusted-ledger-records-november-7-2026), on
-top of `1eb8056` and `8e548b0` (the Verification Center and evidence
-bundles). No version tags or GitHub Releases were returned; branch
-protection was not read. Package metadata remains 0.2.1.
+and `gh run view` were checked on November 7, 2026 at 19:56 +01:00. Remote
+`main` returned `b429da04008c73778c02b240078fec41d42baf33`, committed by the
+user at 19:11 +01:00: [the browser check waits for the run to
+end](#the-browser-check-waits-for-the-run-to-end-november-7-2026) and the
+status of `fa3e615`, on top of `fa3e615` (the [bundle structure and
+untrusted ledger records](#bundle-structure-and-untrusted-ledger-records-november-7-2026)),
+`1eb8056` and `8e548b0` (the Verification Center and evidence bundles). No
+version tags or GitHub Releases were returned; branch protection was not
+read. Package metadata remains 0.2.1.
 
 | Commit | CI run | Observed status on November 7, 2026 |
 |---|---|---|
+| `b429da0` | [42400016581](https://github.com/luigiggigo/patchrondo/actions/runs/42400016581) | SUCCESS in all 17 jobs (5 min 5 s): `Collect tests` (880 tests, no module failed to import), each OS and Python ran all 880 (Ubuntu 880; macOS 371 + 509; Windows 280 + 211 + 215 + 174), the package check and `CI result` |
 | `fa3e615` | [42388191688](https://github.com/luigiggigo/patchrondo/actions/runs/42388191688) | SUCCESS in all 17 jobs (5 min 43 s): `Collect tests` (880 tests, no module failed to import, Python 3.11 and 3.13), the 14 test jobs (each OS and Python ran all 880: Ubuntu in one part, 21 skipped; macOS 371 + 509, 22 skipped; Windows 280 + 211 + 215 + 174, 20 skipped), the package check (`twine check` PASSED for the wheel and the source archive) and `CI result` |
 | `1eb8056` | [42128279152](https://github.com/luigiggigo/patchrondo/actions/runs/42128279152) | SUCCESS in all 17 jobs (5 min 47 s) |
 | `8e548b0` | [42117547329](https://github.com/luigiggigo/patchrondo/actions/runs/42117547329) | SUCCESS in all 17 jobs (5 min 25 s) |
@@ -287,6 +290,54 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## The system's folder dialog for Browse (November 7, 2026)
+
+This section covers a working tree on top of `b429da0`: the new module
+`picker.py`, `app.pick_folder` and `App.picker`, the `/api/fs/pick` route and
+the dialog closed by `DashboardServer.close_runs` in `ui.py`,
+`repositoryField` in `static/js/views/projects.js` and one rule of
+`views.css`; `tests/test_picker.py` (19 tests), the route in the token test of
+`tests/test_ui.py`, `PATCHRONDO_NATIVE_PICKER=0` in `ServerCase`; the
+`projects` scenario of `tools/ui_e2e.py` and the switch for every scenario;
+seven mutation protections; USAGE, ARCHITECTURE, TESTING, SECURITY and the
+changelog.
+
+**Decisions.** The browser's own dialog never gives a page a local path,
+so the dashboard opens the system's dialog. On Windows it is the Explorer
+dialog through `ctypes` in a child process, not PowerShell's
+`FolderBrowserDialog` (the older tree), and not `tkinter`, which is not
+always installed. An invisible topmost owner keeps the dialog above the
+browser; Windows may still keep the focus where it was, so the page says
+the dialog may be behind it. Requests wait at most 20 s each: some browsers
+drop a request after about five minutes.
+
+**Checks run** (November 7, 2026; native Windows 11 Pro 10.0.26300, Python
+3.13.3 and 3.11.3, Chrome 156.0.8078.80 headless; WSL2 Ubuntu 24.04, Python
+3.12.3; scripted or synthetic providers only, no real provider call):
+
+| Check | Platform | Result |
+|---|---|---|
+| `py_compile` of every changed Python file | Windows, 3.11.3 and 3.13.3 | exit 0 |
+| `tests/test_picker.py` with `PATCHRONDO_REAL_PICKER=1`: the Explorer dialog opened in a folder with a space and `è`, answered by messages to its window | Windows, 3.13.3 and 3.11.3 | 19 tests, 18 passed, 1 skipped (the POSIX entry point), exit 0 each; the dialog had its title, was topmost, *Select Folder* gave that folder and *Cancel* `cancelled` |
+| `test_picker`, `test_ui`, `test_frontend`, `test_browser_tools`, `test_recovery_checks`, `test_run_tests` | Windows, 3.13.3 and 3.11.3 | 19 (3 skipped), 62 (1 skipped), 6, 5, 2, 19 tests, all OK |
+| `tools/run_tests.py --collect-only --shard-counts 1,2,4` | Windows, 3.11.3 and 3.13.3 | 899 tests, no module failed to import |
+| `tools/run_tests.py` (the whole suite) | WSL2, 3.12.3 | 899 tests, 876 passed, 23 skipped, exit 0 |
+| `picker.Picker().open("/tmp")` | WSL2 (WSLg, neither `zenity` nor `kdialog`) | `unavailable`: "Neither zenity nor kdialog is installed" |
+| `tools/recovery_checks.py protections --jobs 8` | WSL2, 3.12.3 | 347 of 347 removed protections detected, exit 0 |
+| The seven new protections alone | Windows, 3.13.3 | 7 of 7 detected; the switch's protection lists only tests with their own environment, since a route test would open the real dialog |
+| `tools/recovery_checks.py real-clock` | WSL2, 3.12.3 | 10/10, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | WSL2, 3.12.3 / Windows, 3.13.3 | 42 passed / 30 passed, 12 skipped (POSIX signals), exit 0 both |
+| `tools/ui_e2e.py`, all 13 scenarios, nothing else running | Windows, 3.13.3 | 391 of 391 checks, exit 0, 149 s |
+| The same `projects` scenario with the page no longer asking again while the dialog is open (scratch mutation, restored) | Windows, 3.13.3 | the check of the folder filling the field fails, exit 1 |
+| Wheel built from the working tree, `twine check` | Windows, 3.13.3 | holds `patchrondo/picker.py`; PASSED |
+| `tools/check_publication.py` | Windows, 3.13.3 | exit 1, the same 6 findings as before (`.claude/`, `debug.log`, four images) |
+
+**Not run, and why.** The macOS and Linux dialogs were not opened: no macOS
+here, and installing `zenity` under WSL2 would change the system. Their
+commands and answers are tested; the forms used are those of AppleScript's
+`choose folder` (cancel -128, no user interaction -1713) and of `zenity`
+and `kdialog` (exit status 1 on cancel). CI does not open dialogs either.
 
 ## The browser check waits for the run to end (November 7, 2026)
 

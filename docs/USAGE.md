@@ -33,7 +33,7 @@ the interface, not the runs it started.
 | Section | What you do there |
 |---|---|
 | **Home** | Start a task: the project (or *Choose folder…* for another one), what should be done, the developer and the reviewer with their defaults, a readiness indicator and one **Start task** button. Below it, the state of Claude Code and Codex, tasks that are active, need attention, are ready or done, and recent activity. |
-| **Projects** | Add a local Git repository (with a folder picker and a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
+| **Projects** | Add a local Git repository (*Browse…* opens your system's own folder dialog, see [Choosing a folder](#choosing-a-folder); then a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
 | **Agents** | One card for the developer and one for the reviewer: who plays the role, a preset, the model and the effort; under *Advanced*, every other option of that CLI. Global preferences, a project's own values or a single task's, with the origin of each value in effect. *Test configuration* checks a card without starting anything. See [Agents: models and options](#agents-models-and-options). |
 | **Tasks** | All tasks of the selected project, or of every project, with filters and search. |
 | **Task** | Header with status, roles and iteration; the workflow *Prepare → Develop → Test → Review → Validate → Repeat / Complete*; then Overview, Criteria and checks (each criterion with who does it, who verifies it, why it is open and its evidence), Live Activity (what the agents are doing, while they do it), Timeline (the steps the engine recorded), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
@@ -484,6 +484,28 @@ What to know about it:
   5000 events, with up to 4000 characters of a message; the end of the
   attempt says how many events were not recorded. The view was checked in
   Chrome on Windows with scripted CLIs only.
+
+### Choosing a folder
+
+*Browse…* beside the repository field (on *Projects → Add project*, behind
+*Choose folder…* on Home, and in the first-run wizard) opens the folder dialog
+of the system PatchRondo runs on, starting in the folder typed in the field
+or the one that holds it:
+
+| System | Dialog |
+|---|---|
+| Windows | The Explorer dialog with *Select Folder* |
+| macOS | The Finder panel of `choose folder`, through `osascript` |
+| Linux and other desktops | `kdialog` on KDE, otherwise `zenity`, then the other one; only with `DISPLAY` or `WAYLAND_DISPLAY` set |
+
+The folder chosen fills the field and is checked like a typed path; *Cancel*
+leaves the field as it was. While the dialog is open the page says so: if you
+do not see it, it may be behind the browser. When the system has no such
+dialog (no graphical session, as over SSH; neither `zenity` nor `kdialog`
+installed, as in a plain WSL2 Ubuntu), the page says why and lists the
+folders itself; so does `PATCHRONDO_NATIVE_PICKER=0`. Under WSL2 the dialog is
+the Linux one through WSLg, with Linux paths, because the paths must be the
+ones PatchRondo sees.
 
 ### Several projects, and homes created by 0.1
 

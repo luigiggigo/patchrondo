@@ -1009,6 +1009,23 @@ MUTATIONS = [
              "            if matches is False:\n", "            if False:\n", ("test_bundle.ExportTests",)),
     Mutation("exports are not bounded in number", "app.py",
              "        if not self._exports.acquire(blocking=False):\n", "        if False:\n", ("test_bundle",)),
+    # The system's folder dialog of the Add project form (November 7, 2026).
+    Mutation("the folder dialog cannot be turned off", "picker.py",
+             "    if env.get(SWITCH) == \"0\":\n", "    if False:\n", ("test_picker.PlanTests",)),  # route tests would open a real one
+    Mutation("a path reaches AppleScript inside the script instead of as an argument", "picker.py",
+             "(\" default location (POSIX file (item 2 of argv))\" if start else \"\")",
+             "(f\" default location (POSIX file \\\"{start}\\\")\" if start else \"\")", ("test_picker.PlanTests",)),
+    Mutation("a dialog without a graphical session is started", "picker.py",
+             "    if not (env.get(\"DISPLAY\") or env.get(\"WAYLAND_DISPLAY\")):\n", "    if False:\n", ("test_picker.PlanTests",)),
+    Mutation("a chosen path that is not a folder is answered", "picker.py",
+             "        if path.is_absolute() and path.is_dir():\n", "        if True:\n", ("test_picker.ReadTests",)),
+    Mutation("a second press opens a second folder dialog", "picker.py",
+             "            if session is None or session[\"done\"].is_set():\n", "            if True:\n", ("test_picker.PickerTests",)),
+    Mutation("a folder dialog left open is never closed", "picker.py",
+             "            process.kill()\n            process.communicate()\n",
+             "            process.communicate()\n", ("test_picker.PickerTests",)),
+    Mutation("closing the dashboard leaves the folder dialog open", "ui.py",
+             "        self.app.picker.close()\n", "", ("test_picker.RouteTests",)),
 ]
 
 

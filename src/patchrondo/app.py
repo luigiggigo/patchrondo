@@ -25,7 +25,7 @@ import time
 from typing import NamedTuple
 
 from . import __version__, acceptance as criteria, activity, agents, bundle, doctor, environment, evidence, provenance, providers, rag
-from . import recovery, repair, runinfo, streams, verification
+from . import picker, recovery, repair, runinfo, streams, verification
 from .commands import join_command, split_command
 from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config, create_task,
                    decide_authorization, effective_config, gate_currency, preflight, recheck_acceptance, record_environment,
@@ -216,6 +216,23 @@ def inspect_repository(workspace: Workspace, raw) -> dict:
     return result
 
 
+def pick_folder(folders: picker.Picker, payload: dict) -> dict:
+    """Open the system's folder dialog (`path`: where it starts), or ask the one open for its answer (`id`).
+
+    The answer is `picked` with an absolute folder, `cancelled`, `unavailable`
+    (the page then lists folders itself), `failed`, or `open` with the ID to
+    ask again: no request waits longer than `picker.WAIT_SECONDS`.
+    """
+    if set(payload) - {"path", "id"} or ("path" in payload and "id" in payload):
+        raise ValueError("Send either path (to open the dialog) or id (to ask for its answer)")
+    if "id" in payload:
+        try:
+            return folders.wait(payload["id"])
+        except LookupError as exc:
+            raise NotFound(str(exc)) from exc
+    return folders.open(payload.get("path"))
+
+
 def browse(raw) -> dict:
     """List the sub-folders of one local folder for the folder picker. Names only, never file contents."""
     if raw is None or raw == "":
@@ -331,6 +348,7 @@ class App:
         self.changed = threading.Event()  # set by writes here so the live stream scans at once
         self.providers = Providers(self.ws.root, on_change=self.changed.set)
         self.environment = environment.Manager()  # checks and repairs asked for from the interface
+        self.picker = picker.Picker()  # the system's folder dialog of the Add project form
         self._cache_lock = threading.Lock()
         self._states: dict[Path, tuple] = {}
         self._judged: dict[Path, tuple] = {}  # task folder: (signatures of state.json and the ledger, counts, settled)

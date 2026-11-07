@@ -986,6 +986,39 @@ runtime file changed.
   offering *The run is working* for a completed task, a timeline that no
   longer follows the history) each fail their check.
 
+### The system's folder dialog for Browse — November 7, 2026
+
+- **Browse… opens the folder dialog of the operating system** (user request
+  of November 7, 2026), wherever the repository field is: *Add project*,
+  *Choose folder…* on Home and the first-run wizard. Before, it opened a
+  list of folders drawn in the page, which a browser's own dialog cannot
+  replace: it never gives a page the path of a folder. The dashboard, on the
+  same computer and on `127.0.0.1` only, opens the dialog in a separate
+  process (`picker.py`): on Windows the Explorer dialog (`IFileOpenDialog`
+  with `FOS_PICKFOLDERS`, through `ctypes` in a child Python process, above
+  the other windows); on macOS Finder's `choose folder` through `osascript`,
+  the starting folder passed as an argument, never inside the script; on
+  Linux `kdialog` on KDE, otherwise `zenity`, then the other one, only with
+  `DISPLAY` or `WAYLAND_DISPLAY`. The dialog starts in the folder typed in
+  the field, or the one that holds it. Only an absolute folder that exists
+  is answered, and it is checked like a typed path. *Cancel* changes
+  nothing.
+- No request waits for a person: `POST /api/fs/pick` with `path` opens the
+  dialog and with `id` asks for its answer, each waiting at most 20 s; the
+  page asks again and says, meanwhile, that the dialog is open and may be
+  behind the browser. One dialog at a time (a second press joins it), closed
+  after 30 minutes or when the dashboard closes.
+- Where there is no such dialog (no graphical session; neither `zenity` nor
+  `kdialog`, as in a plain WSL2 Ubuntu; `PATCHRONDO_NATIVE_PICKER=0`) the
+  page says why and shows its folder list, which stays as it was.
+- Tests: `tests/test_picker.py` (commands per system, answers, one dialog at
+  a time, the time limit, the route, closing with the dashboard; the
+  Explorer dialog itself opt-in with `PATCHRONDO_REAL_PICKER=1`). `ServerCase`
+  and `tools/ui_e2e.py` turn the dialog off, and the `projects` scenario
+  plays it with a child process: the page waits for it, takes the folder,
+  validates it, and falls back to the list without a dialog. Seven new
+  mutation protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

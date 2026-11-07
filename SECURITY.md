@@ -472,7 +472,17 @@ Git read-only in the task worktree, without external diff or text-conversion
 programs, and shows the text of a new file only when it is a regular file
 inside the worktree; symbolic links are not followed. The folder picker
 returns the names of sub-folders of a local folder and whether each is a Git
-repository; it returns no file names or contents. All of this is content of
+repository; it returns no file names or contents. *Browse…* opens the
+operating system's own folder dialog on the computer that runs PatchRondo
+(Explorer on Windows, through `ctypes` in a separate Python process; Finder's
+`choose folder` through `osascript` on macOS; `zenity` or `kdialog` on Linux,
+only in a graphical session). Those programs are started with argument arrays,
+without a shell; the folder a dialog opens in reaches AppleScript as an
+argument, never inside the script. One dialog at a time, closed after 30
+minutes or when the interface closes; it returns one path, answered only when
+it is an absolute folder that exists, and checked like a typed one before
+anything is registered. `PATCHRONDO_NATIVE_PICKER=0` turns it off; the page
+then lists folders itself. All of this is content of
 your own disk shown to you, but remember that task state, logs and diffs may
 contain private project data and are not filtered for secrets.
 
