@@ -276,12 +276,13 @@ class Env:
         print(f"{'ok      ' if ok else 'FAILED  '}{name}{f' ({detail})' if detail and not ok else ''}", flush=True)
         return ok
 
-    def expect(self, name: str, expression: str, timeout: float = 10) -> bool:
+    def expect(self, name: str, expression: str, timeout: float = 10, detail: str | None = None) -> bool:
+        """Wait until the page shows `expression`; on a timeout the check fails with `detail` (a page expression) or the page text."""
         try:
             self.page.wait(expression, timeout, name)
             return self.check(name, True)
         except browser.BrowserError:
-            return self.check(name, False, self.page.js(
+            return self.check(name, False, self.page.js(detail or
                 "location.hash + ' | ' + (q('.dialog') || q('.view') || document.body).innerText.replace(/\\s+/g, ' ').slice(0, 900)"))
 
     def clean_console(self, name: str, allow: tuple[str, ...] = ()) -> None:
@@ -1751,9 +1752,11 @@ def scenario_verification(env: Env) -> None:
     overview = page.js("q('.vc-overview').innerText")
     env.check("the approval of the code is shown apart from completion, and nothing is green for completion",
               "Approved" in overview and "1 of 2 verified" in overview and "Can be completed" not in overview, overview[:600])
-    env.check("the first action is the check a person can attach, and nothing offers to complete",
-              page.js("qa('.vc-action-label')[0].innerText.includes('Attach the evidence for AC-02') && !qa('.vc-action button').some((b) => b.textContent.includes('Complete'))"),
-              page.js("qa('.vc-action-label').map((e) => e.innerText).join(' | ')"))
+    # The pause is saved before the run exits: "The run is working" comes first until the scan sees it gone.
+    env.expect("the first action, once the run has ended, is the check a person can attach, and nothing offers to complete",
+               "qa('.vc-action-label').length > 0 && qa('.vc-action-label')[0].innerText.includes('Attach the evidence for AC-02') "
+               "&& !qa('.vc-action button').some((b) => b.textContent.includes('Complete'))", 15,
+               "qa('.vc-action-label').map((e) => e.innerText).join(' | ')")
     env.check("the gate inspector says why in words and keeps the code",
               page.js("q('.vc-conditions').innerText.includes('Needs a check outside the project') && q('.vc-conditions').innerText.includes('EXTERNAL_VERIFICATION_REQUIRED')"))
     env.check("an optional criterion is shown as one that never blocks", page.js("q('.vc-criteria').innerText.includes('Optional · never blocks completion')"))
@@ -1831,10 +1834,14 @@ def scenario_verification(env: Env) -> None:
     env.wait_state(path, lambda s: s["status"] == "done", 60)
     env.expect("the open page follows: completed, with the gate PASS",
                "q('.vc-overview').innerText.includes('This task is completed') && q('.vc-overview').innerText.includes('PASS')", 15)
-    env.check("after completion only the export is offered", page.js("qa('.vc-action-label').map((e) => e.innerText).join('|') === 'Export evidence'"),
-              page.js("qa('.vc-action-label').map((e) => e.innerText).join('|')"))
-    env.check("the timeline keeps the earlier BLOCKED decision as history",
-              page.js("q('.vc-timeline').innerText.includes('The gate then: BLOCKED') && q('.vc-timeline').innerText.includes('Task completed')"))
+    # `done` is saved before the run releases its lock and exits: until the scan sees the process gone, the backend
+    # rightly offers "The run is working". The timeline comes from the task's detail, a fetch apart from the gate's.
+    env.expect("after completion, once the run has ended, only the export is offered",
+               "qa('.vc-action-label').map((e) => e.innerText).join('|') === 'Export evidence'", 15,
+               "qa('.vc-action-label').map((e) => e.innerText).join('|')")
+    env.expect("the timeline keeps the earlier BLOCKED decision as history",
+               "q('.vc-timeline').innerText.includes('The gate then: BLOCKED') && q('.vc-timeline').innerText.includes('Task completed')", 15,
+               "q('.vc-timeline').innerText.replace(/\\s+/g, ' ').slice(0, 900)")
     env.check("no agent was called after the pause", len(env.calls()) == before + 2, str([call["role"] for call in env.calls()[before:]]))
     env.shot("verification-done")
     page.viewport(390, 844)

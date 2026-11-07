@@ -961,6 +961,31 @@ verdict.
   lets the gate pass); each failed on `1eb8056`. Eight new mutation
   protections; two follow lines that changed.
 
+#### The browser check waits for the run to end — November 7, 2026
+
+The `verification` scenario of `tools/ui_e2e.py` failed in about half of
+its runs, at one of four places, with the sources of `fa3e615` and of
+`1eb8056` alike. Cause, measured with the run's lock, its process marker,
+the hub's events and the page's store side by side: a run saves `paused` or
+`done` and leaves about 0.2 s later; until the next scan of the dashboard
+(every 0.5 s) sees it gone, the backend rightly reports the run as working
+and the Verification tab offers *The run is working* instead of the next
+action. The scenario read the actions once, right after the status or the
+gate's overview changed, so it could see the run still working (and, when
+the check after the pause was too early, find no *Attach…* button and
+stop). The timeline comes from the task's detail, a fetch apart from the
+gate's, and could be read before it arrived. The page was always behind by
+one scan at most and then showed the right state: events are applied in
+order with gaps refused, and each of the two fetches is serialized. No
+runtime file changed.
+
+- The three checks wait, up to 15 s, for what they check: the first action
+  after the pause, the only action after completion, and the timeline with
+  *Task completed*; a timeout prints what the page showed. `Env.expect`
+  takes that optional expression. Two deliberate regressions (the backend
+  offering *The run is working* for a completed task, a timeline that no
+  longer follows the history) each fail their check.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

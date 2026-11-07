@@ -13,9 +13,9 @@ October 9 and 10, 2026; the CI runs for those commits are recorded in
 **0.2.0** is published as source on `main`: the interface was pushed on
 October 10, 2026, live activity on October 11, 2026, in commit `c9f6e1e`, and
 the failure classification correction the same day in commit `6937d9f`.
-[REVIEW.md](REVIEW.md#current-source-and-ci-status-november-4-2026) records the
+[REVIEW.md](REVIEW.md#current-source-and-ci-status-november-7-2026) records the
 current commit's CI status and the dated local checks. The GitHub repository
-has no version tags or GitHub Releases as checked on November 4, 2026.
+has no version tags or GitHub Releases as checked on November 7, 2026.
 Source publication, a versioned release and publishing to PyPI are separate
 steps.
 
@@ -39,7 +39,7 @@ the review settled by kind (`b9e5283`, October 16), and the criteria
 records, review findings and workflow events of October 16 and 17 (`d4c0ecd`
 to `15750e6`, pushed on October 17, 2026 at 19:00 +02:00) keep the same
 package version. Their validation is recorded in [REVIEW.md](REVIEW.md); the
-[current status](REVIEW.md#current-source-and-ci-status-november-4-2026)
+[current status](REVIEW.md#current-source-and-ci-status-november-7-2026)
 lists the CI runs of these commits.
 
 The remote `main` was checked again on October 17, 2026 (22:20–22:50
@@ -102,11 +102,18 @@ its own snapshot. Tags and GitHub Releases were still empty. Its CI run
 41920202128 succeeded in all 17 jobs in 6 min 12 s, the package check
 included. That result belongs to `268b82d` only.
 
+On November 7, 2026 (18:23 +01:00) the remote `main` was at `fa3e615`,
+committed by the user at 16:48 +01:00 on top of `1eb8056` and `8e548b0`,
+which followed `73858c1`: the Verification Center, evidence bundles and their
+hardening. Tags and GitHub Releases were still empty. The CI runs of all four commits
+succeeded in all 17 jobs; run 42388191688 of `fa3e615` took 5 min 43 s,
+the package check included. Each result belongs to its own commit only.
+
 The metadata remains 0.2.1. The changelog now groups Task Contract, Findings,
 Workflow Events and their integration under **0.3.0 — Unreleased**, preserving
 all dated entries. This names a development series, not a new published
 package. The [roadmap](ROADMAP.md) keeps the separate 0.35 proposal distinct.
-See [REVIEW.md](REVIEW.md#current-source-and-ci-status-november-4-2026) for
+See [REVIEW.md](REVIEW.md#current-source-and-ci-status-november-7-2026) for
 the CI result of each exact commit.
 
 The repository is already initialized and has an `origin` remote. Future updates

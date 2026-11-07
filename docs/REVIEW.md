@@ -26,7 +26,9 @@ it showed, and publication-status update: October 18, 2026. A timeout is
 not a refused start, and publication-status update: October 18, 2026. A
 refused stop said by agent steps and the earlier test stage, and
 publication-status update: October 18, 2026. Verification Center and evidence bundles:
-November 5, 2026.
+November 5, 2026. Bundle structure and untrusted ledger records, the browser
+check waiting for the run to end, and publication-status update: November 7,
+2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -34,7 +36,28 @@ repository was present in those original directories. A local, ignored
 Each section below says which code it covers: a published commit or a local
 working tree at its date.
 
-## Current source and CI status (November 4, 2026)
+## Current source and CI status (November 7, 2026)
+
+`git ls-remote`, `git ls-remote --tags`, `gh release list`, `gh run list`
+and `gh run view` were checked on November 7, 2026 at 18:23 +01:00. Remote
+`main` returned `fa3e6155a99d759f922cc6a2cf845be823a653f3`, committed by the
+user at 16:48 +01:00: the [bundle structure and untrusted ledger
+records](#bundle-structure-and-untrusted-ledger-records-november-7-2026), on
+top of `1eb8056` and `8e548b0` (the Verification Center and evidence
+bundles). No version tags or GitHub Releases were returned; branch
+protection was not read. Package metadata remains 0.2.1.
+
+| Commit | CI run | Observed status on November 7, 2026 |
+|---|---|---|
+| `fa3e615` | [42388191688](https://github.com/luigiggigo/patchrondo/actions/runs/42388191688) | SUCCESS in all 17 jobs (5 min 43 s): `Collect tests` (880 tests, no module failed to import, Python 3.11 and 3.13), the 14 test jobs (each OS and Python ran all 880: Ubuntu in one part, 21 skipped; macOS 371 + 509, 22 skipped; Windows 280 + 211 + 215 + 174, 20 skipped), the package check (`twine check` PASSED for the wheel and the source archive) and `CI result` |
+| `1eb8056` | [42128279152](https://github.com/luigiggigo/patchrondo/actions/runs/42128279152) | SUCCESS in all 17 jobs (5 min 47 s) |
+| `8e548b0` | [42117547329](https://github.com/luigiggigo/patchrondo/actions/runs/42117547329) | SUCCESS in all 17 jobs (5 min 25 s) |
+| `73858c1` | [41923687095](https://github.com/luigiggigo/patchrondo/actions/runs/41923687095) | SUCCESS in all 17 jobs (8 min 27 s) |
+
+Each run covers its own commit only. The check before it is kept as it was
+written:
+
+## Source and CI status (November 4, 2026)
 
 `git ls-remote`, `git ls-remote --tags`, `gh release list`, `gh run list`
 and `gh run view` were checked again on November 4, 2026 at 23:00 +01:00.
@@ -264,6 +287,68 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## The browser check waits for the run to end (November 7, 2026)
+
+This section covers a working tree on top of `fa3e615`: `tools/ui_e2e.py`
+(`Env.expect` and three checks of the `verification` scenario) and the
+publication status in this file, PUBLISHING, ROADMAP and README. No runtime
+file, test or protection changed.
+
+**Cause.** With the sources of `fa3e615`, `--only verification` failed 4 of
+7 runs, at one of four places: the first action after the pause (*The run is
+working* listed first), a stop at the *Attach…* button that follows from it,
+the only action after completion, and the timeline without *Task
+completed*. A scratch probe sampled every 100 ms, from the pause, the run's
+lock, its process marker, the API's actions and the page: the lock and the
+marker went about 0.18 s after `paused` was saved, the page's header
+followed at the next scan (0.5 s), its actions about 0.2 s later. A second
+scratch harness ran the scenario with the hub's events and the page's store
+logged: at each failure the store held the hub's last event number, the
+connection was live and frames were drawn; the hub had not yet scanned
+since the run left (0.43 s after its last event at the stop), and a fresh
+`collect()` already said `paused`. The checks read the page once, inside
+that window; the timeline comes from the task's detail, fetched apart from
+the gate's view. Not a defect of the dashboard: it reports what the process
+table says, applies events in order with gaps refused, and serializes each
+fetch.
+
+**Checks run** (November 7, 2026; native Windows 11 Pro 10.0.26300, Python
+3.13.3 and 3.11.3, Chrome 156.0.8078.80 headless; WSL2 Ubuntu, Python
+3.12.3, Git 2.43.0; scripted or synthetic providers only, no real provider
+call, no provider CLI on PATH):
+
+| Check | Platform | Result |
+|---|---|---|
+| `tools/ui_e2e.py --only verification`, sources of `fa3e615` | Windows, 3.13.3 | 7 runs: 3 passed, 4 failed (the places above) |
+| `tools/ui_e2e.py --only verification` after the change | Windows, 3.13.3 | 20 runs, 31 of 31 checks each, exit 0 each (14–17 s) |
+| The same with the backend offering *The run is working* for a completed task, then with a timeline that no longer follows the history (scratch mutations, restored) | Windows, 3.13.3 | each fails its own check only, exit 1 |
+| `tools/ui_e2e.py`, all 13 scenarios, five times, nothing else running | Windows, 3.13.3 | 386 of 386 checks each, exit 0 each (134–135 s) |
+| `tools/run_tests.py` (the whole suite) | Windows, 3.13.3 | 880 tests, 860 passed, 20 skipped, exit 0, 587 s |
+| `tools/run_tests.py` | Windows, 3.11.3 | 880 tests, 860 passed, 20 skipped, exit 0, 546 s |
+| `tools/run_tests.py` | WSL2, 3.12.3 | 880 tests, 859 passed, 21 skipped, exit 0, 233 s |
+| `tools/recovery_checks.py protections --jobs 8` | WSL2, 3.12.3 | 340 of 340 removed protections detected, exit 0 |
+| `tools/recovery_checks.py real-clock` | WSL2, 3.12.3 | 10/10 checks, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | WSL2, 3.12.3 | 42 passed, 0 failed, 0 skipped, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | Windows, 3.13.3 | 30 passed, 0 failed, 12 skipped (POSIX signals), exit 0 |
+| `python -m build` (build 1.6.1) and `twine check` (twine 7.0.0) | Windows, 3.13.3 | wheel and sdist built; both PASSED |
+| Contents of both packages against `git ls-files` | Windows, 3.13.3 | no file outside the tracked ones besides generated metadata, no link, no `AGENTS.md`, no local path; the wheel holds the page, its CSS, JS and both images |
+| Wheel installed in a new venv (3.11.3), sdist in another (3.13.3), outside the repository | Windows | 15 of 15 each: `pip check`, no dependency installed, import from site-packages, `--version` 0.2.1, `--help`, static files, `init`, `list`, `doctor` without CLIs, `bundle verify` refusing a file that is not a bundle, the dashboard serving its page, `app.js` and `rondo.webp` |
+| `tools/check_publication.py` on the working tree | Windows, 3.13.3 | exit 1, 6 findings, as before: `.claude/` and `debug.log` (ignored, untracked, in no package), four images |
+| `tools/check_publication.py` on `git archive HEAD` | Windows, 3.13.3 | exit 1, 4 findings: the four images |
+| `py_compile` of `tools/ui_e2e.py`; `git diff --check`; line endings | Windows, 3.11.3 and 3.13.3 | exit 0; no whitespace error; LF only |
+
+**The four images, reviewed by hand.** The two `.webp` files of the
+interface hold only image chunks (`VP8X`, `ALPH`, `VP8`). The two PNGs of
+`docs/assets` (in the repository, not in the packages) hold one `caBX`
+chunk each: a C2PA manifest saying they were made with ChatGPT
+(`gpt-image`), with creation times and an OpenAI certificate chain; no
+path, account, e-mail or secret. The scanner reports binary files for
+review by design; its exit status stays 1.
+
+**Not run, and why.** The opt-in real-sandbox tests and
+`test_coherence.py` with `PATCHRONDO_ALL_CHECKPOINTS=1` concern code that
+did not change. No real provider was called.
 
 ## Bundle structure and untrusted ledger records (November 7, 2026)
 

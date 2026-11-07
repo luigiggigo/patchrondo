@@ -102,7 +102,8 @@ run of `b962214`, which corrects it, passed in every job. The run of
 `abfb476` (November 4, 2026) failed one test of the fingerprint with Python
 3.13 on Ubuntu and macOS, a defect of the test that the record also explains.
 The run of `a0bc8b5`, which corrects it with the acceptance gate, passed in
-every job, and so did the run of `268b82d`.
+every job, and so did the runs of `268b82d`, `73858c1`, `8e548b0`,
+`1eb8056` and `fa3e615` (November 7, 2026).
 
 ## Requirements
 
