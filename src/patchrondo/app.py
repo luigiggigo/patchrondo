@@ -1563,14 +1563,14 @@ class App:
         shown = {key: value for key, value in record.items() if key != "prev"}
         assessed = provenance.recorded(ledger, record).dump() if record.get("kind") in provenance.JUDGED else None
         later = [{key: entry.get(key) for key in ("id", "at", "cause", "reason", "validity", "snapshot", "reverify", "detector")}
-                 for entry in ledger.records if entry.get("kind") == "invalidation" and record_id in (entry.get("of") or [])]
+                 for entry in ledger.records if entry.get("kind") == "invalidation" and record_id in evidence.listed(entry, "of")]
         try:
             saved = criteria.Acceptance.load(state)
         except ValueError:
             saved = None
         named = [{"id": item.id, "text": item.text, "required": item.required, "counts": record_id in item.evidence}
                  for item in (saved.criteria if saved is not None else [])
-                 if item.id in (record.get("criteria") or []) or record_id in item.evidence]
+                 if item.id in evidence.listed(record, "criteria") or record_id in item.evidence]
         logs = {entry["id"] for entry in self._logs(path)}
         log = record.get("log") if isinstance(record.get("log"), str) else None
         return {"record": shown, "assessment": assessed, "invalidations": later, "criteria": named,

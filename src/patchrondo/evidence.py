@@ -54,6 +54,7 @@ RECORD_ID = re.compile(r"E\d*-\d{4,}")  # what `append` names a record: E-0001, 
 MAX_RECORDS = 5000            # records read from one ledger; a task never comes near
 TEXT_LIMIT = 2000             # characters of a summary
 FIELD_LIMIT = 600             # characters of any other text
+MAX_DEPTH = 64                # levels of nesting of a value read from a file; what `append`'s writers write needs fewer than 10
 MAX_ARTIFACTS = 8
 MAX_ARTIFACT_BYTES = 8 * 1024 ** 3  # a file PatchRondo hashes for a manual check
 # Results that count as proof, per kind. Anything else is recorded and proves nothing.
@@ -117,7 +118,7 @@ class Ledger:
     def last(self, kind: str, criterion: str | None = None) -> dict | None:
         """The most recent record of a kind, optionally about one criterion, whatever its state."""
         return next((record for record in reversed(self.records) if record.get("kind") == kind
-                     and (criterion is None or criterion in (record.get("criteria") or []))), None)
+                     and (criterion is None or criterion in listed(record, "criteria"))), None)
 
     def anchored(self, count, head) -> bool:
         """Whether the ledger still holds, unchanged, the records a task state saw (`count` of them, ending at `head`)."""
@@ -150,36 +151,96 @@ def read(task_path: Path) -> Ledger:
     return parse(data)
 
 
+def shallow(value, limit: int = MAX_DEPTH) -> bool:
+    """Whether a value read from JSON nests `limit` levels at most. Without recursion: it is the check before any."""
+    pending = [(value, 1)]
+    while pending:
+        item, depth = pending.pop()
+        if isinstance(item, (dict, list)):
+            if depth > limit:
+                return False
+            pending.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    return True
+
+
+def listed(record: dict, key: str) -> list:
+    """A field of a record that `append`'s writers fill with a list, or an empty list when it holds anything else.
+
+    Read from a file, a record is data: a value of another shape names
+    nothing, and is never iterated, hashed or searched as if it were a list.
+    """
+    value = record.get(key)
+    return value if isinstance(value, list) else []
+
+
+def _named(of, earlier: dict[str, dict]) -> tuple[list[str], bool]:
+    """The earlier records an invalidation makes stop counting, and whether it names them as its writers do.
+
+    Every writer names a list of record IDs, never empty (`provenance.invalidate`,
+    `core._sync`, the `validate` stage). Each ID of an earlier record in the
+    list is taken, also beside values of another kind (fewer proofs, never
+    more); an ID of no earlier record names nothing, as before. Anything but a
+    non-empty list of text is not well formed: what else the invalidation
+    meant cannot be known.
+    """
+    items = of if isinstance(of, list) else []
+    named = [item for item in items if isinstance(item, str) and item in earlier]
+    return named, bool(items) and all(isinstance(item, str) for item in items)
+
+
 def parse(data: bytes) -> Ledger:
-    """Check the bytes of a ledger as `read` does: the file read once by somebody else (an export, a bundle's copy)."""
+    """Check the bytes of a ledger as `read` does: the file read once by somebody else (an export, a bundle's copy).
+
+    Every line is untrusted data. Besides the hash chain, a record does not
+    fit when it takes the ID of an earlier record (one ID, one record: a later
+    one could otherwise stand for an invalidated one) or when it is an
+    invalidation whose `of` is not a list of record IDs (`_named`). Either is
+    a problem of the ledger like a broken chain, from that record on, never
+    read as naming nothing: the ledger then proves nothing to the gate
+    (`ERROR`), a run starts it again, and a task state that saw the record
+    is no longer anchored (`for_state`). What a malformed invalidation does
+    name of earlier records still stops counting.
+    """
     lines = data.split(b"\n")
     incomplete = bool(lines[-1])  # every record ends with a newline: what follows the last one was cut short
     records, problems, previous, trusted = [], [], "", True
+    earlier: dict[str, dict] = {}  # the records read so far that fit, by ID
     for number, line in enumerate(lines[:-1][:MAX_RECORDS], 1):
         try:
             record = json.loads(line.decode("utf-8"))
-        except ValueError:
+            # Nested deeper than any writer nests (`shallow`), or than Python reads (RecursionError): it cannot be read.
+            record = record if shallow(record) else None
+            digest = _digest(record) if isinstance(record, dict) else None
+        except (ValueError, RecursionError):
             record = None
         if not isinstance(record, dict) or not isinstance(record.get("hash"), str) or not isinstance(record.get("id"), str):
             if trusted:
                 problems.append(f"Record {number} of the evidence ledger cannot be read")
             trusted = False
             continue
-        if trusted and (record.get("prev") != previous or record["hash"] != _digest(record) or record.get("seq") != number):
+        if trusted and (record.get("prev") != previous or record["hash"] != digest or record.get("seq") != number):
             problems.append(f"Record {number} of the evidence ledger ({record['id']}) does not fit the records before it: "
                             "it was changed, or a record was removed or inserted")
             trusted = False
+        if trusted and record["id"] in earlier:
+            problems.append(f"Record {number} of the evidence ledger ({record['id']}) has the ID of an earlier record: an ID "
+                            "names one record only")
+            trusted = False
+        named, formed = _named(record.get("of"), earlier) if trusted and record.get("kind") == "invalidation" else ([], True)
+        if not formed:
+            problems.append(f"Record {number} of the evidence ledger ({record['id']}) is an invalidation that does not name "
+                            "its records as a list of record IDs: what it makes stop counting cannot be known")
+            trusted = False
         previous = record["hash"]
-        records.append({**record, "trusted": trusted, "invalidated": None})
+        entry = {**record, "trusted": trusted, "invalidated": None}
+        for identifier in named:
+            if earlier[identifier]["invalidated"] is None:
+                earlier[identifier]["invalidated"] = {"by": record["id"], "at": record.get("at"), "reason": record.get("reason")}
+        records.append(entry)
+        if trusted:
+            earlier[record["id"]] = entry
     if len(lines) - 1 > MAX_RECORDS:
         problems.append(f"The evidence ledger has more than {MAX_RECORDS} records; the rest is not read")
-    by_id = {record["id"]: record for record in records}
-    for record in records:
-        if record.get("kind") == "invalidation" and record["trusted"]:
-            for identifier in record.get("of") or []:
-                target = by_id.get(identifier)
-                if target is not None and target["invalidated"] is None and target["seq"] < record["seq"]:
-                    target["invalidated"] = {"by": record["id"], "at": record.get("at"), "reason": record.get("reason")}
     return Ledger(records, problems, previous if trusted else "", incomplete)
 
 
@@ -197,6 +258,8 @@ def append(task_path: Path, kind: str, **fields) -> dict:
         raise ValueError(f"A {kind} record is written by the {EXECUTORS[kind]} only, never by {executor}")
     if kind == "command" and fields.get("result") not in COMMAND_RESULTS:
         raise ValueError(f"A command record says one of {', '.join(COMMAND_RESULTS)}, not {fields.get('result')!r}")
+    if kind == "invalidation" and not _named(fields.get("of"), {})[1]:
+        raise ValueError("An invalidation names the records it makes stop counting as a list of record IDs")
     fields["executor"] = executor
     file = private_dir(task_path) / LEDGER
     with FileMutex(file):
@@ -306,6 +369,6 @@ def outdated(ledger: Ledger, fingerprint: str | None) -> dict[str, list[str]]:
             continue
         if fingerprint is not None and record.get("scope", "code") == "code" and record.get("fingerprint") != fingerprint:
             found.setdefault("The files of the task changed after this was recorded", []).append(record["id"])
-        elif any(artifact_changed(artifact) for artifact in record.get("artifacts") or [] if isinstance(artifact, dict)):
+        elif any(artifact_changed(artifact) for artifact in listed(record, "artifacts") if isinstance(artifact, dict)):
             found.setdefault("A file this evidence refers to changed or is no longer there", []).append(record["id"])
     return found

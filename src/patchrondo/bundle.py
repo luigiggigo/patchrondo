@@ -15,6 +15,10 @@ is not read. What goes in:
     history/events.json         the workflow history as saved
     logs/…, artifacts/…         detailed bundles only: sanitized copies of the logs and report copies the ledger names
 
+Every bundle holds each of these files but the gate (a task may have none),
+logs and report copies (`REQUIRED`); `verify` never takes the absence of one
+of them for an omission of the export.
+
 A consistent view: the state, the ledger and task.md are each read whole,
 then all three again; the export goes on only when the second reading equals
 the first, so the bundle holds files that were on disk together at one
@@ -88,6 +92,18 @@ INTEGRITY = ("Each file is listed with its SHA-256 and size, and content_sha256 
              "recompute them. Nothing is signed: it does not prove that PatchRondo produced the bundle.")
 LIMITS = {"log_bytes": LOG_BYTES, "report_bytes": REPORT_BYTES, "max_logs": MAX_LOGS, "detail_bytes": DETAIL_BYTES,
           "description_chars": DESCRIPTION_CHARS, "ledger_records": evidence.MAX_RECORDS}
+# The files every bundle of schema 1 holds, whatever its task and mode: `_build` writes each of them, so a manifest
+# that does not list one does not describe an export. The gate is the one record a task may lack (`NO_GATE`); logs and
+# report copies come with detailed bundles only.
+REQUIRED = ("summary.md", "task/contract.json", "evidence/ledger.jsonl", "evidence/validity.json",
+            "reviews/references.json", "verification/checks.json", "history/events.json")
+# The shape `_build` gives each JSON file: its type, and the fields it always holds with theirs.
+SHAPES = {"task/contract.json": (dict, {"task": dict}),
+          "gate/evaluation.json": (dict, {"saved": dict, "about_exported_ledger": bool, "exported_ledger": dict}),
+          "evidence/validity.json": (dict, {"anchored": bool, "records": list}),
+          "reviews/references.json": (dict, {"records": list}),
+          "verification/checks.json": (dict, {"results": list}),
+          "history/events.json": (list, {})}
 
 
 class BundleError(ValueError):
@@ -259,7 +275,7 @@ def validity_rows(ledger: evidence.Ledger) -> list[dict]:
         found = provenance.recorded(ledger, record)
         rows.append({"id": found.evidence, "seq": record.get("seq"), "kind": found.kind, "result": found.result,
                      "validity": str(found.validity), "causes": [str(cause) for cause in found.causes], "check": found.check,
-                     "invalidated_by": found.invalidated_by, "criteria": [str(item) for item in record.get("criteria") or []],
+                     "invalidated_by": found.invalidated_by, "criteria": [str(item) for item in evidence.listed(record, "criteria")],
                      "run": record.get("run"), "at": record.get("at"), "fingerprint": record.get("fingerprint")})
     return rows
 
@@ -511,7 +527,8 @@ class Verdict(StrEnum):
     INCOMPLETE = "INCOMPLETE"        # what is there matches, and something is missing or was left out at the export
     #                                  (also: no gate, or only a gate about another state of the ledger)
     MODIFIED = "MODIFIED"            # a file differs from the manifest, one was added, or the records contradict each other
-    #                                  (also: the ledger fails its own hash chain, or lost records the state had seen)
+    #                                  (also: the ledger fails its own hash chain, or lost records the state had seen;
+    #                                  a file every bundle holds is not listed; a record is not of the shape exported)
     MALFORMED = "MALFORMED"          # not a ZIP, an unsafe or duplicate name, or a manifest that cannot be read
     UNSUPPORTED = "UNSUPPORTED"      # another format, or a schema version this one does not know
     UNVERIFIABLE = "UNVERIFIABLE"    # the file cannot be read, or it is larger than the limits allow
@@ -616,8 +633,8 @@ def verify(source) -> dict:
         return result()
     raw_manifest = read(MANIFEST)
     try:
-        manifest = json.loads(raw_manifest.decode("utf-8")) if raw_manifest is not None else None
-    except (UnicodeDecodeError, ValueError):
+        manifest = _load(raw_manifest) if raw_manifest is not None else None
+    except ValueError:
         manifest = None
     if not isinstance(manifest, dict):
         if raw_manifest is not None:
@@ -641,6 +658,12 @@ def verify(source) -> dict:
     if len(set(paths)) != len(paths) or MANIFEST in paths or not all(safe_name(name) for name in paths):
         problem(Verdict.MALFORMED, "MANIFEST_FILES", "manifest.json lists a name twice, itself, or a name that is not safe")
         return result(manifest)
+    for name in REQUIRED:
+        # Found whatever the manifest's hashes say: an export always writes it, so it was removed after the export
+        # (and the manifest written again), or the bundle was not made by PatchRondo's export.
+        if name not in paths:
+            problem(Verdict.MODIFIED, "REQUIRED_FILE_UNLISTED", "The manifest does not list a file every bundle of this "
+                    "schema holds: nothing can stand in for it", name)
 
     checked, content = 0, {}
     for entry in listed:
@@ -666,21 +689,43 @@ def verify(source) -> dict:
     return result(manifest, checked)
 
 
+def _load(data: bytes):
+    """A JSON file of a bundle, read as untrusted data. ValueError when it is not JSON or nests deeper than
+    `evidence.MAX_DEPTH` levels (what is checked afterwards hashes, compares and prints it)."""
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except RecursionError:
+        raise ValueError("nested too deeply") from None
+    if not evidence.shallow(value):
+        raise ValueError("nested too deeply")
+    return value
+
+
 def _json(content: dict, name: str):
     try:
-        return json.loads(content[name].decode("utf-8")) if name in content else None
-    except (UnicodeDecodeError, ValueError):
+        return _load(content[name]) if name in content else None
+    except ValueError:
         return ValueError
+
+
+def _shaped(name: str, value) -> bool:
+    """Whether a JSON file of a bundle has the type and fields `_build` gives it (`SHAPES`)."""
+    kind, fields = SHAPES[name]
+    return isinstance(value, kind) and all(isinstance(value.get(key), type_) for key, type_ in fields.items())
 
 
 def _agree(manifest: dict, content: dict, problem) -> None:
     """Whether the records of a bundle agree with each other and with the manifest, as far as they are there."""
-    contract, gate_file, validity = (_json(content, name) for name in ("task/contract.json", "gate/evaluation.json",
-                                                                         "evidence/validity.json"))
-    for name, value in (("task/contract.json", contract), ("gate/evaluation.json", gate_file), ("evidence/validity.json", validity)):
+    read = {name: _json(content, name) for name in SHAPES}
+    for name, value in read.items():
         if value is ValueError:
             problem(Verdict.MODIFIED, "RECORD_UNREADABLE", "A file of the bundle is not valid JSON", name)
-    if isinstance(contract, dict) and (contract.get("task") or {}).get("id") != manifest.get("task_id"):
+        elif name in content and not _shaped(name, value):
+            # Never read as "nothing to compare": a gate, a contract or validity of another shape would pass unchecked.
+            problem(Verdict.MODIFIED, "RECORD_SHAPE", "A file of the bundle does not have the shape an export gives it", name)
+    contract, gate_file, validity = (read[name] if name in content and _shaped(name, read[name]) else None
+                                     for name in ("task/contract.json", "gate/evaluation.json", "evidence/validity.json"))
+    if isinstance(contract, dict) and contract["task"].get("id") != manifest.get("task_id"):
         problem(Verdict.MODIFIED, "TASK_MISMATCH", "The contract is about another task than the manifest", "task/contract.json")
     ledger = None
     if "evidence/ledger.jsonl" in content:
@@ -694,6 +739,11 @@ def _agree(manifest: dict, content: dict, problem) -> None:
             record = None
         if record is not None:
             anchored = ledger.for_state(record.ledger)
+        elif contract is not None:
+            # Found whatever the manifest declares (an export names this omission): without the records the task state
+            # had seen, a ledger that lost some of them cannot be told from the one exported.
+            problem(Verdict.INCOMPLETE, "NO_CRITERIA", "The contract holds no criteria record this version reads: whether the "
+                    "ledger still holds the records the task state had seen cannot be checked", "task/contract.json")
         if (said.get("count"), said.get("head"), said.get("problems")) != (anchored.count, anchored.head, len(anchored.problems)):
             problem(Verdict.MODIFIED, "LEDGER_MISMATCH", "The ledger's records, hash chain or problems are not those the manifest names",
                     "evidence/ledger.jsonl")
@@ -719,7 +769,8 @@ def _agree(manifest: dict, content: dict, problem) -> None:
                 owner = ledger.get(source.get("record")) if isinstance(source.get("record"), str) else None
                 name = entry["path"].split("/", 1)[1] if "/" in entry["path"] else ""
                 report = ((owner or {}).get("check") or {}).get("report") if isinstance((owner or {}).get("check"), dict) else None
-                if owner is None or name not in {owner.get("log"), (report or {}).get("path") if isinstance(report, dict) else None}:
+                # A tuple, not a set: the record's values are data and may not be hashable.
+                if owner is None or name not in (owner.get("log"), (report or {}).get("path") if isinstance(report, dict) else None):
                     problem(Verdict.MODIFIED, "SOURCE_MISMATCH", "A log or report names a record that does not name it", entry["path"])
     shown = manifest.get("gate")
     if isinstance(gate_file, dict):

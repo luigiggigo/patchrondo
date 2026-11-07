@@ -116,6 +116,31 @@ class RuleTests(unittest.TestCase):
                                                                  "proof": "test"}])
                 self.assertFalse(result.completion_allowed)
 
+    def forge(self, **fields) -> None:
+        """Append a record whose hash chain was recomputed by hand: `append` refuses to write such a record."""
+        ledger = evidence.read(self.path)
+        record = {"version": 1, "at": "2026-11-07T12:00:00+00:00", **fields, "seq": ledger.count + 1, "prev": ledger.head}
+        record["hash"] = evidence._digest(record)
+        with (self.path / evidence.LEDGER).open("ab") as stream:
+            stream.write(json.dumps(record, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+
+    def test_a_malformed_invalidation_or_a_reused_id_never_lets_the_gate_pass(self):
+        invalidation = {"kind": "invalidation", "executor": "runtime", "result": "invalidated", "cause": "WORKSPACE_CHANGED"}
+        for name, fields in (("of an integer", {**invalidation, "id": "E-0003", "of": 123}),
+                             ("of one string", {**invalidation, "id": "E-0003", "of": "E-0001"}),
+                             ("of objects", {**invalidation, "id": "E-0003", "of": [{"id": "E-0001"}]}),
+                             ("an ID taken again", {"id": "E-0001", "kind": "command", "executor": "runtime", "result": "passed",
+                                                    "exit_code": 0, "command": ["t"], "covers": ["tests"], "run": "r1", "of": 1,
+                                                    "fingerprint": "F1", "scope": "code"})):
+            with self.subTest(name):
+                self.setUp()
+                record, _ = self.approved(GOOD, TESTS_PASS, AC01="SATISFIED")
+                self.assertEqual(self.judge(record).decision, Decision.PASS)
+                self.forge(**fields)
+                result = self.judge(record)  # read, judged and decided without raising
+                self.assertEqual((result.decision, result.completion_allowed), (Decision.ERROR, False))
+                self.assertIn("LEDGER_PROBLEM", [entry["reason"] for entry in result.conditions])
+
     def test_an_approval_that_no_longer_counts_asks_for_a_review_again(self):
         record, entry = self.approved(GOOD, TESTS_PASS, AC01="SATISFIED")
         self.lapse(entry, "WORKSPACE_CHANGED")

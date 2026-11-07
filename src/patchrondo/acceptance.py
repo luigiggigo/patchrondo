@@ -558,7 +558,7 @@ class _Proofs:
             whole = bool(self.run) and len(self.run) == self.run[0].get("of") and all(self._passed(record) for record in self.run)
             return [record["id"] for record in self.run] if whole else []
         if proof in RUNTIME_PROOFS:
-            ran = [record["id"] for record in self.run if proof in (record.get("covers") or []) and self._passed(record)]
+            ran = [record["id"] for record in self.run if proof in evidence.listed(record, "covers") and self._passed(record)]
             if ran:
                 return ran
         manual = self._manual(criterion)
@@ -568,7 +568,7 @@ class _Proofs:
         """The command of the last run that did not pass for this kind of proof, when one did not."""
         kind = RUNTIME_PROOFS[proof]
         return next((record for record in self.run if self.ledger.counts(record) and record.get("result") != "passed"
-                     and (proof == "test" or kind in (record.get("covers") or []))), None)
+                     and (proof == "test" or kind in evidence.listed(record, "covers"))), None)
 
     def unsettled(self, proof: str) -> str | None:
         """Why the last run of the project's commands gave no result for this kind of proof: nothing about the code."""
@@ -607,7 +607,7 @@ class _Proofs:
             return [self.review] if self.review else []
         found = []
         if proof in RUNTIME_PROOFS:
-            found = [record for record in self.run if proof == "test" or RUNTIME_PROOFS[proof] in (record.get("covers") or [])]
+            found = [record for record in self.run if proof == "test" or RUNTIME_PROOFS[proof] in evidence.listed(record, "covers")]
             if proof == "test":
                 return found
         manual = self._manual(criterion)
@@ -1211,9 +1211,9 @@ def view(acceptance: Acceptance | None, ledger, *, pending: list[dict] | None = 
     criteria = []
     for criterion in acceptance.criteria:
         kinds = {RUNTIME_PROOFS[proof] for proof in criterion.proof if proof in RUNTIME_PROOFS}
-        records = [record for record in ledger.records if criterion.id in (record.get("criteria") or [])
+        records = [record for record in ledger.records if criterion.id in evidence.listed(record, "criteria")
                    or (record.get("kind") == "command" and record["id"] in run
-                       and ("tests" in kinds or kinds & set(record.get("covers") or [])))]
+                       and ("tests" in kinds or any(kind in evidence.listed(record, "covers") for kind in kinds)))]
         refusal = acceptance.manual_refusal(criterion)
         open_ = criterion.status != Status.VERIFIED
         criteria.append({**asdict(criterion), "saved_status": saved[criterion.id], "records": [record["id"] for record in records[-12:]],

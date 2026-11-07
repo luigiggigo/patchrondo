@@ -265,6 +265,107 @@ and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
 
+## Bundle structure and untrusted ledger records (November 7, 2026)
+
+This section covers a change on top of `1eb8056`: `bundle.py` (`REQUIRED`,
+`SHAPES`, `_load`, `_shaped`, the checks of `verify` and `_agree`),
+`evidence.py` (`parse`, `_named`, `listed`, `shallow`, `MAX_DEPTH`, the check
+of an invalidation in `append`, `Ledger.last`, `outdated`), `provenance.py`
+(`recorded`, `assess`), list fields read through `evidence.listed` in
+`acceptance.py` and `app.py`; 10 new tests and one strengthened in
+`tests/test_bundle.py`, `tests/test_acceptance.py` and `tests/test_gate.py`;
+eight new mutation protections and two moved patterns in
+`tools/recovery_checks.py`; ARCHITECTURE sections 14 and 19, USAGE and the
+changelog. No gate rule, acceptance rule, event, pause, exit code or path to
+`done` changed; `gate.py` and `core.py` are unchanged. The package version is
+unchanged, 0.2.1.
+
+**Asked for.** The user's "PATCHRONDO 0.35 — Security & Reliability Fix",
+from an independent review of `1eb8056`: P1, a bundle verifier that may
+accept an archive without its required parts; P2, an evidence ledger parser
+that may raise on malformed invalidation records. Reproduce first, fix
+minimally, add regression tests, no push.
+
+**Audit.** HEAD was `1eb8056` with a clean working tree. Both findings were
+reproduced on it with scripted agents (scratch scripts over the helpers of
+`tests/test_bundle.py`, manifest hashes, digest and bundle ID recomputed):
+
+| Finding | Reproduced | Observed on `1eb8056` |
+|---|---|---|
+| P1 | yes | Each of the seven files every export writes, removed from the archive and the manifest: `INTACT`. The gate, contract or validity file replaced by `null` or `[]`: `INTACT` (a contract that is not an object also skipped the anchoring of the ledger). Removed from the archive only: `INCOMPLETE` (`FILE_MISSING`), already correct |
+| P2 | yes | `of` an integer, or a list holding an object or a list: `TypeError` in `evidence.parse`, so in the engine, the dashboard and `patchrondo bundle verify`. `of` a string, null or missing: no problem, and the record it meant kept counting |
+| Next to P2 | yes | A later record reusing an invalidated record's ID made it count again. `criteria`/`covers`/`artifacts` that are not lists and a `cause`/`reason` that is not text raised `TypeError` (`validity_rows`, `recorded`, `assess`, `outdated`, `Ledger.last`). A ledger line or bundle JSON nested 100,000 levels raised `RecursionError`. A log naming its record through a list raised in `verify` |
+
+An existing test (`LedgerTests.test_invalidation_is_a_later_record_and_files_are_hashed_here`)
+fixes that an invalidation naming an unknown ID still invalidates the known
+ones; a first version that made any unknown ID a problem broke it, and was
+less conservative (the known records would have gone on counting). Unknown
+and later IDs therefore name nothing, as before; only the shape is checked.
+
+**Decisions.**
+
+- A file of `REQUIRED` that the manifest does not list is `MODIFIED`
+  (`REQUIRED_FILE_UNLISTED`): no export leaves it out, so the manifest was
+  written again after the export. One listed and absent keeps `FILE_MISSING`
+  (`INCOMPLETE`). The gate stays optional (`NO_GATE`).
+- `NO_CRITERIA` (`INCOMPLETE`): an export declares this omission itself, so
+  a bundle exported unchanged keeps its verdict; it closes the case of a
+  contract edited so that the ledger's anchoring is not checked.
+- A malformed invalidation is a problem of the ledger from that record on
+  (gate `ERROR`, run restart, state unanchored), like a broken chain; what it
+  does name of earlier records still stops counting.
+- `MAX_DEPTH` 64: the deepest value seen while `test_bundle`,
+  `test_gate`, `test_acceptance`, `test_provenance`,
+  `test_verification_center` and `test_findings` ran (237 tests, measured
+  through `evidence.shallow`) was 8 levels.
+
+**Checks run** (November 7, 2026; native Windows 11 Pro 10.0.26300, Python
+3.13.3 and 3.11.3, Git 2.50.1; WSL2 Ubuntu, Python 3.12.3, Git 2.43.0;
+scripted or synthetic providers only, no real provider call, no provider CLI
+on PATH under WSL2):
+
+| Check | Platform | Result |
+|---|---|---|
+| `py_compile` of every changed Python file | Windows, 3.11.3 | exit 0 |
+| New tests against the sources of `1eb8056` (only the new names they import added) | Windows, 3.13.3 | all 10 fail: 54 failures, 16 errors |
+| `tools/run_tests.py -q` (the whole suite, one process) | Windows, 3.13.3 | 880 tests, OK, 20 skipped, exit 0, 1,217 s beside the protections run |
+| `test_bundle`, `test_verification_center`, `test_gate`, `test_provenance`, `test_verification`, `test_acceptance`, `test_criteria_ui`, `test_coherence`, after the last edit | Windows, 3.13.3 and 3.11.3 | 61, 6, 35, 48, 52, 69, 10, 9 tests each, all OK; skipped 1 (`test_provenance`) and 4 (`test_verification`: other platform, real pytest) |
+| `test_bundle`, `test_verification_center`, `test_provenance`, `test_gate`, `test_verification`, `test_coherence`, `test_acceptance` | WSL2, 3.12.3 | 61, 6, 48, 35, 52, 9, 69 tests, all OK; 2 skipped in `test_verification` |
+| `test_coherence.py` with `PATCHRONDO_ALL_CHECKPOINTS=1` | Windows, 3.13.3 | 9 passed in 120 s, exit 0 |
+| `tools/recovery_checks.py protections --jobs 8` | WSL2, 3.12.3 | 340 of 340 removed protections detected, exit 0 |
+| `tools/recovery_checks.py real-clock` | WSL2, 3.12.3 | 10/10 checks, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | WSL2, 3.12.3 | 42 passed, 0 failed, 0 skipped, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | Windows, 3.13.3 | 30 passed, 0 failed, 12 skipped (POSIX signals), exit 0 |
+| Bundles exported by the exporters of `1eb8056` and `8e548b0` (done task, summary and detailed; task from before the gate and the criteria), checked by both verifiers | Windows, 3.13.3 | same verdicts: `INTACT`, `INCOMPLETE`, `INCOMPLETE`; the old task's bundle gains the code `NO_CRITERIA` |
+| Scratch fuzz: 3,000 resealed bundles with random values in every JSON file, the manifest and ledger records (chain recomputed) | Windows, 3.13.3 | no exception, no bundle without a required file `INTACT` |
+| `tools/ui_e2e.py`, all 13 scenarios, twice | Windows, 3.13.3, Chrome 156.0.8078.80 headless | 338 of 339 and 385 of 386 passed, exit 1 both times (see below) |
+| `tools/ui_e2e.py --only agents`, twice | Windows, 3.13.3 | 48 of 48, exit 0 both |
+| `tools/ui_e2e.py --only verification`, four times each | Windows, 3.13.3 | this change: 2 passed, 2 failed; sources of `1eb8056`: 2 passed, 2 failed |
+| `tools/check_publication.py` | Windows, 3.13.3 | exit 1, 6 findings, all pre-existing: `.claude/` and `debug.log` (ignored local files), four unchanged images for manual review |
+
+The browser check failed one check in each full run, in different
+scenarios: `agents` once (`TypeError: Failed to fetch` in the page), and
+`verification` once (*the timeline keeps the earlier BLOCKED decision as
+history*). `agents` passed alone twice. The `verification` checks that fail
+(that, and *after completion only the export is offered*, which saw *The
+run is working*) read the page right after the task completes without
+waiting for the run's end to reach it, and fail as often with the sources
+of `1eb8056`: a race of the tool, not of this change, left as it is. The
+browser check is therefore FAILED for this round, with the cause stated.
+
+**Not run, and why.** Package build and `twine check` belong to CI. The
+opt-in real-sandbox tests concern the environment check, which did not
+change. No real provider was called.
+
+**Limits.** Hashes are integrity, not authenticity: a forger who rewrites
+every file consistently, the ledger chain included, is not detected, and
+opaque payloads (history, check results, references) are compared with
+nothing. A malformed record the task state never saw leaves the records
+before it counting for readers that do not consult the gate (the criteria
+page shows them beside the ledger's problem); the gate is `ERROR` and a run
+starts the ledger again. A restart record's `generation` is not checked: a
+hand-written one could make `append` give IDs outside `RECORD_ID`.
+
 ## Verification Center and evidence bundles (November 5, 2026)
 
 This section covers a working tree on top of `73858c1`: the new modules

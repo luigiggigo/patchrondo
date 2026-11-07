@@ -206,7 +206,9 @@ def recorded(ledger: evidence.Ledger, record: dict) -> Assessment:
         return Assessment(identifier, kind, record.get("result"), Validity.INVALID, (Cause.RECORD_UNKNOWN_SHAPE,), check)
     if record["invalidated"] is not None:
         by = ledger.get(record["invalidated"]["by"]) or {}
-        cause = by.get("cause") if by.get("cause") in Cause.__members__ else _FROM_REASON.get(by.get("reason"), Cause.INVALIDATED)
+        # The invalidation's words are data: only text is looked up, anything else is the plain cause.
+        said, reason = (value if isinstance(value, str) else None for value in (by.get("cause"), by.get("reason")))
+        cause = said if said in Cause.__members__ else _FROM_REASON.get(reason, Cause.INVALIDATED)
         return Assessment(identifier, kind, record.get("result"), validity_of(cause), (Cause(cause),), check,
                           record["invalidated"]["by"])
     return Assessment(identifier, kind, record.get("result"), Validity.VALID, (), check)
@@ -264,7 +266,7 @@ def assess(ledger: evidence.Ledger, record: dict, now: Current | None = None, *,
             causes.append(Cause.WORKSPACE_CHANGED)
     if record["kind"] == "command" and now.checks is not None:
         causes += _configuration(ledger, record, now)
-    for artifact in record.get("artifacts") or []:
+    for artifact in evidence.listed(record, "artifacts"):
         if not isinstance(artifact, dict):
             continue
         state = artifacts(artifact)

@@ -907,6 +907,60 @@ changed.
   new mutation protections, and the one of a gate older than the ledger
   follows the new line.
 
+#### Bundle structure and untrusted ledger records — November 7, 2026
+
+From an independent review of `1eb8056` (P1, P2). Both findings, and the
+cases next to them below, were reproduced on that commit with scripted
+agents before any change. No gate rule, acceptance rule, event, pause, exit
+code or path to `done` changed, and a bundle exported unchanged keeps its
+verdict.
+
+- **A bundle without a file every export writes is never intact (P1).** A
+  bundle whose ledger, contract, validity or any other file an export always
+  writes was removed from both the archive and the manifest, with every hash
+  and the bundle ID recomputed, was `INTACT`; so was one whose gate,
+  contract or validity file was replaced by `null` or `[]` (a contract that
+  was not an object also skipped the check that the ledger still holds the
+  records the state had seen). `verify` now requires the files of
+  `bundle.REQUIRED` in the manifest (`REQUIRED_FILE_UNLISTED`, `MODIFIED`;
+  one listed and absent stays `FILE_MISSING`, `INCOMPLETE`), checks the
+  type and fields of each JSON file (`bundle.SHAPES`, `RECORD_SHAPE`,
+  `MODIFIED`), and calls a bundle whose contract holds no criteria it can
+  read `INCOMPLETE` (`NO_CRITERIA`) whatever the manifest declares. The
+  gate file stays optional (`NO_GATE`).
+- **A malformed invalidation is a problem of the ledger, never an exception
+  (P2).** An `invalidation` whose `of` was an integer, or a list holding an
+  object or a list, raised `TypeError` in `evidence.parse`: in the engine,
+  the dashboard and `patchrondo bundle verify` alike. One whose `of` was a
+  string, null or missing was read as naming nothing, so the records it
+  meant went on counting with no problem reported. Now an `of` that is not a
+  non-empty list of text stops the ledger's trust there with a problem: the
+  gate is `ERROR`, a run starts the ledger again, and a state that saw the
+  record is no longer anchored; the IDs of earlier records it does name
+  still stop counting. `append` refuses to write such a record. A well-formed
+  `of` keeps its meaning (an unknown ID names nothing, a repeated one counts
+  once).
+- **One ID, one record.** A later record that took an invalidated record's
+  ID made it count again (the invalidation was looked up under the later
+  record). A repeated ID is now a problem of the ledger.
+- **Other shapes are data.** Fields writers fill with lists (`criteria`,
+  `covers`, `artifacts`, `of`) are read through `evidence.listed`; an
+  invalidation's `cause` or `reason` that is not text gives the plain cause.
+  These raised `TypeError` in `bundle.validity_rows`, `provenance.recorded`
+  and `assess`, `evidence.outdated`, `Ledger.last`, the criteria view and the
+  evidence page. A JSON value nested more than 64 levels
+  (`evidence.MAX_DEPTH`; the writers and an export nest fewer than 10) is
+  unreadable in the ledger and in a bundle, where it raised `RecursionError`.
+  A log naming its record through a list no longer raises in `verify`.
+- Tests: `tests/test_bundle.py` gains 4 (required files removed from the
+  archive or from both, records of other shapes and nested too deeply,
+  contracts without criteria with a shortened ledger, ledgers of odd records),
+  `tests/test_acceptance.py` 5 (`of` of every shape, IDs an invalidation
+  names, repeated IDs, records of other shapes, nesting) and
+  `tests/test_gate.py` 1 (a malformed invalidation or a repeated ID never
+  lets the gate pass); each failed on `1eb8056`. Eight new mutation
+  protections; two follow lines that changed.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

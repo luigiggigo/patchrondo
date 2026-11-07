@@ -1247,6 +1247,27 @@ ledger is noticed too. A ledger that fails is put aside unchanged
 record and numbers its records apart (`E2-0001`), and what the old one
 verified has to be verified again.
 
+Every line is read as untrusted data (November 7, 2026). Besides the chain,
+`evidence.parse` stops trusting the ledger, with a problem named, at a record
+that takes the ID of an earlier record (one ID, one record: a later one could
+otherwise stand for an invalidated one), at an `invalidation` whose `of` is
+not a non-empty list of text, and at a line nested more than
+`evidence.MAX_DEPTH` (64) levels deep, which "cannot be read" like a line
+that is not JSON (the writers nest fewer than 10). A malformed invalidation is
+never read as naming nothing: what it does name of earlier records still
+stops counting, the ledger's problem makes the gate `ERROR`, a run starts
+the ledger again, and a task state that saw it is no longer anchored, so
+none of its records counts for that state. An `of` that is well formed keeps
+its meaning: IDs of earlier records stop counting, an ID of no earlier record
+names nothing, a repeated one counts once. `append` refuses to write an
+invalidation whose `of` is not a non-empty list of text. Fields that writers
+fill with lists (`criteria`, `covers`, `artifacts`, `of`) are read through
+`evidence.listed`: a value of another shape names nothing, so it can verify
+nothing, and is never iterated or hashed; an invalidation's `cause` or
+`reason` that is not text gives the plain cause `INVALIDATED`. Records of a
+shape this version does not write (`sound`) stay in a chain that holds them
+and are never proof.
+
 Records are never edited. When the fingerprint of the files changes, records
 with `scope: "code"` made on other files are named by an `invalidation`
 record; a record with `artifacts` is invalidated when one of the files it
@@ -2567,9 +2588,23 @@ a compression ratio of 250 for an entry over 1 MiB. Then:
   stored: on Windows `zipfile` turns a backslash into a slash), no link, no
   encryption, and no name twice, also ignoring case;
 - the manifest must be this format and schema version 1 exactly, and list
-  safe, distinct paths with a SHA-256 and a size;
-- each listed file must be present with that size and hash, no other file
-  may be present, and the content digest and bundle ID must match;
+  safe, distinct paths with a SHA-256 and a size; it and every JSON file are
+  read as untrusted data, and one nested more than `evidence.MAX_DEPTH` (64)
+  levels is unreadable (an export nests fewer than 10);
+- the manifest must list every file an export of schema 1 always writes
+  (`bundle.REQUIRED`: `summary.md`, `task/contract.json`,
+  `evidence/ledger.jsonl`, `evidence/validity.json`,
+  `reviews/references.json`, `verification/checks.json`,
+  `history/events.json`), whatever its hashes say (November 7, 2026): one it
+  does not list is `REQUIRED_FILE_UNLISTED`, `MODIFIED`, since no export
+  leaves it out. The gate file is the one record a task may lack (`NO_GATE`
+  below); logs and report copies come with detailed bundles only;
+- each listed file must be present with that size and hash (one listed and
+  absent is `FILE_MISSING`, `INCOMPLETE`), no other file may be present, and
+  the content digest and bundle ID must match;
+- each JSON file must have the type and fields an export gives it
+  (`bundle.SHAPES`), otherwise `RECORD_SHAPE`, `MODIFIED`: a gate, a
+  contract or validity of another shape is never read as nothing to compare;
 - the records must agree: the ledger's chain, count, head and problems as
   the manifest names them; validity as `provenance.recorded` gives it from
   that ledger; the saved gate's ID recomputed from its body (`gate.Gate.id`);
@@ -2585,9 +2620,14 @@ a compression ratio of 250 for an entry over 1 MiB. Then:
   other or the state, and the bundle cannot tell whether that happened
   before or after the export. A manifest that names the damage agrees with
   the ledger (no `LEDGER_MISMATCH`) and still does not make it intact;
-- completeness on its own: a bundle with no gate file (`NO_GATE`) or whose
-  gate is about another state of the ledger (`GATE_NOT_ABOUT_LEDGER`) is
-  `INCOMPLETE` even when its manifest declares nothing left out.
+- completeness on its own: a bundle with no gate file (`NO_GATE`), whose
+  gate is about another state of the ledger (`GATE_NOT_ABOUT_LEDGER`), or
+  whose contract holds no criteria record this version reads
+  (`NO_CRITERIA`, November 7, 2026: without it, a ledger that lost records
+  the state had seen cannot be told from the one exported) is `INCOMPLETE`
+  even when its manifest declares nothing left out. An export of a task from
+  before the gate and the criteria declares both omissions, so it was and
+  stays `INCOMPLETE`.
 
 Archive integrity (the files equal the manifest), ledger integrity (the
 chain, and the records the state saw), completeness and authenticity are
@@ -2598,9 +2638,9 @@ chain holds them; they are `INVALID` (`RECORD_UNKNOWN_SHAPE`) in
 
 | Verdict | Exit code | Meaning |
 |---|---|---|
-| `INTACT` | 0 | Everything listed is there, unchanged, and agrees; the ledger passes its own check and holds what the state saw; the gate is about it |
-| `INCOMPLETE` | 1 | What is there agrees; a listed file is missing, the export declared omissions, or no gate evaluates the exported ledger |
-| `MODIFIED` | 2 | A file differs, an unlisted one was added, or the records contradict each other, including a ledger that fails its hash chain or lost records the state had seen |
+| `INTACT` | 0 | Every file an export writes is listed, there, unchanged, of its shape, and agrees; the ledger passes its own check and holds what the state saw; the gate is about it |
+| `INCOMPLETE` | 1 | What is there agrees; a listed file is missing, the export declared omissions, no gate evaluates the exported ledger, or the contract holds no readable criteria |
+| `MODIFIED` | 2 | A file differs, an unlisted one was added, a file every export writes is not listed, a record is not of the shape an export gives it, or the records contradict each other, including a ledger that fails its own check or lost records the state had seen |
 | `MALFORMED` | 3 | Not a ZIP, an unsafe or duplicate name, a link, or a manifest that cannot be read |
 | `UNSUPPORTED` | 4 | Another format or schema version: nothing is taken as checked |
 | `UNVERIFIABLE` | 5 | The file cannot be read, or it exceeds the limits |
@@ -2623,7 +2663,12 @@ bundle and never replaces an existing file.
 - Exit codes are unchanged. Bundles made before the Step 4 hardening are
   read by the same rules: one of a damaged ledger, or one without an
   evaluation of its own ledger whose manifest declared nothing, which was
-  `INTACT` then, is now `MODIFIED` or `INCOMPLETE`.
+  `INTACT` then, is now `MODIFIED` or `INCOMPLETE`. The same holds for the
+  checks of November 7, 2026: a bundle exported unchanged keeps its verdict
+  (every export lists the required files with their shapes, and a contract
+  without readable criteria was always declared incomplete); only a bundle
+  changed after the export, or one whose ledger holds records `append`
+  never writes, reads otherwise.
 - A forger who rewrites the whole chain, the acceptance record and the gate
   consistently and recomputes every hash is not detected: nothing is signed.
 - The check that a log's name still leads to the file that was read matters

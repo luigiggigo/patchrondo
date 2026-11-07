@@ -13,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from patchrondo import acceptance, capabilities, evidence
+from patchrondo import acceptance, capabilities, evidence, provenance
 from patchrondo.acceptance import Acceptance, Status
 from patchrondo.cli import main
 from patchrondo.core import (AcceptanceRefused, attach_evidence, create_task, decide_authorization, initialize, parse_review,
@@ -445,6 +445,109 @@ class LedgerTests(unittest.TestCase):
         for bad in (self.path, self.path / "missing.bin"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 evidence.fingerprint_file(bad)
+
+    PASSED = {"id": "E-0001", "kind": "command", "executor": "runtime", "criteria": ["AC-01"], "result": "passed",
+              "fingerprint": "F1", "scope": "code"}
+
+    @staticmethod
+    def invalidation(identifier="E-0002", **fields) -> dict:
+        return {"id": identifier, "kind": "invalidation", "executor": "runtime", "result": "invalidated", **fields}
+
+    @staticmethod
+    def chained(*records: dict) -> bytes:
+        """A ledger of these records whose hash chain a careful hand recomputed: `append` writes none of the odd ones."""
+        lines, previous = [], ""
+        for number, fields in enumerate(records, 1):
+            record = {"version": 1, "at": "2026-11-07T12:00:00+00:00", **fields, "seq": number, "prev": previous}
+            record["hash"] = previous = evidence._digest(record)
+            lines.append(json.dumps(record, sort_keys=True, separators=(",", ":")).encode())
+        return b"\n".join(lines) + b"\n"
+
+    def test_an_invalidation_that_does_not_name_a_list_of_ids_is_a_problem_and_gives_no_proof_back(self):
+        nothing = object()
+        for label, of in (("an integer", 123), ("an object", {"E-0001": True}), ("a string", "E-0001"), ("null", None),
+                          ("no field", nothing), ("an empty list", []), ("objects", [{"id": "E-0001"}]),
+                          ("lists", [["E-0001"]]), ("an ID beside an object", ["E-0001", {"id": "E-0001"}])):
+            with self.subTest(of=label):
+                fields = {} if of is nothing else {"of": of}
+                ledger = evidence.parse(self.chained(self.PASSED, self.invalidation(**fields)))  # never raises
+                self.assertEqual(len(ledger.problems), 1, ledger.problems)
+                self.assertIn("Record 2 of the evidence ledger (E-0002) is an invalidation", ledger.problems[0])
+                self.assertEqual(([record["trusted"] for record in ledger.records], ledger.head), ([True, False], ""))
+                # What it does name of earlier records stops counting; nothing else is read into it.
+                named = label == "an ID beside an object"
+                self.assertEqual(ledger.records[0]["invalidated"] is not None, named)
+                # A task state that saw it is no longer anchored: none of the records proves anything for it.
+                seen = ledger.for_state({"count": 2, "head": ledger.records[1]["hash"]})
+                self.assertFalse(any(seen.counts(record) for record in seen.records))
+                self.assertEqual(provenance.recorded(seen, seen.records[0]).causes, (provenance.Cause.RECORD_UNTRUSTED,))
+                # The runtime can never write one: `append` refuses it before anything is written.
+                with self.assertRaises(ValueError):
+                    evidence.append(self.path, "invalidation", result="invalidated", **fields)
+                self.assertFalse(self.file.exists())
+
+    def test_the_ids_an_invalidation_names_count_once_and_only_for_earlier_records(self):
+        ledger = evidence.parse(self.chained(self.PASSED, self.invalidation(of=["E-0001", "E-0001"])))
+        self.assertEqual((ledger.problems, ledger.get("E-0001")["invalidated"]["by"]), ([], "E-0002"))
+        self.assertFalse(ledger.counts(ledger.get("E-0001")))
+        # An ID of no record, or of a later one, names nothing (as before): the later record still counts.
+        later = {**self.PASSED, "id": "E-0003"}
+        ledger = evidence.parse(self.chained(self.PASSED, self.invalidation(of=["E-0099", "E-0003"]), later))
+        self.assertEqual(ledger.problems, [])
+        self.assertTrue(ledger.counts(ledger.get("E-0001")) and ledger.counts(ledger.get("E-0003")))
+        # A valid invalidation of a passed record: the result stays, the validity follows its cause.
+        for words, validity, cause in (({"cause": "WORKSPACE_CHANGED"}, provenance.Validity.STALE, provenance.Cause.WORKSPACE_CHANGED),
+                                       # Words of another shape are not looked up: the plain cause, never VALID.
+                                       ({"cause": ["WORKSPACE_CHANGED"], "reason": {"a": 1}}, provenance.Validity.STALE,
+                                        provenance.Cause.INVALIDATED)):
+            with self.subTest(words=words):
+                ledger = evidence.parse(self.chained(self.PASSED, self.invalidation(of=["E-0001"], **words)))
+                found = provenance.recorded(ledger, ledger.get("E-0001"))
+                self.assertEqual((found.result, found.validity, found.causes, found.invalidated_by),
+                                 ("passed", validity, (cause,), "E-0002"))
+
+    def test_a_record_that_takes_the_id_of_an_earlier_one_is_a_problem(self):
+        again = {**self.PASSED, "criteria": ["AC-02"]}
+        for records in ((self.PASSED, again), (self.PASSED, self.invalidation(of=["E-0001"]), again)):
+            with self.subTest(records=len(records)):
+                ledger = evidence.parse(self.chained(*records))
+                self.assertEqual(len(ledger.problems), 1)
+                self.assertIn(f"Record {len(records)} of the evidence ledger (E-0001) has the ID of an earlier record",
+                              ledger.problems[0])
+                self.assertFalse(ledger.records[-1]["trusted"])
+                # Never the later one in place of an invalidated one: the ID keeps naming the first record.
+                self.assertIs(ledger.get("E-0001"), ledger.records[0])
+                self.assertEqual(ledger.counts(ledger.records[0]), len(records) == 2)
+                self.assertFalse(ledger.counts(ledger.records[-1]))
+
+    def test_records_without_their_fields_or_of_another_shape_are_kept_and_never_raise(self):
+        ledger = evidence.parse(self.chained(
+            {"id": "E-0001"}, {**self.PASSED, "id": "E-0002", "version": 2}, {**self.PASSED, "id": "E-0003", "version": True},
+            {**self.PASSED, "id": "E-0004", "result": "maybe"},
+            {**self.PASSED, "id": "E-0005", "criteria": 5, "covers": 7, "artifacts": 9, "check": [1]}))
+        self.assertEqual(ledger.problems, [])  # the chain holds them: a later version, or a careful hand, wrote them
+        self.assertEqual([ledger.counts(record) for record in ledger.records], [False, False, False, False, True])
+        self.assertEqual([provenance.recorded(ledger, record).causes for record in ledger.records][:4],
+                         [(provenance.Cause.RECORD_UNKNOWN_SHAPE,)] * 4)
+        # A field of another shape names nothing: E-0005 counts, and verifies no criterion.
+        self.assertEqual(ledger.last("command", "AC-01")["id"], "E-0004")
+        self.assertEqual(evidence.listed(ledger.records[4], "criteria"), [])
+        self.assertEqual(evidence.outdated(ledger, "F1"), {})
+        self.assertEqual(provenance.assess(ledger, ledger.records[4], provenance.Current(fingerprint="F1")).validity,
+                         provenance.Validity.VALID)
+
+    def test_a_line_nested_deeper_than_any_writer_nests_cannot_be_read(self):
+        deep = {"value": []}
+        for _ in range(evidence.MAX_DEPTH):
+            deep = {"value": deep}
+        shallow = {"value": [[[1]]]}
+        data = self.chained(self.PASSED, {**self.PASSED, "id": "E-0002", "detail": shallow}, {**self.PASSED, "id": "E-0003", "detail": deep})
+        ledger = evidence.parse(data)
+        self.assertEqual(ledger.problems, ["Record 3 of the evidence ledger cannot be read"])
+        self.assertEqual([record["id"] for record in ledger.records], ["E-0001", "E-0002"])
+        # Deeper than Python reads: the same, never a RecursionError.
+        data = b'{"id":"E-0001","hash":"x","deep":' + b"[" * 100_000 + b"]" * 100_000 + b"}\n"
+        self.assertEqual(evidence.parse(data).problems, ["Record 1 of the evidence ledger cannot be read"])
 
 
 class ReviewTests(unittest.TestCase):

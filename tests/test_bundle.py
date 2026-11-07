@@ -212,6 +212,99 @@ class VerifyTests(unittest.TestCase):
         found = self.verify(resealed({**files, bundle.MANIFEST: bundle.canonical(manifest)}, {}))
         self.assertEqual((found["status"], codes(found)), ("INCOMPLETE", {"NO_GATE"}))
 
+    def without(self, *names: str, unlisted: bool) -> bytes:
+        """The bundle without `names`; with `unlisted`, the manifest no longer lists them either, its digest and ID recomputed."""
+        files = {name: data for name, data in self.files.items() if name not in names}
+        manifest = json.loads(files[bundle.MANIFEST])
+        if unlisted:
+            manifest["files"] = [entry for entry in manifest["files"] if entry["path"] not in names]
+        return resealed({**files, bundle.MANIFEST: bundle.canonical(manifest)}, {})
+
+    def test_a_bundle_without_a_file_every_export_writes_is_never_intact(self):
+        # What an export writes: every required file, and the gate of a task that has one (no logs in a summary bundle).
+        listed = {entry["path"] for entry in json.loads(self.files[bundle.MANIFEST])["files"]}
+        self.assertEqual(listed, {*bundle.REQUIRED, "gate/evaluation.json"})
+        for name in bundle.REQUIRED:
+            with self.subTest(name=name):
+                found = self.verify(self.without(name, unlisted=False))
+                self.assertEqual((found["status"], found["exit_code"], codes(found)), ("INCOMPLETE", 1, {"FILE_MISSING"}))
+                # Taken out of the manifest too, with every hash recomputed: never an omission the export could make.
+                found = self.verify(self.without(name, unlisted=True))
+                self.assertEqual((found["status"], found["exit_code"]), ("MODIFIED", 2))
+                self.assertIn("REQUIRED_FILE_UNLISTED", codes(found))
+                self.assertEqual([entry["path"] for entry in found["problems"] if entry["code"] == "REQUIRED_FILE_UNLISTED"], [name])
+        # The gate listed but not in the archive is missing; left out of both it is the one record a task may lack.
+        found = self.verify(self.without("gate/evaluation.json", unlisted=False))
+        self.assertEqual((found["status"], codes(found)), ("INCOMPLETE", {"FILE_MISSING"}))
+
+    def test_a_record_of_another_shape_is_never_read_as_nothing_to_compare(self):
+        for name, (kind, _fields) in bundle.SHAPES.items():
+            other = b"{}\n" if kind is list else b"[]\n"
+            for value in (b"null\n", b'"text"\n', b"7\n", other, *([b"{}\n"] if kind is dict else [])):
+                with self.subTest(name=name, value=value):
+                    found = self.verify(resealed(self.files, {name: value}))
+                    self.assertEqual((found["status"], found["exit_code"]), ("MODIFIED", 2))
+                    self.assertIn("RECORD_SHAPE", codes(found))
+            with self.subTest(name=name, value="nested too deeply"):
+                found = self.verify(resealed(self.files, {name: b"[" * 100_000 + b"]" * 100_000}))
+                self.assertEqual((found["status"], codes(found)), ("MODIFIED", {"RECORD_UNREADABLE"}))
+        deep = {"files": []}
+        for _ in range(evidence.MAX_DEPTH):
+            deep = {"a": deep}
+        for manifest in (b"[" * 100_000 + b"]" * 100_000, json.dumps({**json.loads(self.files[bundle.MANIFEST]), "x": deep}).encode()):
+            found = self.verify(rezip({**self.files, bundle.MANIFEST: manifest}))
+            self.assertEqual((found["status"], codes(found)), ("MALFORMED", {"MANIFEST_UNREADABLE"}))
+
+    def test_a_contract_without_criteria_leaves_the_ledger_unanchored_and_the_bundle_incomplete(self):
+        contract = json.loads(self.files["task/contract.json"])
+        for acceptance in (None, {"criteria": 5}):
+            with self.subTest(acceptance=acceptance):
+                changed = bundle.canonical({**contract, "acceptance": acceptance})
+                found = self.verify(resealed(self.files, {"task/contract.json": changed}))  # the manifest declares nothing left out
+                self.assertEqual((found["status"], codes(found)), ("INCOMPLETE", {"NO_CRITERIA"}))
+                # Records the state had seen removed as well: still never intact.
+                shorter = b"\n".join(self.files["evidence/ledger.jsonl"].split(b"\n")[:-2]) + b"\n"
+                parsed = evidence.parse(shorter)
+                manifest = json.loads(self.files[bundle.MANIFEST])
+                manifest["ledger"].update(count=parsed.count, head=parsed.head, problems=0)
+                manifest["validity"] = bundle.counts(bundle.validity_rows(parsed))
+                gate_file = json.loads(self.files["gate/evaluation.json"])
+                gate_file["saved"]["ledger"] = {"count": parsed.count, "head": parsed.head}
+                gate_file["saved"]["id"] = bundle.gate_id(gate_file["saved"])
+                gate_file["exported_ledger"] = {"count": parsed.count, "head": parsed.head}
+                manifest["gate"]["id"] = gate_file["saved"]["id"]
+                forged = resealed({**self.files, bundle.MANIFEST: bundle.canonical(manifest)}, {
+                    "task/contract.json": changed, "evidence/ledger.jsonl": shorter, "gate/evaluation.json": bundle.canonical(gate_file),
+                    "evidence/validity.json": bundle.canonical({"anchored": True, "records": bundle.validity_rows(parsed)})})
+                found = self.verify(forged)
+                self.assertNotEqual(found["status"], "INTACT")
+                self.assertIn("NO_CRITERIA", codes(found))
+
+    def test_a_ledger_of_odd_records_is_damaged_and_its_check_never_raises(self):
+        ledger = evidence.parse(self.files["evidence/ledger.jsonl"])
+
+        def longer(**fields) -> bytes:
+            record = {"version": 1, "at": "2026-11-07T12:00:00+00:00", **fields, "seq": ledger.count + 1, "prev": ledger.head}
+            record["hash"] = evidence._digest(record)
+            return self.files["evidence/ledger.jsonl"] + json.dumps(record, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+        invalidation = {"id": f"E-{ledger.count + 1:04d}", "kind": "invalidation", "executor": "runtime", "result": "invalidated"}
+        for of in (123, {"E-0001": 1}, "E-0001", None, [{"id": "E-0001"}], [["E-0001"]]):
+            with self.subTest(of=of):
+                found = self.verify(reledgered(self.files, longer(**invalidation, of=of)))
+                self.assertEqual(found["status"], "MODIFIED")
+                self.assertIn("LEDGER_DAMAGED", codes(found))
+        # Fields of other shapes, chained by a careful hand, and a log whose record names it with a list: checked, not raised.
+        odd = longer(id=f"E-{ledger.count + 1:04d}", kind="command", executor="runtime", result="passed", criteria=5,
+                     artifacts=9, log=["x.log"], check={"report": {"path": ["r"]}})
+        files = entries(reledgered(self.files, odd))
+        manifest = json.loads(files[bundle.MANIFEST])
+        manifest["files"].append({"path": "logs/iteration-001/x.log", "sha256": hashlib.sha256(b"x").hexdigest(), "size": 1,
+                                  "role": "log", "source": {"record": f"E-{ledger.count + 1:04d}"}})
+        found = self.verify(resealed({**files, "logs/iteration-001/x.log": b"x", bundle.MANIFEST: bundle.canonical(manifest)}, {}))
+        self.assertIn("SOURCE_MISMATCH", codes(found))
+        self.assertNotEqual(found["status"], "INTACT")
+
     def test_an_edited_manifest_is_found(self):
         manifest = json.loads(self.files[bundle.MANIFEST])
         manifest["gate"]["decision"] = "BLOCKED"
@@ -673,7 +766,9 @@ class ExportTests(Case):
         self.assertEqual({entry["item"] for entry in made.manifest["omissions"]}, {"gate/evaluation.json", "task/contract.json#judged"})
         self.assertIn("Not evaluated", entries(made.data)["summary.md"].decode())
         self.assertNotIn("gate/evaluation.json", entries(made.data))
-        self.assertEqual(bundle.verify(made.data)["status"], "INCOMPLETE")
+        found = bundle.verify(made.data)
+        # Incomplete for what it lacks, and nothing else: every file an export writes is there, of its shape.
+        self.assertEqual((found["status"], codes(found)), ("INCOMPLETE", {"DECLARED_INCOMPLETE", "NO_GATE", "NO_CRITERIA"}))
 
     def test_concurrent_exports_are_identical_and_never_interfere(self):
         _task_id, path, _workspace = self.blocked()

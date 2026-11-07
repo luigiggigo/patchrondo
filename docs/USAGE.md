@@ -327,10 +327,12 @@ patchrondo bundle verify bundle.zip --json
 ```
 
 It answers `INTACT` (exit 0), `INCOMPLETE` (1: something listed is missing,
-the export said what it left out, or no gate evaluation is about the
-exported evidence), `MODIFIED` (2: a file differs, or the records contradict
-each other, including an evidence ledger that fails its own hash chain or
-lost records the task had seen, which `LEDGER_DAMAGED` and
+the export said what it left out, no gate evaluation is about the exported
+evidence, or the task's criteria cannot be read), `MODIFIED` (2: a file
+differs, a file every export writes such as the evidence ledger is not even
+listed, a file does not have the shape an export gives it, or the records
+contradict each other, including an evidence ledger that fails its own
+check or lost records the task had seen, which `LEDGER_DAMAGED` and
 `LEDGER_UNANCHORED` name), `MALFORMED` (3), `UNSUPPORTED` (4: another format
 or schema version) or `UNVERIFIABLE` (5: too large, or unreadable). It reads
 the archive in memory and extracts nothing. **Matching hashes are not a
