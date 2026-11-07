@@ -193,6 +193,11 @@ details.advanced .card-body { border-top: 1px solid var(--border); }
 .repo-ok, .repo-warn { display: flex; gap: 6px; align-items: flex-start; }
 .repo-ok { color: var(--ok); }
 .repo-warn { color: var(--warn); }
+.first-commit { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); font-size: var(--text-sm); }
+.first-commit p { margin: 0; }
+.first-commit-files { list-style: none; margin: 0; padding: var(--space-1) var(--space-2); max-height: 180px; overflow: auto;
+  background: var(--bg-sunken); border-radius: var(--radius-md); }
+.first-commit-files li { display: flex; gap: var(--space-2); }
 
 /* --- Settings -------------------------------------------------------------------- */
 .settings-layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--space-6); align-items: start; }

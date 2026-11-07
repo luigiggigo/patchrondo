@@ -482,7 +482,14 @@ argument, never inside the script. One dialog at a time, closed after 30
 minutes or when the interface closes; it returns one path, answered only when
 it is an absolute folder that exists, and checked like a typed one before
 anything is registered. `PATCHRONDO_NATIVE_PICKER=0` turns it off; the page
-then lists folders itself. All of this is content of
+then lists folders itself. The one write to a folder of yours from the
+interface is a first commit you ask for there (*Create a Git repository
+here…*): the files are listed first, read through a temporary repository
+outside the folder, and `git init` and the commit run only after you confirm,
+on exactly that list (a folder changed since is refused). Your Git settings
+apply, hooks and signing included; a name and email typed because Git has
+none are used for that commit only and written nowhere. A whole drive, the
+home folder and PatchRondo's own state are refused. All of this is content of
 your own disk shown to you, but remember that task state, logs and diffs may
 contain private project data and are not filtered for secrets.
 

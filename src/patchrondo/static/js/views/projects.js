@@ -2,7 +2,7 @@
 
 import { api, requestId } from "../api.js";
 import { clear, h, icon, sync } from "../dom.js";
-import { plural } from "../format.js";
+import { bytes, plural } from "../format.js";
 import { href, navigate } from "../router.js";
 import { emptyState } from "../rondo.js";
 import { projectList, refresh, selectedProjectId, state, taskList } from "../store.js";
@@ -39,12 +39,69 @@ function folderBrowser(onPick) {
   return el;
 }
 
-// Path field with live validation by the backend (read-only Git checks, nothing is created).
+// A first commit for a folder that has none, made only after the user reviewed its files and confirmed.
+function firstCommitPanel(path, { onDone, onCancel }) {
+  const el = h("div", { class: "first-commit card", "aria-busy": "true" }, h("span", { class: "faint" }, "Reading the folder…"));
+  async function review(notice) {
+    el.setAttribute("aria-busy", "true");
+    let plan;
+    try {
+      plan = await api.post("/api/projects/first-commit/plan", { path });
+    } catch (error) {
+      clear(el, h("div", { class: "field-error" }, icon("alert", "sm"), h("span", {}, error.message)),
+        h("div", { class: "row" }, button("Close", { size: "sm", variant: "ghost", onClick: onCancel })));
+      return;
+    } finally {
+      el.removeAttribute("aria-busy");
+    }
+    const init = plan.mode === "init";
+    const name = h("input", { class: "input", type: "text", maxlength: 100, autocomplete: "name" });
+    const email = h("input", { class: "input", type: "email", maxlength: 254, autocomplete: "email" });
+    const error = h("div", { class: "form-error", role: "alert" });
+    const go = button(init ? "Create repository and commit" : "Make the first commit", { variant: "primary", size: "sm", iconName: "git",
+      onClick: () => busy(go, async () => {
+        error.textContent = "";
+        try {
+          const data = await api.post("/api/projects/first-commit", { path, digest: plan.digest,
+            ...(plan.identity ? {} : { name: name.value, email: email.value }) });
+          onDone(data);
+        } catch (failure) {
+          clear(error, icon("alert", "sm"), failure.message);
+          if (failure.status === 409) review(failure.message); // the folder changed: show what it holds now
+          else onDone(null);
+        }
+      }) });
+    clear(el,
+      notice ? h("div", { class: "field-error" }, icon("alert", "sm"), h("span", {}, notice)) : null,
+      h("p", {}, init ? "PatchRondo will run git init in " : "PatchRondo will commit in ", h("span", { class: "mono break" }, plan.path),
+        init ? ` and commit the files below as “${plan.message}”.` : ` the files below as “${plan.message}”.`),
+      plan.count
+        ? h("ul", { class: "first-commit-files mono", "aria-label": "Files of the first commit" },
+          plan.files.map((file) => h("li", {}, h("span", { class: "grow break" }, file.name), h("span", { class: "faint" }, bytes(file.size)))),
+          plan.more ? h("li", { class: "faint" }, `and ${plural(plan.more, "more file")}`) : null)
+        : h("p", { class: "muted" }, "The folder has no files to commit: the first commit will be empty."),
+      h("p", { class: "muted" }, plan.count ? `${plural(plan.count, "file")}, ${bytes(plan.bytes)}. ` : "",
+        "Files your .gitignore leaves out are not included. Check that no password, key or large file is listed: a commit keeps them in the history."),
+      plan.identity
+        ? h("p", { class: "muted" }, "Author: ", h("span", { class: "mono" }, plan.identity))
+        : h("div", { class: "stack" },
+          h("p", { class: "muted" }, "Git does not know your name and email on this computer. They are used for this commit only; ",
+            "to set them for Git, run git config --global user.name and user.email."),
+          h("div", { class: "row wrap" }, field({ label: "Name", control: name, error: false }), field({ label: "Email", control: email, error: false }))),
+      h("div", { class: "row wrap" }, error, h("span", { class: "grow" }), button("Cancel", { size: "sm", variant: "ghost", onClick: onCancel }), go));
+    el.scrollIntoView?.({ block: "nearest" });
+  }
+  review();
+  return el;
+}
+
+// Path field with live validation by the backend (read-only Git checks; a repository is created only on request).
 export function repositoryField({ onChange } = {}) {
   const input = h("input", { class: "input mono", type: "text", placeholder: navigator.platform.startsWith("Win") ? "C:\\src\\my-project" : "/home/you/src/my-project",
     autocomplete: "off", spellcheck: "false", autofocus: true });
   const status = h("div", { class: "repo-status", "aria-live": "polite" });
   const note = h("div", { class: "faint picker-note", "aria-live": "polite" });
+  const commitBox = h("div", {});
   const browser = folderBrowser((path) => { input.value = path; browser.hidden = true; check(); });
   browser.hidden = true;
   const showList = (why) => {
@@ -79,6 +136,7 @@ export function repositoryField({ onChange } = {}) {
     const mine = ++serial;
     result = null;
     onChange?.(null);
+    if (commitBox.dataset.input !== path) clear(commitBox);
     if (!path) { clear(status); return; }
     clear(status, h("span", { class: "faint" }, "Checking…"));
     try {
@@ -88,6 +146,16 @@ export function repositoryField({ onChange } = {}) {
       clear(status,
         data.problems.map((problem) => h("div", { class: "field-error" }, icon("alert", "sm"), h("span", {}, problem,
           data.root && !data.is_root ? [" ", h("button", { type: "button", class: "link", onclick: () => { input.value = data.root; check(); } }, `Use ${data.root}`)] : null))),
+        data.first_commit && !commitBox.firstChild ? h("div", { class: "row" }, button(data.first_commit === "init" ? "Create a Git repository here…" : "Make the first commit…",
+          { size: "sm", iconName: "git", onClick: () => {
+            commitBox.dataset.input = path;
+            browser.hidden = true;
+            note.textContent = "";
+            clear(commitBox, firstCommitPanel(data.path, {
+              onDone: (made) => { if (made) { clear(commitBox); toast(`Git repository ready in ${made.path}`); } check(); },
+              onCancel: () => { clear(commitBox); check(); } }));
+            check();
+          } })) : null,
         data.ok ? h("div", { class: "repo-ok" }, icon("check", "sm"), h("span", {}, `Git repository on ${data.branch || "a detached HEAD"}${data.head ? ` · ${data.head}` : ""}`)) : null,
         data.warnings.map((warning) => h("div", { class: "repo-warn" }, icon("alert", "sm"), h("span", {}, warning))));
       onChange?.(data);
@@ -99,8 +167,8 @@ export function repositoryField({ onChange } = {}) {
   input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(check, 350); });
   const el = h("div", { class: "stack" },
     field({ label: "Repository folder", control: input, error: false,
-      hint: "The root folder of a local Git repository with at least one commit. PatchRondo never commits, pushes or edits your checkout." }),
-    h("div", { class: "row" }, browse), note, browser, status);
+      hint: "The root folder of a local Git repository with at least one commit. PatchRondo never commits, pushes or edits your checkout, except a first commit you ask for here." }),
+    h("div", { class: "row" }, browse), note, browser, status, commitBox);
   el.input = input;
   el.check = check;
   Object.defineProperty(el, "result", { get: () => result });

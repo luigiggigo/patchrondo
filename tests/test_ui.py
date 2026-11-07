@@ -124,6 +124,7 @@ class ProtectionTests(ServerCase):
                   ("GET", "/api/projects/P-00000000/tasks/T-000000000000/activity"),
                   ("GET", "/api/projects/P-00000000/tasks/T-000000000000/activity/stream"),
                   ("POST", "/api/projects"), ("POST", "/api/projects/import"), ("POST", "/api/projects/inspect"),
+                  ("POST", "/api/projects/first-commit/plan"), ("POST", "/api/projects/first-commit"),
                   ("POST", "/api/fs/list"), ("POST", "/api/fs/pick"), ("POST", "/api/providers/refresh"), ("POST", "/api/projects/P-00000000/index"),
                   ("POST", "/api/projects/P-00000000/tasks"), ("POST", "/api/projects/P-00000000/start"),
                   ("POST", "/api/projects/P-00000000/tasks/T-000000000000/run"),

@@ -640,6 +640,64 @@ def scenario_recovery(env: Env) -> None:
     env.stop()
 
 
+def scenario_first_commit(env: Env) -> None:
+    """Inside the Add project form: a folder without Git gets a repository and a first commit, on request only."""
+    page = env.page
+    gamma = env.root / "work" / "gamma"
+    gamma.mkdir(parents=True)
+    (gamma / "app.py").write_text("print('gamma')\n", encoding="utf-8")
+    (gamma / "debug.log").write_text("noise\n", encoding="utf-8")
+    (gamma / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    # Git settings of this check alone, and Git refusing to guess an author: the page must ask for one.
+    empty = env.root / "gitconfig-empty"
+    empty.write_text("", encoding="utf-8")
+    saved = {key: os.environ.get(key) for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT",
+                                                    "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_AUTHOR_NAME",
+                                                    "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL")}
+    for key in saved:
+        os.environ.pop(key, None)
+    os.environ.update(GIT_CONFIG_GLOBAL=str(empty), GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_COUNT="1",
+                      GIT_CONFIG_KEY_0="user.useConfigOnly", GIT_CONFIG_VALUE_0="true")
+    try:
+        page.fill(".dialog input.mono", str(gamma))
+        env.expect("a folder without Git is reported with an offer to create the repository",
+                   "q('.dialog .repo-status').innerText.includes('not inside a Git repository') && Boolean(byText('Create a Git repository here…'))", 8)
+        page.click(text="Create a Git repository here…")
+        env.expect("the files of the first commit are listed for review, without those .gitignore leaves out",
+                   "Boolean(q('.first-commit-files')) && q('.first-commit-files').innerText.includes('app.py') && q('.first-commit-files').innerText.includes('.gitignore') && !q('.first-commit-files').innerText.includes('debug.log')", 10)
+        env.check("reviewing the files wrote nothing in the folder", not (gamma / ".git").exists())
+        env.check("without a Git identity the page asks for a name and an email",
+                  page.js("Boolean(q('.first-commit input[type=email]')) && q('.first-commit').innerText.includes('Git does not know your name and email')"))
+        env.check("the Add project button stays disabled meanwhile", page.js("byText('Add project', '.dialog button').disabled === true"))
+        env.shot("add-project-first-commit")
+        (gamma / "late.py").write_text("print('late')\n", encoding="utf-8")
+        page.click(text="Create repository and commit")
+        env.expect("a folder that changed after the review is refused and its files listed again",
+                   "q('.first-commit').innerText.includes('The folder changed since you reviewed it') && q('.first-commit-files').innerText.includes('late.py')", 10)
+        env.check("nothing was created for a folder that changed", not (gamma / ".git").exists())
+        page.click(text="Create repository and commit")
+        env.expect("an empty name is refused before anything is created",
+                   "q('.first-commit .form-error').innerText.includes('Enter your name')", 8)
+        env.check("nothing was created after the refusal", not (gamma / ".git").exists())
+        page.fill(".first-commit input[type=text]", "Ada Tester")
+        page.fill(".first-commit input[type=email]", "ada@example.invalid")
+        page.click(text="Create repository and commit")
+        env.expect("after the first commit the folder validates as a repository",
+                   f"!q('.first-commit') && q('.dialog input.mono').value === {json.dumps(str(gamma))} && Boolean(q('.dialog .repo-ok'))", 15)
+        log = subprocess.run(["git", "-C", str(gamma), "log", "--format=%s|%an|%ae"], capture_output=True, text=True, check=False)
+        files = subprocess.run(["git", "-C", str(gamma), "ls-files"], capture_output=True, text=True, check=False)
+        env.check("the commit holds the reviewed files with the typed author",
+                  log.stdout.strip() == "Initial commit|Ada Tester|ada@example.invalid" and set(files.stdout.split()) == {".gitignore", "app.py", "late.py"},
+                  f"{log.stdout!r} {files.stdout!r}")
+        local = subprocess.run(["git", "-C", str(gamma), "config", "--local", "--get-regexp", "^user[.]"], capture_output=True, check=False)
+        env.check("the typed name and email were not saved in Git's settings", local.returncode == 1 and empty.read_text(encoding="utf-8") == "")
+    finally:
+        for key, value in saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+
+
 def scenario_projects(env: Env) -> None:
     """Two projects with independent settings and tasks, managed entirely from the interface."""
     page = env.page
@@ -681,6 +739,7 @@ def scenario_projects(env: Env) -> None:
     page.wait("Boolean(q('.browser-list'))", 8, "the folder list")
     env.expect("without a system dialog the page says why and lists folders itself",
                "q('.dialog .picker-note').innerText.includes('No graphical session was found. Choose the folder from this list instead')", 8)
+    scenario_first_commit(env)
     page.fill(".dialog input.mono", str(beta.parent))
     page.click(text="Browse…")
     page.click(text="Browse…")
@@ -755,7 +814,7 @@ def scenario_projects(env: Env) -> None:
     env.expect("the removed project leaves the list", "qa('.project').length === 1", 8)
     back = env.api("POST", "/api/projects/import", {"home": str(beta_home)})
     env.check("its state directory can be imported again with its task", back[0] == 201 and back[1]["tasks"] == 1, str(back))
-    env.clean_console("projects", allow=("status of 400", "status of 404", "net::ERR"))  # the refusals this scenario provokes
+    env.clean_console("projects", allow=("status of 400", "status of 404", "status of 409", "net::ERR"))  # the refusals this scenario provokes
     env.stop()
 
 

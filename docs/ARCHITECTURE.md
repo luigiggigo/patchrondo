@@ -56,6 +56,7 @@ Progress & Stagnation Detection remains planned.
 | `preflight.py` | The reviewer preflight: the probe run in the Codex sandbox self-check and the judgment of its answers against the disk |
 | `winacl.py` | Windows access control lists of the folders agents read: inspect, grant narrowly, restore (`ctypes`, Windows only) |
 | `picker.py` | The operating system's folder dialog for *Browse…*: Explorer (`IFileOpenDialog` through `ctypes`, in a child Python process), `osascript` on macOS, `zenity`/`kdialog` on Linux; one at a time, answered through short requests |
+| `firstcommit.py` | A Git repository and its first commit for a folder chosen in *Add project*, on request only: the list of files reviewed first (read through a temporary repository outside the folder), then `git init` and a commit of exactly that list |
 | `repair.py` | The catalogue of environment problems and the two repairs: one unattended, one that needs the user's decision |
 | `commands.py` | Test command lines to and from argument arrays, with Windows or POSIX quoting |
 | `app.py` | Application layer: every operation of the interface (projects, settings, tasks, bounded file views, run start and stop) |
@@ -244,7 +245,8 @@ has not read when that happens.
 | `GET /api/snapshot` | Everything the interface lists, with the sequence number events continue from |
 | `GET /api/events?epoch=&since=` | Server-sent change events |
 | `GET/PATCH /api/settings` | Global preferences |
-| `POST /api/projects`, `/api/projects/import`, `/api/projects/inspect` | Register a repository, register a 0.1 home in place, check a path without registering it |
+| `POST /api/projects`, `/api/projects/import`, `/api/projects/inspect` | Register a repository, register a 0.1 home in place, check a path without registering it (`first_commit` says whether a first commit can be offered) |
+| `POST /api/projects/first-commit/plan`, `/api/projects/first-commit` | The files a first commit of a folder would hold and their digest; `git init` and that commit, refused with 409 when the digest no longer matches |
 | `GET/PATCH/DELETE /api/projects/{id}`, `PATCH …/config`, `POST …/index` | Detail with the full configuration, rename, forget; edit configuration sections; update the retrieval index |
 | `POST /api/projects/{id}/tasks`, `GET …/tasks/{task}`, `…/files`, `…/log` | Create a task; state and documents; changed files; a slice of one log |
 | `GET …/tasks/{task}/activity?cursor=&before=&limit=` | A page of the task's activity journal: its end, or what follows or precedes a cursor |

@@ -33,7 +33,7 @@ the interface, not the runs it started.
 | Section | What you do there |
 |---|---|
 | **Home** | Start a task: the project (or *Choose folder…* for another one), what should be done, the developer and the reviewer with their defaults, a readiness indicator and one **Start task** button. Below it, the state of Claude Code and Codex, tasks that are active, need attention, are ready or done, and recent activity. |
-| **Projects** | Add a local Git repository (*Browse…* opens your system's own folder dialog, see [Choosing a folder](#choosing-a-folder); then a check before anything is registered), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
+| **Projects** | Add a local Git repository (*Browse…* opens your system's own folder dialog, see [Choosing a folder](#choosing-a-folder); then a check before anything is registered; a folder without Git can get its first commit on request), switch project, rename, configure, or remove it from the list. Removing never deletes the repository, the tasks or the worktrees, and is refused while a task of the project is running, waiting, or has a recorded process that cannot be verified. |
 | **Agents** | One card for the developer and one for the reviewer: who plays the role, a preset, the model and the effort; under *Advanced*, every other option of that CLI. Global preferences, a project's own values or a single task's, with the origin of each value in effect. *Test configuration* checks a card without starting anything. See [Agents: models and options](#agents-models-and-options). |
 | **Tasks** | All tasks of the selected project, or of every project, with filters and search. |
 | **Task** | Header with status, roles and iteration; the workflow *Prepare → Develop → Test → Review → Validate → Repeat / Complete*; then Overview, Criteria and checks (each criterion with who does it, who verifies it, why it is open and its evidence), Live Activity (what the agents are doing, while they do it), Timeline (the steps the engine recorded), Logs, Tests, Review, Files changed, Handoff, Report and Advanced (the raw files). Run, Resume and Stop are here. |
@@ -506,6 +506,18 @@ installed, as in a plain WSL2 Ubuntu), the page says why and lists the
 folders itself; so does `PATCHRONDO_NATIVE_PICKER=0`. Under WSL2 the dialog is
 the Linux one through WSLg, with Linux paths, because the paths must be the
 ones PatchRondo sees.
+
+A folder that is not a Git repository yet, or a repository without commits,
+can become one from the same field: *Create a Git repository here…* (or *Make
+the first commit…*) lists the files the first commit would hold, with their
+sizes; files your `.gitignore` leaves out are not listed. Check the list for
+passwords, keys and large files: a commit keeps them in the history. *Create
+repository and commit* then runs `git init` and commits exactly those files
+as `Initial commit`, with your Git name and email. If Git does not know them,
+the page asks for them and uses them for this commit only, without changing
+Git's settings. If the folder changed after you looked, the list is shown
+again instead. PatchRondo does not do this for a whole drive, your home
+folder, its own state folder, or more than 10,000 files or 1 GiB.
 
 ### Several projects, and homes created by 0.1
 

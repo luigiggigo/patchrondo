@@ -25,7 +25,7 @@ import time
 from typing import NamedTuple
 
 from . import __version__, acceptance as criteria, activity, agents, bundle, doctor, environment, evidence, provenance, providers, rag
-from . import picker, recovery, repair, runinfo, streams, verification
+from . import firstcommit, picker, recovery, repair, runinfo, streams, verification
 from .commands import join_command, split_command
 from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config, create_task,
                    decide_authorization, effective_config, gate_currency, preflight, recheck_acceptance, record_environment,
@@ -171,7 +171,7 @@ def repository_state(root: Path) -> dict:
 def inspect_repository(workspace: Workspace, raw) -> dict:
     """Validate a path chosen in the interface before it is registered. Runs Git read-only."""
     result = {"path": None, "root": None, "is_root": False, "name": None, "branch": None, "head": None,
-              "dirty": None, "registered": None, "ok": False, "problems": [], "warnings": []}
+              "dirty": None, "registered": None, "ok": False, "problems": [], "warnings": [], "first_commit": None}
     if not isinstance(raw, str) or not raw.strip():
         result["problems"].append("Enter the path of a local Git repository")
         return result
@@ -193,6 +193,7 @@ def inspect_repository(workspace: Workspace, raw) -> dict:
     except (OSError, RuntimeError):
         result["problems"].append("That folder is not inside a Git repository. Run git init and make a first "
                                   "commit, or choose another folder")
+        result["first_commit"] = firstcommit.offer(str(path), workspace.root)
         return result
     result.update(root=str(root), is_root=root == path, name=root.name or "Project")
     if root != path:
@@ -202,6 +203,7 @@ def inspect_repository(workspace: Workspace, raw) -> dict:
     result.update(branch=state["branch"], head=state["head"], dirty=state["dirty"])
     if state["head"] is None:
         result["problems"].append("The repository has no commits yet. Make a first commit: tasks start from it")
+        result["first_commit"] = firstcommit.offer(str(path), workspace.root)
     if workspace.root == root or workspace.root.is_relative_to(root):
         result["problems"].append("PatchRondo keeps its private state inside this repository; choose another "
                                   "repository or start PatchRondo with another --home")
@@ -214,6 +216,21 @@ def inspect_repository(workspace: Workspace, raw) -> dict:
         result["warnings"].append("There are uncommitted changes. Commit or stash them before creating a task")
     result["ok"] = not result["problems"]
     return result
+
+
+def first_commit_plan(workspace: Workspace, payload: dict) -> dict:
+    """The files a first commit of this folder would hold, for the user to review. Writes nothing."""
+    return firstcommit.plan(payload.get("path"), workspace.root)
+
+
+def first_commit(workspace: Workspace, payload: dict) -> dict:
+    """Make the repository and the first commit the user reviewed; the answer is the folder inspected again."""
+    try:
+        path = firstcommit.make(payload.get("path"), workspace.root, payload.get("digest"),
+                                payload.get("name"), payload.get("email"))
+    except firstcommit.Changed as exc:
+        raise Conflict(str(exc)) from exc
+    return inspect_repository(workspace, str(path))
 
 
 def pick_folder(folders: picker.Picker, payload: dict) -> dict:

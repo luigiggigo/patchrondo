@@ -28,7 +28,8 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 
 from . import activity
-from .app import PACKAGE_ROOT, App, Conflict, RunsAtExit, browse, inspect_repository, pick_folder  # noqa: F401 - re-exported
+from .app import (PACKAGE_ROOT, App, Conflict, RunsAtExit, browse, first_commit, first_commit_plan,  # noqa: F401 - re-exported
+                  inspect_repository, pick_folder)
 from .commands import join_command, split_command  # noqa: F401 - re-exported
 from .live import Hub
 from .workspace import NotFound
@@ -399,6 +400,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return 201, app.import_project(payload)
         if path == "/api/projects/inspect":
             return 200, inspect_repository(app.ws, payload.get("path"))
+        if path == "/api/projects/first-commit/plan":
+            return 200, first_commit_plan(app.ws, payload)
+        if path == "/api/projects/first-commit":
+            return 201, first_commit(app.ws, payload)
         if path == "/api/fs/list":
             return 200, browse(payload.get("path"))
         if path == "/api/fs/pick":

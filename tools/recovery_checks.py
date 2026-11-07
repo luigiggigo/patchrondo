@@ -1026,6 +1026,21 @@ MUTATIONS = [
              "            process.communicate()\n", ("test_picker.PickerTests",)),
     Mutation("closing the dashboard leaves the folder dialog open", "ui.py",
              "        self.app.picker.close()\n", "", ("test_picker.RouteTests",)),
+    # A first commit made on request from the Add project form (November 7, 2026).
+    Mutation("a folder that changed after the review is committed", "firstcommit.py",
+             "        if survey[\"digest\"] != digest:\n", "        if False:\n", ("test_firstcommit.MakeTests",)),
+    Mutation("the home folder is made a repository", "firstcommit.py",
+             "    if path == Path.home().resolve():\n", "    if False:\n", ("test_firstcommit.PlanTests",)),
+    Mutation("PatchRondo's own state is made a repository", "firstcommit.py",
+             "    if path == home or home.is_relative_to(path) or path.is_relative_to(home):\n", "    if False:\n",
+             ("test_firstcommit.PlanTests",)),
+    Mutation("a repository Git does not open gets a new one inside it", "firstcommit.py",
+             "            if os.path.lexists(folder / \".git\"):\n", "            if False:\n", ("test_firstcommit.PlanTests",)),
+    Mutation("more files than the limit are committed", "firstcommit.py",
+             "    if len(given) > LIMIT:\n", "    if False:\n", ("test_firstcommit.PlanTests",)),
+    Mutation("a missing Git identity is found only after git init", "firstcommit.py",
+             "        who = [] if _identity(path) else _typed_identity(name, email)\n", "        who = []\n",
+             ("test_firstcommit.MakeTests",)),
 ]
 
 

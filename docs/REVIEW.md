@@ -27,8 +27,9 @@ not a refused start, and publication-status update: October 18, 2026. A
 refused stop said by agent steps and the earlier test stage, and
 publication-status update: October 18, 2026. Verification Center and evidence bundles:
 November 5, 2026. Bundle structure and untrusted ledger records, the browser
-check waiting for the run to end, the system's folder dialog for Browse, and
-publication-status update: November 7, 2026.
+check waiting for the run to end, the system's folder dialog for Browse, a
+first commit from the Add project form, and publication-status update:
+November 7, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -290,6 +291,55 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## A first commit from the Add project form (November 7, 2026)
+
+This section covers a working tree on top of `d65c39b`: the new module
+`firstcommit.py`, `app.first_commit_plan`, `app.first_commit` and
+`first_commit` in `inspect_repository`, two routes in `ui.py`,
+`firstCommitPanel` and `repositoryField` in `static/js/views/projects.js`
+and rules of `views.css`; `tests/test_firstcommit.py` (12 tests), the routes
+in the token test of `tests/test_ui.py`; `scenario_first_commit` in
+`tools/ui_e2e.py`; six mutation protections; USAGE, ARCHITECTURE, SECURITY
+and the changelog.
+
+**Decisions.** The files are listed before anything is written, through a
+temporary bare repository used with `--work-tree` outside the folder, so
+`.gitignore` and the global excludes apply as `git add` would apply them.
+The commit adds exactly the reviewed list (`--literal-pathspecs`, names on
+standard input, so `[ab].txt` stays a name), and a digest of that list
+refuses a folder that changed. The computer this was built on has no global
+`user.name` or `user.email`, and `git var GIT_AUTHOR_IDENT` failed there as
+`git commit` did ("unable to auto-detect email address"): the page asks for
+them and passes them with `git -c` for the one commit, rather than writing a
+configuration file. The user's hooks and signing apply; a refused commit
+leaves the new repository in place and offers the commit again.
+
+**Checks run** (November 7, 2026; native Windows 11 Pro 10.0.26300, Python
+3.13.3 and 3.11.3, Git 2.50.1, Chrome 156.0.8078.80 headless; WSL2 Ubuntu
+24.04, Python 3.12.3, Git 2.43.0; scripted or synthetic providers only, no
+real provider call):
+
+| Check | Platform | Result |
+|---|---|---|
+| `py_compile` of every changed Python file | Windows, 3.11.3 | exit 0 |
+| `test_firstcommit`, `test_ui`, `test_picker`, `test_frontend`, `test_browser_tools`, `test_recovery_checks`, `test_run_tests` | Windows, 3.13.3 and 3.11.3 | 12, 62 (1 skipped), 19 (3 skipped), 6, 5, 2, 19 tests, all OK |
+| `tests/test_firstcommit.py` | WSL2, 3.12.3 | 12 tests, OK |
+| `tools/run_tests.py --collect-only --shard-counts 1,2,4` | Windows, 3.13.3 and 3.11.3 | 911 tests, no module failed to import |
+| `tools/run_tests.py` (the whole suite) | WSL2, 3.12.3 | 911 tests, OK, 23 skipped, exit 0 |
+| The six new protections alone, and the same tests without a mutation | Windows, 3.13.3 | 6 of 6 detected; unchanged copy passes |
+| `tools/recovery_checks.py protections --jobs 8` | WSL2, 3.12.3 | 353 of 353 removed protections detected, exit 0 |
+| `tools/recovery_checks.py real-clock` | WSL2, 3.12.3 | 10/10, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | WSL2, 3.12.3 / Windows, 3.13.3 | 42 passed / 30 passed, 12 skipped (POSIX signals), exit 0 both |
+| `tools/ui_e2e.py`, all 13 scenarios, nothing else running | Windows, 3.13.3 | 403 of 403 checks, exit 0, 152 s |
+| `tools/check_publication.py` | Windows, 3.13.3 | exit 1, the same 6 findings as before (`.claude/`, `debug.log`, four images) |
+| `git diff --check`; CRLF count of every changed or new file | Windows | exit 0; 0 in each |
+
+**Not run, and why.** No commit was made in a real folder of the user's:
+every check used temporary folders with Git settings of their own. Signing
+with a real key and a hook that asks for input were not tried; a command
+that does not end stops after 60 s with "Git did not answer in time". On
+macOS the module was not run; its Git calls are the same as on Linux.
 
 ## The system's folder dialog for Browse (November 7, 2026)
 

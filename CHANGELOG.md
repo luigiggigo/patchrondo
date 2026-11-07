@@ -1019,6 +1019,46 @@ runtime file changed.
   validates it, and falls back to the list without a dialog. Seven new
   mutation protections.
 
+### A first commit from the Add project form — November 7, 2026
+
+- **A folder that is not a Git repository yet can become one on request**
+  (user request of November 7, 2026). Under *That folder is not inside a Git
+  repository*, the repository field offers *Create a Git repository here…*;
+  under *The repository has no commits yet*, *Make the first commit…*.
+  Nothing happens on the press itself: the page first lists the files the
+  commit would hold, with their sizes and total (`firstcommit.plan`, read
+  through a temporary repository outside the folder, so `.gitignore` applies
+  and nothing is written in the folder), and asks to check that no password,
+  key or large file is listed. *Create repository and commit* then runs
+  `git init` and commits exactly those files as `Initial commit`
+  (`firstcommit.make`, `--literal-pathspecs`, the list given on standard
+  input). A folder whose files changed since the review is refused with 409
+  and listed again; nothing is created.
+- The user's Git settings decide the author, the branch name, hooks and
+  signing. When Git does not know the user's name and email (`git var`
+  fails, as on a computer where they were never set), the page asks for them
+  and they are passed with `git -c` for this one commit: no Git
+  configuration file is written, global or local. That check comes before
+  `git init`, so a missing name creates nothing.
+- Refused: a whole drive, the home folder, PatchRondo's own state (the
+  folder, inside or above it), a folder inside Git's data, a folder inside a
+  repository, a folder under a `.git` Git does not open (a broken gitfile, a
+  repository of another owner), more than 10,000 files or 1 GiB. A commit
+  Git refuses (a hook, signing) leaves what was done in place, says so, and
+  offers *Make the first commit…* again; nothing is deleted.
+- Routes `POST /api/projects/first-commit/plan` and
+  `POST /api/projects/first-commit`; `first_commit` (`init`, `commit` or
+  null) in the answer of `/api/projects/inspect`. The hint of the field says
+  PatchRondo commits only this first commit, on request.
+- Tests: `tests/test_firstcommit.py` (12 tests: the plan writes nothing and
+  follows `.gitignore`, literal names, refused folders, a `.git` above that
+  Git does not open, limits, a changed folder, an empty folder, a repository
+  with an index and no commit, a missing identity, a hook that refuses the
+  commit, the routes), each with Git settings of its own; the routes in the
+  token test of `tests/test_ui.py`; the `projects` scenario of
+  `tools/ui_e2e.py` creates a repository from the page, with a changed
+  folder and a missing identity on the way. Six new mutation protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,
