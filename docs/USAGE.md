@@ -622,6 +622,22 @@ cannot be approved. Resuming while tests are still disabled changes nothing
 and calls no agent; after you enable them, Resume runs the tests and then the
 review.
 
+A project without tests can get them from the task's developer. Under the
+commands field of that pause, *Ask Claude to write tests* (or *Ask Codex…*,
+after the task's developer) asks for a confirmation, then calls the developer
+once with the task, its handoff and the files changed so far. It writes test
+files in the task's copy of the project and ends its answer with the commands
+that run them. The page then lists the files that changed in that copy, read
+from the files themselves, shows the developer's notes and puts the proposed
+commands in the field. Nothing runs and nothing is enabled: read the commands,
+tick the trust box and press *Allow tests and resume* as for commands you
+typed. The tests are part of the task's changes, so the reviewer checks them
+with the rest. It is a real call of the agent, with the settings of the
+task's development step and the same environment check first: it uses your
+plan's quota and is never retried on its own. A failure (a usage limit, a
+refused environment) is shown on the card and leaves the task as it was.
+From the command line: `patchrondo run T-a1b2c3d4e5f6 --draft-tests`.
+
 #### Checks with a report
 
 The commands of `tests.commands` are read from their exit code. A check whose

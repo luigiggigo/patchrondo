@@ -1041,6 +1041,25 @@ MUTATIONS = [
     Mutation("a missing Git identity is found only after git init", "firstcommit.py",
              "        who = [] if _identity(path) else _typed_identity(name, email)\n", "        who = []\n",
              ("test_firstcommit.MakeTests",)),
+    # Tests written by the developer on request while a task waits for the test consent (November 7, 2026).
+    Mutation("tests are written by an agent outside the consent pause", "core.py",
+             "        if not (state.get(\"status\") == \"paused\" and state.get(\"phase\") == \"test\" and isinstance(error, dict)\n",
+             "        if False and not (state.get(\"status\") == \"paused\" and state.get(\"phase\") == \"test\" and isinstance(error, dict)\n",
+             ("test_draft_tests.EngineTests",)),
+    Mutation("the developer writes tests before the environment check", "core.py",
+             "            if manager is not None:  # before the agent, as before any provider call\n"
+             "                _environment(manager, home, path, state, cfg, live=live)\n",
+             "", ("test_draft_tests.EngineTests",)),
+    Mutation("a proposed command spanning lines is kept", "core.py",
+             "and not any(char in line for char in \"\\r\\n\\0\")", "and True", ("test_draft_tests.ParseTests",)),
+    Mutation("the notes of a test author are not masked", "core.py",
+             "\"notes\": activity.clip(activity.redact(notes.strip()), DRAFT_NOTES)}",
+             "\"notes\": activity.clip(notes.strip(), DRAFT_NOTES)}", ("test_draft_tests.ParseTests",)),
+    Mutation("the dashboard asks for tests without the user's confirmation", "app.py",
+             "        if draft and payload.get(\"confirm\") is not True:\n", "        if False:\n", ("test_draft_tests.RouteTests",)),
+    Mutation("the dashboard asks for tests outside the consent pause", "app.py",
+             "            if draft and not (status == \"paused\"", "            if False and not (status == \"paused\"",
+             ("test_draft_tests.RouteTests",)),
 ]
 
 

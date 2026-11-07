@@ -289,6 +289,17 @@ in the evidence ledger.
   runtime's (`evidence.EXECUTORS`), and a report counts only when this run
   wrote it where it was told to.
 
+**Tests written by the developer on request.** At the test-consent pause,
+*Ask … to write tests* calls the task's developer once, after a confirmation,
+with the settings of its development step and the same environment check
+first: it writes in the task's copy of the project only, as in a development
+step, so its tests are reviewed with the rest of the changes. The commands it
+proposes are text shown in the commands field, never a check: they run only
+after you allow them with the trust box, as typed commands do. Read them as
+you would read a command from someone else; a test file runs code of the
+project with your rights once you allow it. The call uses your plan's quota
+and is never retried by PatchRondo.
+
 **Where a check runs.** On the host, with your account's rights: a check can
 read and change what you can, use the network, and find credentials in files
 or in the configuration of your tools. Removing secret-named variables from

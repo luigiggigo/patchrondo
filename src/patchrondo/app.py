@@ -1761,14 +1761,26 @@ class App:
         honors only after its own check of every recorded process. A run that
         exits with an error during the first moments is reported, not shown as
         started.
+
+        `draft_tests` starts `patchrondo run --draft-tests` instead: the task's
+        developer writes tests while the task waits for the test consent
+        (`core.draft_tests`). It is a real agent call, so it needs `confirm`
+        true, and it never retries.
         """
         auto_resume, unlock = payload.get("auto_resume"), payload.get("unlock", False)
+        draft = payload.get("draft_tests", False)
         if auto_resume is not None and type(auto_resume) is not bool:
             raise ValueError("auto_resume must be true, false or null")
         if type(unlock) is not bool:
             raise ValueError("unlock must be a JSON boolean (true/false)")
-        if set(payload) - {"auto_resume", "unlock"}:
+        if type(draft) is not bool:
+            raise ValueError("draft_tests must be a JSON boolean (true/false)")
+        if set(payload) - {"auto_resume", "unlock", "draft_tests", "confirm"} or ("confirm" in payload and not draft):
             raise ValueError("Unknown run option")
+        if draft and payload.get("confirm") is not True:
+            raise ValueError("Writing tests calls the task's developer agent and uses your plan's quota: confirm it")
+        if draft and auto_resume is not None:
+            raise ValueError("Writing tests never retries: auto_resume must be left out")
         path = self.task_path(project, task_id)
         key = (project.id, task_id)
         with self.run_slot(key):
@@ -1776,6 +1788,10 @@ class App:
             status = state.get("status")
             if status in {"done", "blocked"}:
                 raise Conflict(f"Task is {status} and cannot be run again")
+            error = state.get("last_error")
+            if draft and not (status == "paused" and state.get("phase") == "test" and isinstance(error, dict)
+                              and error.get("kind") == "tests_disabled"):
+                raise Conflict("Tests can be written this way only while the task waits for the test consent")
             runtime = runinfo.runtime(path, state, self._owned(key))
             if runtime["lock"] is not None:
                 if not unlock:
@@ -1797,12 +1813,13 @@ class App:
             cfg = config(project.home)
             if not Path(str(state.get("worktree"))).is_dir():
                 raise Conflict("The task worktree was not found")
-            flags = (["--unlock"] if unlock else []) + \
+            flags = (["--unlock"] if unlock else []) + (["--draft-tests"] if draft else []) + \
                     ([] if auto_resume is None else ["--auto-resume" if auto_resume else "--no-auto-resume"])
-            auto = recovery.active(effective_config(cfg, state), auto_resume)
+            auto = False if draft else recovery.active(effective_config(cfg, state), auto_resume)
             fd = os.open(path / RUN_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "ab") as log:
-                log.write(f"\n=== {now()} · run started from the dashboard ===\n".encode())
+                what = "tests asked of the developer" if draft else "run started"
+                log.write(f"\n=== {now()} · {what} from the dashboard ===\n".encode())
                 log.flush()
                 extra = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
                          else {"start_new_session": True})

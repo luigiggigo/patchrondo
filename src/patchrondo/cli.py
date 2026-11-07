@@ -10,7 +10,8 @@ import sqlite3
 import sys
 
 from . import __version__, acceptance, agents, bundle, doctor, evidence, rag, recovery, runinfo
-from .core import attach_evidence, config, create_task, decide_authorization, initialize, recheck_acceptance, task_config, task_dir
+from .core import (attach_evidence, config, create_task, decide_authorization, draft_tests, initialize, recheck_acceptance,
+                   task_config, task_dir)
 from .storage import read_json
 from .workspace import REGISTRY, Project, Workspace
 
@@ -53,6 +54,10 @@ def parser() -> argparse.ArgumentParser:
                              help="After a provider usage limit, keep this process waiting and retry at the reset "
                                   "or after a backoff, within the configured caps. --no-auto-resume runs once and "
                                   "cancels a pending retry plan. Default: recovery.enabled in config.json")
+            cmd.add_argument("--draft-tests", action="store_true",
+                             help="Instead of resuming: while the task waits for the test consent, ask its developer to "
+                                  "write tests for the work done and propose commands (a real agent call). Nothing runs "
+                                  "and tests stay disabled")
     shown = sub.add_parser("criteria", help="Show the acceptance criteria of a task: who verifies each one, and with what evidence")
     shown.add_argument("task_id", help="Task ID such as T-0123456789ab")
     shown.add_argument("--check", action="store_true",
@@ -223,6 +228,20 @@ def main(argv: list[str] | None = None) -> int:
                 # The global agent settings live beside the project registry. A run started by the interface
                 # is given a project's own state directory as its home and is told where they are.
                 shared = root if (root / REGISTRY).exists() or (root / agents.STORE).exists() else None
+                if opts.draft_tests:
+                    if opts.auto_resume is not None:
+                        raise ValueError("--draft-tests takes no --auto-resume option: it never retries")
+                    with runinfo.attached(task_dir(home, opts.task_id), False):
+                        state = draft_tests(home, opts.task_id, force_unlock=opts.unlock, agents_root=shared)
+                    draft = state["test_draft"]
+                    if draft["status"] == "completed":
+                        print(f"{state['id']} · tests written: {len(draft['files'])} file(s) changed, "
+                              f"{len(draft['commands'])} command(s) proposed. Tests stay disabled until you allow them.")
+                        for line in draft["commands"]:
+                            print(f"  {line}")
+                        return 0
+                    print(f"{state['id']} · the developer did not write tests: {draft['message']}")
+                    return 2
                 with runinfo.attached(task_dir(home, opts.task_id), auto):
                     state = recovery.supervise(home, opts.task_id, force_unlock=opts.unlock,
                                                auto_resume=opts.auto_resume,

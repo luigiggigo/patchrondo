@@ -238,12 +238,54 @@ function agentFacts(task, detail) {
 }
 
 // Tests run code of the project on this computer: they start only after an explicit decision.
+// What the developer wrote when asked for tests: the files the worktree shows changed, the commands it proposes.
+function draftNote(task, draft, developer, iteration) {
+  if (!draft || draft.iteration !== iteration) return null;
+  if (draft.status === "completed") {
+    return h("div", { class: "test-draft stack" },
+      h("div", { class: "row wrap" }, badge("Written by the developer", "accent", { iconName: "flask" }),
+        h("span", { class: "muted" }, `${agentName(draft.agent || developer)} · ${ago(draft.finished_at)}`)),
+      draft.files?.length
+        ? h("div", {}, h("div", { class: "muted" }, `It changed ${plural(draft.files.length + (draft.more_files || 0), "file")} in the task's copy:`),
+          h("ul", { class: "plain-list mono" }, draft.files.map((name) => h("li", { class: "break" }, name)),
+            draft.more_files ? h("li", { class: "faint" }, `and ${plural(draft.more_files, "more file")}`) : null))
+        : h("div", { class: "muted" }, "No file of the task's copy changed."),
+      draft.notes ? h("div", { class: "test-draft-notes" }, draft.notes) : null,
+      h("div", { class: "faint" }, draft.commands?.length
+        ? "The commands in the field above are its proposal: read them before you allow them. The reviewer checks the tests with the rest of the changes."
+        : "It proposed no command you can use: write them in the field above."),
+      h("a", { class: "link", href: href("tasks", task.project, task.id, "files") }, "See the files changed"));
+  }
+  const ended = draft.status === "failed" || task.runtime.activity !== "running";
+  return ended ? h("div", { class: "field-error" }, icon("alert", "sm"),
+    h("span", {}, `The developer did not write tests: ${draft.status === "failed" ? draft.message : "the attempt ended without an answer"}. You can ask again.`)) : null;
+}
+
 function consentCard(task, detail) {
   const project = state.projects.get(task.project);
   const known = detail.effective?.test_commands || [];
-  const commands = h("textarea", { class: "input mono", rows: Math.max(2, known.length), spellcheck: "false", "aria-label": "Test commands",
+  const draft = detail.state.test_draft;
+  const developer = agentName(detail.state.developer);
+  const proposed = !known.length && draft?.status === "completed" && draft.iteration === detail.state.iteration ? draft.commands || [] : [];
+  const commands = h("textarea", { class: "input mono", rows: Math.max(2, known.length, proposed.length), spellcheck: "false", "aria-label": "Test commands",
     placeholder: "python -m unittest\nnpm test" });
-  commands.value = known.join("\n");
+  commands.value = (known.length ? known : proposed).join("\n");
+  // A real call of the task's developer: confirmed first, then started like a run, so the page follows it the same way.
+  const write = button(`Ask ${developer} to write tests`, { iconName: "flask", onClick: async () => {
+    const ok = await confirm({ title: `Ask ${developer} to write tests?`, confirmLabel: "Write tests", iconName: "flask",
+      body: [h("p", {}, `${developer}, the developer of this task, reads the task, its handoff and the files changed, then writes tests for that work in the task's copy of the project and proposes the commands that run them.`),
+        h("ul", { class: "plain-list" },
+          h("li", {}, "It is a real call of the agent, with this task's settings: it uses your plan's quota."),
+          h("li", {}, "Your repository is not touched. The tests become part of the changes the reviewer checks."),
+          h("li", {}, "Nothing runs: tests stay disabled until you allow the commands here."))] });
+    if (!ok) return;
+    busy(write, async () => {
+      try {
+        await api.post(`/api/projects/${task.project}/tasks/${task.id}/run`, { draft_tests: true, confirm: true });
+        toast(`${developer} is writing tests. This page follows its work.`);
+      } catch (failure) { toastError(failure); }
+    });
+  } });
   const trust = h("input", { type: "checkbox", id: `trust-${task.id}` });
   const error = h("div", { class: "form-error", role: "alert" });
   const go = button("Allow tests and resume", { variant: "primary", iconName: "flask", onClick: () => busy(go, async () => {
@@ -264,6 +306,9 @@ function consentCard(task, detail) {
       h("p", {}, "A task is done only when the project's tests pass and the review approves. Tests are commands of the project that run on this computer with your permissions, so PatchRondo never starts them by itself."),
       h("div", { class: "field" }, h("label", { class: "field-label", for: commands.id = `commands-${task.id}` }, known.length ? "These commands will run after each development step" : "Commands to run after each development step"),
         commands, h("div", { class: "field-hint" }, "One per line, run in the task's copy of the project. You can change them later in Settings → Tests.")),
+      draftNote(task, draft, detail.state.developer, detail.state.iteration),
+      h("div", { class: "row wrap" }, write,
+        h("span", { class: "faint" }, "No tests yet? The developer can write them for the work done.")),
       h("label", { class: "row consent-check", for: trust.id }, trust,
         h("span", {}, "I trust ", h("strong", {}, project?.name || "this project"), " and allow these commands to run on this computer.")),
       h("div", { class: "form-foot" }, error,
@@ -337,7 +382,7 @@ function overviewPanel() {
     // The consent form keeps what was typed in it: it is rebuilt only when the task or its commands change.
     let form = null;
     if (consent) {
-      const wanted = JSON.stringify([task.id, detail.effective?.test_commands]);
+      const wanted = JSON.stringify([task.id, detail.effective?.test_commands, data.test_draft?.status, data.test_draft?.finished_at]);
       form = el.querySelector(".consent");
       if (form?.dataset.for !== wanted) {
         form = consentCard(task, detail);

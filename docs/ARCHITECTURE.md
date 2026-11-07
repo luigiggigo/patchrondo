@@ -268,8 +268,20 @@ repeat with the same identifier returns the first result.
 Each Run/Resume launches a separate `python -m patchrondo --home <project
 state directory> run <task>` process with absolute import paths, so source-only
 checkouts work after changing the child's working directory. The flags
-`--auto-resume`, `--no-auto-resume` and `--unlock` are the only options the
-interface can add. Existing task locks and phase checkpoints remain
+`--auto-resume`, `--no-auto-resume`, `--unlock` and `--draft-tests` are the
+only options the interface can add. `--draft-tests` (payload `draft_tests`
+with `confirm: true`, only while the task is paused for `tests_disabled`)
+runs `core.draft_tests` instead of the loop: under the task lock, the
+environment check, then one call of the developer with the settings frozen
+for its step of the iteration and a test-author prompt. The answer is kept
+under `test_draft` in `state.json`: the commands it proposes (the last JSON
+object of the answer, lines `split_command` reads, at most ten), the files
+the worktree shows changed by content hash (never the files the answer
+names), notes masked and bounded, or the failure. Events
+`test_draft_started`, `test_draft_completed` and `test_draft_failed` carry
+counts and fixed words only. The task keeps its pause and `last_error`; no
+check runs, nothing is enabled, no retry plan is made, and evidence bound to
+the files as they were is invalidated by `_sync` as after any change. Existing task locks and phase checkpoints remain
 authoritative. Before starting, `app.start_run` refuses a task that is done or
 blocked, locked, already being started, or (for an automatic run) already
 attended by a waiting process. It registers the process immediately and

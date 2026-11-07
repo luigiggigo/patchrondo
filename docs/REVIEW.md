@@ -28,8 +28,8 @@ refused stop said by agent steps and the earlier test stage, and
 publication-status update: October 18, 2026. Verification Center and evidence bundles:
 November 5, 2026. Bundle structure and untrusted ledger records, the browser
 check waiting for the run to end, the system's folder dialog for Browse, a
-first commit from the Add project form, and publication-status update:
-November 7, 2026.
+first commit from the Add project form, tests written by the developer at
+the test consent, and publication-status update: November 7, 2026.
 The initial scope covered the Python sources, tests, examples, documentation
 and metadata supplied before source publication. No `AGENTS.md` or existing Git
 repository was present in those original directories. A local, ignored
@@ -291,6 +291,57 @@ anchors resolved; the changelog has one 0.2.0 entry matching package metadata
 and no pending-release section. The documentation checks and `git diff
 --check` exited with status 0. Runtime, tests and tools were unchanged; the
 validation scope for this refresh was documentation only.
+
+## Tests written by the developer at the test consent (November 7, 2026)
+
+This section covers a working tree on top of `92e5103` (the first commit
+from the Add project form): `core.draft_tests` and its helpers,
+`core._callers` (the environment manager, `live` and the adapter of a run,
+taken out of `run_task` so that one place holds what the existing
+protections check for both), `--draft-tests` in `cli.py`, `draft_tests` and
+`confirm` in `App.start_run`, the consent card in
+`static/js/views/task.js`, three event sentences in `static/js/tasks.js`,
+two rules of `views.css`; `tests/test_draft_tests.py` (10 tests); the
+`start` scenario and the synthetic CLI of `tools/ui_e2e.py`; six mutation
+protections; USAGE, ARCHITECTURE, SECURITY and the changelog. The user chose
+the developer writing tests and commands, and the task's developer as the
+agent.
+
+**Decisions.** It is not a step of the loop, so the loop's events and
+decisions do not change (`DECIDED` and the coherence scenario hold). It runs
+as a run does (process, lock, environment check, frozen step settings), so
+the page follows it and the reviewer later checks the tests with the code.
+The files it changed are read from the worktree by content hash, not taken
+from its answer. Its commands only fill the field: the browser check found
+that a proposed `python -m unittest` leaves `__pycache__` in the copy, which
+the runner rightly refuses, so the prompt asks for commands that leave no
+file Git does not ignore.
+
+**Checks run** (November 7–8, 2026; native Windows 11 Pro 10.0.26300, Python
+3.13.3 and 3.11.3, Chrome 156.0.8078.80 headless; WSL2 Ubuntu 24.04, Python
+3.12.3; scripted or synthetic providers only, no real provider call):
+
+| Check | Platform | Result |
+|---|---|---|
+| `py_compile` of every changed Python file | Windows, 3.11.3 | exit 0 |
+| `test_draft_tests`, `test_environment`, `test_history`, `test_recovery_checks` after `_callers` | Windows, 3.13.3 and 3.11.3 | 10, 42, 16, 2 tests, all OK |
+| `test_firstcommit`, `test_ui`, `test_frontend`, `test_browser_tools`, `test_findings`, `test_acceptance`, `test_cli` | Windows, 3.13.3 and 3.11.3 | 12, 62 (1 skipped), 6, 5, 28, 69, 2 tests, all OK (before `_callers`) |
+| `tests/test_coherence.py` with `PATCHRONDO_ALL_CHECKPOINTS=1` | Windows, 3.13.3 | 9 tests, OK, 141 s |
+| `tools/run_tests.py --collect-only --shard-counts 1,2,4` | Windows, 3.13.3 | 921 tests, no module failed to import |
+| `tools/run_tests.py` (the whole suite) | WSL2, 3.12.3 | 921 tests, OK, 23 skipped, exit 0 |
+| The six new protections alone, and the same tests without a mutation | Windows, 3.13.3 | 6 of 6 detected; unchanged copy passes |
+| `tools/recovery_checks.py protections --jobs 8` | WSL2, 3.12.3 | 359 of 359 removed protections detected, exit 0 |
+| `tools/recovery_checks.py real-clock` | WSL2, 3.12.3 | 10/10, exit 0 |
+| `tools/reliability_e2e.py --repeat 3` | WSL2, 3.12.3 / Windows, 3.13.3 | 42 passed / 30 passed, 12 skipped (POSIX signals), exit 0 both |
+| `tools/ui_e2e.py`, all 13 scenarios, nothing else running | Windows, 3.13.3 | 408 of 408 checks, exit 0, 153 s |
+| `tools/check_publication.py` | Windows, 3.13.3 | exit 1, the same 6 findings as before |
+| `git diff --check`; CRLF in changed or new files | Windows | exit 0; none |
+
+**Not run, and why.** No real Claude Code or Codex was asked to write tests:
+that uses quota and needs the user's authorization. Whether real CLIs end
+their answer with the JSON object the prompt asks for is therefore not
+confirmed; an answer without it keeps the files written and proposes no
+command.
 
 ## A first commit from the Add project form (November 7, 2026)
 

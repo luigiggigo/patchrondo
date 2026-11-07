@@ -292,6 +292,8 @@ details.advanced .card-body { border-top: 1px solid var(--border); }
 .check-row { display: flex; align-items: flex-start; gap: var(--space-3); font-size: var(--text-sm); }
 .check-row .badge { flex: none; min-width: 72px; justify-content: center; }
 .consent-check { align-items: flex-start; gap: var(--space-2); cursor: pointer; }
+.test-draft { padding: var(--space-3); border-radius: var(--radius-md); background: var(--bg-sunken); border: 1px solid var(--border); font-size: var(--text-sm); }
+.test-draft-notes { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow-y: auto; }
 .consent-check input { margin-top: 3px; flex: none; }
 @media (max-width: 720px) {
   .composer-foot .btn.lg { width: 100%; justify-content: center; }

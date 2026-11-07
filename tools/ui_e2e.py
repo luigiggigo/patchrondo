@@ -119,6 +119,13 @@ if reviewer:
                "issues": control.get("issues") or [], "criteria": [{"id": name, "outcome": chosen.get(name, "SATISFIED"), "note": ""}
                                           for name in dict.fromkeys(re.findall(r'"id": "(AC-\d{2,4})"', prompt))]}
     text = json.dumps(payload)
+elif "ROLE: TEST AUTHOR" in prompt:
+    # Asked for tests: one test file, and a proposal that ends the answer as the prompt asks.
+    pathlib.Path("test_feature.py").write_text("import unittest\nfrom pathlib import Path\n\n\nclass Feature(unittest.TestCase):\n"
+                                               "    def test_good(self):\n        self.assertEqual(Path('feature.txt').read_text(), 'good')\n",
+                                               encoding="utf-8")
+    text = "## Tests\n\nAdded `test_feature.py`.\n\n" + json.dumps({"commands": [control.get("test_command", "python -B -m unittest")],
+                                                                    "notes": "Checks that feature.txt holds good."})
 else:
     target = str(pathlib.Path.cwd() / "feature.txt")
     if provider == "claude":
@@ -1354,20 +1361,42 @@ def scenario_start(env: Env) -> None:
     env.expect("the page asks for the test consent in plain words", "Boolean(q('.consent')) && q('.consent').innerText.includes('Allow this project') && q('.consent').innerText.includes('never starts them by itself')", 8)
     env.expect("Rondo says why it waits", "q('.rondo-note').innerText.includes('never run them without your say-so')")
     env.shot("task-consent")
-    page.fill(".consent textarea", join_command([sys.executable, "-c", TEST_CODE]))
+    # No tests yet: the developer is asked to write them, after a confirmation, and nothing is enabled by it.
+    proposed = join_command([sys.executable, "-B", "-m", "unittest"])
+    env.control(test_command=proposed)
+    page.click(text="Ask Claude to write tests")
+    env.expect("asking for tests says it is a real call before anything starts",
+               "Boolean(q('.dialog')) && q('.dialog').innerText.includes('uses your plan') && q('.dialog').innerText.includes('Nothing runs')", 5)
+    env.check("nothing was called before the confirmation", [c["role"] for c in env.calls()[before:]] == ["developer"])
+    page.click(text="Write tests", selector=".dialog button")
+    drafted = env.wait_state(path, lambda s: (s.get("test_draft") or {}).get("status") in {"completed", "failed"}, 60)
+    env.check("the developer wrote tests while the task kept waiting for the consent",
+              drafted["test_draft"]["status"] == "completed" and drafted["test_draft"]["files"] == ["test_feature.py"]
+              and drafted["status"] == "paused" and drafted["last_error"]["kind"] == "tests_disabled", str(drafted.get("test_draft")))
+    env.check("writing tests enabled nothing", config(home)["tests"] == {"enabled": False, "trust_acknowledged": False, "commands": []})
+    env.expect("the consent card shows what was written and puts the proposed command in the field",
+               f"Boolean(q('.consent .test-draft')) && q('.consent .test-draft').innerText.includes('test_feature.py') && q('.consent textarea').value === {json.dumps(proposed)}", 15)
+    env.shot("task-consent-drafted")
+    page.fill(".consent textarea", join_command([sys.executable, "-c", TEST_CODE]) + "\n" + proposed)
     page.click(text="Allow tests and resume")
     env.expect("the consent is refused without the explicit tick", "q('.consent .form-error').innerText.includes('Tick the box')")
     env.check("and nothing was enabled by that press", config(home)["tests"]["enabled"] is False)
     page.click(".consent input[type=checkbox]")
     page.click(text="Allow tests and resume")
     done = env.wait_state(path, lambda s: s["status"] == "done", 60)
-    env.check("the explicit consent saved the typed command, enabled and trusted",
-              config(home)["tests"] == {"enabled": True, "trust_acknowledged": True, "commands": [[sys.executable, "-c", TEST_CODE]]}, str(config(home)["tests"]))
-    env.check("the resumed run ran the tests and finished", [test["status"] for test in done["tests"]] == ["passed"], str(done["tests"]))
-    env.check("the reviewer was called once, and only after the consent", [c["role"] for c in env.calls()[before:]] == ["developer", "reviewer"],
-              str(env.calls()[before:]))
+    env.check("the explicit consent saved the typed commands, enabled and trusted",
+              config(home)["tests"] == {"enabled": True, "trust_acknowledged": True,
+                                        "commands": [[sys.executable, "-c", TEST_CODE], [sys.executable, "-B", "-m", "unittest"]]}, str(config(home)["tests"]))
+    env.check("the resumed run ran the tests, the written ones included, and finished", [test["status"] for test in done["tests"]] == ["passed", "passed"],
+              str(done["tests"]))
+    env.check("the developer was called again only to write tests, and the reviewer once after the consent",
+              [c["role"] for c in env.calls()[before:]] == ["developer", "developer", "reviewer"], str(env.calls()[before:]))
     env.expect("the page shows Done without a reload", "q('.task-head').innerText.includes('Done') && qa('.workflow-step').every((step) => step.classList.contains('done'))", 10)
     env.shot("task-started-done")
+    # The written tests belong to that task's copy: the next tasks of this project run the first command only
+    # (`unittest` with no test to find fails on Python 3.12 and later).
+    env.api("PATCH", f"/api/projects/{project['id']}/config",
+            {"tests": {"enabled": True, "trust_acknowledged": True, "commands": [join_command([sys.executable, "-c", TEST_CODE])]}})
 
     # A problem found while preparing: one sentence, one button, and the details only on request.
     lists = ScriptedLists()

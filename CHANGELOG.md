@@ -1059,6 +1059,45 @@ runtime file changed.
   `tools/ui_e2e.py` creates a repository from the page, with a changed
   folder and a missing identity on the way. Six new mutation protections.
 
+### Tests written by the developer at the test consent — November 7, 2026
+
+- **The test-consent card can ask the task's developer to write the tests**
+  (user request of November 7, 2026). Under the commands field, *Ask Claude
+  to write tests* (or *Ask Codex…*, after the task's developer) opens a
+  confirmation that says it is a real call using the plan's quota, then
+  starts `patchrondo run --draft-tests` like a Run: its own process, the
+  task lock, `ui-run.log`, the page following it.
+- `core.draft_tests`, outside the loop, only while the task is paused for
+  `tests_disabled`: the environment check, then one call of the developer
+  with the settings frozen for its step of the iteration and a test-author
+  prompt (the task, the handoff, the files changed; test files only, the
+  project's own framework, commands that leave no file Git does not ignore,
+  a JSON object at the end with the commands). `test_draft` in the state
+  keeps the proposed commands (`parse_draft`: the last JSON object, one-line
+  commands `split_command` reads, at most ten, the rest counted), the files
+  the worktree shows changed by content hash, notes masked and bounded, or
+  the failure with its kind. The task keeps its pause and `last_error`;
+  nothing is enabled or run, no retry plan is made, and `_sync` invalidates
+  evidence bound to the files as they were. Events `test_draft_started`,
+  `test_draft_completed`, `test_draft_failed` (counts and fixed words only).
+  The loop and its events are unchanged.
+- The card shows what was written (files, notes, a link to *Files changed*)
+  and puts the proposed commands in the field when none is configured; the
+  user still ticks the trust box and presses *Allow tests and resume*. A
+  failure is shown there, and the button stays available.
+- `--draft-tests` on `patchrondo run`/`resume`; `draft_tests` and `confirm`
+  in the run route, refused without `confirm: true`, with `auto_resume`, or
+  outside that pause (409).
+- Tests: `tests/test_draft_tests.py` (10 tests: the draft and the pause it
+  keeps, then a completed task running the written tests; files read from
+  the worktree; refusals outside the pause, from the engine and the command
+  line, with provider commands routed to a function that fails; a usage limit
+  and an interruption recorded and nothing else changed; the environment
+  check first; an answer without a proposal; parsing; the route). The `start`
+  scenario of `tools/ui_e2e.py` asks for tests from the page, checks the
+  confirmation, the files, the field filled with the proposal, and completes
+  the task with the written tests. Six new mutation protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

@@ -193,6 +193,11 @@ export function describeEvent(event, task) {
     case "agent_settings_refreshed":
       return { text: `The ${event.role || "next"} step will start with the current agent settings`, tone: "neutral", icon: "user", detail: "Asked for by you; the step no longer keeps the settings it first started with" };
     case "development_completed": return { text: `${agentName(event.agent) || dev} finished development · handoff saved`, tone: "ok", icon: "code" };
+    case "test_draft_started": return { text: `${dev} started writing tests, as you asked`, tone: "accent", icon: "flask", detail: configured(event) || null };
+    case "test_draft_completed":
+      return { text: `${dev} wrote tests · ${plural(event.files ?? 0, "file")} changed, ${plural(event.commands ?? 0, "command")} proposed`, tone: "ok", icon: "flask",
+        detail: "Proposed, not run: tests stay disabled until you allow them" };
+    case "test_draft_failed": return { text: `${dev} did not write tests`, tone: "warn", icon: "flask", detail: humanize(event.kind || "") || null };
     case "tests_started": return { text: `Tests started (${plural(event.commands ?? 0, "command")})`, tone: "accent", icon: "flask" };
     case "tests_completed":
       if (statuses.includes("timeout")) return { text: "Tests timed out", tone: "warn", icon: "flask" };
