@@ -116,7 +116,10 @@ class TaskLock:
         if self.force and self.path.exists():
             # If the Python runner was SIGKILLed, an agent subprocess may
             # still be editing the worktree. Fail closed until it exits.
-            for entry in (self.path.parent / "runs").glob("iteration-*/*.active-process.json"):
+            runs = self.path.parent / "runs"
+            # A request for tests runs its agent from a folder of its own inside the iteration's.
+            for entry in [*runs.glob("iteration-*/*.active-process.json"),
+                          *runs.glob("iteration-*/test-draft-*/*.active-process.json")]:
                 try:
                     child_pid = int(read_json(entry)["pid"])
                 except (ValueError, KeyError, OSError, json.JSONDecodeError):

@@ -1060,6 +1060,23 @@ MUTATIONS = [
     Mutation("the dashboard asks for tests outside the consent pause", "app.py",
              "            if draft and not (status == \"paused\"", "            if False and not (status == \"paused\"",
              ("test_draft_tests.RouteTests",)),
+    # Each request for tests keeps its own transcripts (November 8, 2026).
+    Mutation("a request for tests writes over the development step's transcripts", "core.py",
+             "            run_dir = _draft_folder(path, state[\"iteration\"])\n",
+             "            run_dir = private_dir(path / \"runs\" / f\"iteration-{state['iteration']:03d}\")\n",
+             ("test_draft_tests.TranscriptTests",)),
+    Mutation("a request for tests writes into an earlier request's folder", "core.py",
+             "f\"test-draft-{max(used, default=0) + 1:02d}\"", "f\"test-draft-{1:02d}\"",
+             ("test_draft_tests.TranscriptTests",)),
+    Mutation("a request for tests looks like a development step in the journal", "core.py",
+             "workspace, run_dir, settings, step=DRAFT_STEP)", "workspace, run_dir, settings)",
+             ("test_draft_tests.TranscriptTests",)),
+    Mutation("forced unlock ignores the process of a request for tests", "storage.py",
+             "                          *runs.glob(\"iteration-*/test-draft-*/*.active-process.json\")]:", "                          ]:",
+             ("test_workflow.WorkflowTests",)),
+    Mutation("the transcripts of a request for tests are not listed", "app.py",
+             "                    drafts.append(file)  # a request for tests", "                    pass  # a request for tests",
+             ("test_ui.TaskTests",)),
 ]
 
 

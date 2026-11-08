@@ -585,6 +585,30 @@ class TaskTests(ServerCase):
                 self.assertEqual(self.get(f"{self.url}/{task_id}/log?file={name}")[0].status, 404)
         self.assertEqual(self.get(f"{self.url}/{task_id}/log?file=run&offset=abc")[0].status, 400)
 
+    def test_the_transcripts_of_a_request_for_tests_are_listed_apart_from_the_development_step(self):
+        task_id, path = self.add_task(self.project)
+        run_dir = path / "runs" / "iteration-001"
+        (run_dir / "test-draft-02").mkdir(parents=True)
+        (run_dir / "test-draft-01").mkdir()
+        (run_dir / "other").mkdir()  # not a request for tests: not listed
+        (run_dir / "developer.reply.md").write_text("development", encoding="utf-8")
+        (run_dir / "test-draft-01" / "developer.reply.md").write_text("first request", encoding="utf-8")
+        (run_dir / "test-draft-01" / "developer.active-process.json").write_text("{}", encoding="utf-8")
+        (run_dir / "test-draft-02" / "test-draft.md").write_text("second request", encoding="utf-8")
+        (run_dir / "other" / "x.log").write_text("x", encoding="utf-8")
+        logs = self.get(f"{self.url}/{task_id}")[1]["logs"]
+        self.assertEqual([(entry["id"], entry["label"], entry["group"]) for entry in logs], [
+            ("iteration-001/developer.reply.md", "developer.reply.md", "Iteration 1"),
+            ("iteration-001/test-draft-01/developer.reply.md", "developer.reply.md", "Iteration 1 · tests written on request 1"),
+            ("iteration-001/test-draft-02/test-draft.md", "test-draft.md", "Iteration 1 · tests written on request 2")])
+        read = lambda name: self.get(f"{self.url}/{task_id}/log?file={name}")
+        self.assertEqual(read("iteration-001/developer.reply.md")[1]["text"], "development")
+        self.assertEqual(read("iteration-001/test-draft-01/developer.reply.md")[1]["text"], "first request")
+        for name in ("iteration-001/other/x.log", "iteration-001/test-draft-01/developer.active-process.json",
+                     "iteration-001/test-draft-01/../developer.reply.md", "iteration-001/test-draft-01"):
+            with self.subTest(file=name):
+                self.assertEqual(read(name)[0].status, 404)
+
     def test_changed_files_show_new_and_modified_files_without_leaving_the_worktree(self):
         task_id, path = self.add_task(self.project)
         worktree = Path(read_json(path / "state.json")["worktree"])

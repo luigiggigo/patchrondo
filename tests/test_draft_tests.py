@@ -1,21 +1,25 @@
 """Tests written by the developer on the user's request, while a task waits for the test consent.
 
-Providers are scripted: no CLI is started. The dashboard's start is replaced by a child that only leaves a mark.
+Providers are scripted: no provider CLI is started. `TranscriptTests` reaches the scripted CLI of `support`
+through `patchrondo.providers.execute`; the dashboard's start is replaced by a child that only leaves a mark.
 """
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 from pathlib import Path
 import sys
+import tempfile
+import unittest
 from unittest.mock import patch
+import zipfile
 
-from patchrondo import core
+from patchrondo import activity, bundle, core
 from patchrondo.cli import main
-from patchrondo.core import DraftRefused, draft_tests, parse_draft, run_task
+from patchrondo.core import DraftRefused, create_task, draft_tests, initialize, parse_draft, run_task
 from patchrondo.providers import AgentFailure, AgentReply
-from patchrondo.storage import read_json
+from patchrondo.storage import read_json, save_json
 
-from support import ServerCase
+from support import ScriptedCLI, ServerCase, make_repo
 from test_acceptance import GOOD, Agents, Case
 
 ANSWER = ("## Tests\n\nAdded `test_feature.py`.\n\n"
@@ -76,7 +80,9 @@ class EngineTests(Case):
         completed = next(entry for entry in state["history"] if entry["event"] == "test_draft_completed")
         self.assertEqual({key: completed[key] for key in ("commands", "files")}, {"commands": 1, "files": 1})
         self.assertNotIn("feature.txt", json.dumps(completed))  # counts only: no agent text, no file names
-        self.assertIn("python -m unittest -v", (path / "runs" / "iteration-001" / "test-draft.md").read_text(encoding="utf-8"))
+        self.assertEqual(draft["transcripts"], "iteration-001/test-draft-01")
+        self.assertIn("python -m unittest -v", (path / "runs" / "iteration-001" / "test-draft-01" / "test-draft.md").read_text(encoding="utf-8"))
+        self.assertFalse((path / "runs" / "iteration-001" / "test-draft.md").exists())
         self.assertFalse((path / ".run.lock").exists())
         # A Resume without the consent still does nothing, and keeps the draft.
         self.assertEqual(run_task(self.home, task_id, adapter=Agents()), state)
@@ -151,6 +157,117 @@ class EngineTests(Case):
         draft = state["test_draft"]
         self.assertEqual((draft["status"], draft["commands"], draft["files"], draft["answer_readable"]),
                          ("completed", [], ["test_feature.py"], False))
+
+
+DRAFT_REPLY = ('## Tests\n\nNo new file was needed.\n\n'
+               '{"commands": ["python -B -m unittest -v"], "files": [], "notes": "Written by the test author."}')
+
+
+class TranscriptTests(unittest.TestCase):
+    """The adapter writes real transcripts here: its CLI is the scripted one, started as a process."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name).resolve()
+        self.repo, self.home = root / "repo", root / "state"
+        make_repo(self.repo)
+        initialize(self.home, self.repo)
+        cfg = read_json(self.home / "config.json")
+        cfg["tests"]["commands"] = [[sys.executable, "-c", "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"]]
+        cfg["workflow"].update(max_iterations=1, agent_timeout_seconds=60)
+        cfg["rag"]["enabled"] = False
+        save_json(self.home / "config.json", cfg)
+        self.cli = ScriptedCLI(root / "fixture")
+        guard = patch("patchrondo.providers.execute", side_effect=self.cli.execute)
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def journal(self, path):
+        return [json.loads(line) for line in (path / activity.JOURNAL).read_text(encoding="utf-8").splitlines()[1:]]
+
+    @staticmethod
+    def files(folder):
+        return {file.name: file.read_bytes() for file in folder.iterdir() if file.is_file()}
+
+    def test_the_transcripts_of_the_development_step_stay_and_each_request_keeps_its_own(self):
+        task_id, _ = create_task(self.home, title="Feature", description="Create feature.txt", acceptance=["Tests pass"],
+                                 developer="claude", reviewer="codex")
+        path = self.home / "tasks" / task_id
+        self.cli.script(developer={"says": ["Writing the feature"]})
+        paused = run_task(self.home, task_id)
+        self.assertEqual((paused["status"], paused["last_error"]["kind"]), ("paused", "tests_disabled"), paused.get("last_error"))
+        iteration = path / "runs" / "iteration-001"
+        developed = self.files(iteration)
+        for name in ("developer.prompt.md", "developer.reply.md", "developer.stdout.log", "developer.stderr.log"):
+            self.assertIn(name, developed)
+        self.assertIn(b"Created `feature.txt`", developed["developer.reply.md"])
+
+        self.cli.script(developer={"says": ["Writing the tests"], "reply": DRAFT_REPLY})
+        first = draft_tests(self.home, task_id)
+        self.assertEqual(first["test_draft"]["status"], "completed", first["test_draft"])
+        self.assertEqual(first["test_draft"]["commands"], ["python -B -m unittest -v"])
+        self.assertEqual(first["test_draft"]["transcripts"], "iteration-001/test-draft-01")
+        # The development step's transcripts are byte for byte what they were, and nothing was added beside them.
+        self.assertEqual(self.files(iteration), developed)
+        drafted = self.files(iteration / "test-draft-01")
+        self.assertIn(b"ROLE: TEST AUTHOR", drafted["developer.prompt.md"])
+        self.assertIn(b"Written by the test author.", drafted["developer.reply.md"])
+        self.assertIn(b"Writing the tests", drafted["developer.stdout.log"])
+        self.assertIn("developer.stderr.log", drafted)
+        self.assertIn(b"python -B -m unittest -v", drafted["test-draft.md"])
+        self.assertNotIn("developer.active-process.json", drafted)  # removed when the CLI ended
+
+        # A second request in the same iteration writes into a new folder: the first one stays too.
+        self.cli.script(developer={"says": ["Writing more tests"], "reply": DRAFT_REPLY.replace("author.", "author again.")})
+        second = draft_tests(self.home, task_id)
+        self.assertEqual(second["test_draft"]["transcripts"], "iteration-001/test-draft-02")
+        self.assertEqual((self.files(iteration), self.files(iteration / "test-draft-01")), (developed, drafted))
+        self.assertIn(b"author again.", (iteration / "test-draft-02" / "developer.reply.md").read_bytes())
+
+        # The journal tells the calls apart: the same role, the development step without `step`.
+        attempts = {}
+        for event in self.journal(path):
+            attempts.setdefault(event["attempt"], []).append(event)
+        agents = [events for events in attempts.values() if events[0]["role"] == "developer"]
+        self.assertEqual(len(agents), 3)
+        self.assertEqual([{event.get("step") for event in events} for events in agents],
+                         [{None}, {core.DRAFT_STEP}, {core.DRAFT_STEP}])
+        self.assertTrue(all(event["type"] != "completion" or event["outcome"] == "completed" for events in agents for event in events))
+        self.assertIn("Writing the tests", [event.get("text") for event in agents[1]])
+
+        # Allowed and finished: a detailed bundle holds only the logs its records name, from the folders they name.
+        cfg = read_json(self.home / "config.json")
+        cfg["tests"].update(enabled=True, trust_acknowledged=True)
+        save_json(self.home / "config.json", cfg)
+        done = run_task(self.home, task_id)
+        self.assertEqual(done["status"], "done", done.get("last_error"))
+        self.assertEqual((self.files(iteration / "test-draft-01"), developed["developer.reply.md"]),
+                         (drafted, (iteration / "developer.reply.md").read_bytes()))
+        made = bundle.build(path, "detailed")
+        self.assertEqual(bundle.verify(made.data)["status"], "INTACT")
+        logs = {entry["path"]: entry for entry in made.manifest["files"] if entry["role"] == "log"}
+        self.assertIn("logs/iteration-001/reviewer.reply.md", logs)
+        self.assertFalse([name for name in logs if "test-draft" in name or "developer" in name], logs)
+        records = {record["id"]: record for record in map(json.loads, (path / "evidence.jsonl").read_text(encoding="utf-8").splitlines())}
+        with zipfile.ZipFile(io.BytesIO(made.data)) as archive:
+            for name, entry in logs.items():
+                self.assertEqual("logs/" + records[entry["source"]["record"]]["log"], name)  # attributed to the record naming it
+            self.assertEqual(archive.read("logs/iteration-001/reviewer.reply.md"), (iteration / "reviewer.reply.md").read_bytes())
+
+    def test_a_folder_left_by_an_earlier_request_is_never_written_into(self):
+        task_id, _ = create_task(self.home, title="Feature", description="Create feature.txt", acceptance=["Tests pass"],
+                                 developer="codex", reviewer="claude")
+        path = self.home / "tasks" / task_id
+        run_task(self.home, task_id)
+        left = path / "runs" / "iteration-001" / "test-draft-07"  # a crash after the folder, before the state named it
+        left.mkdir()
+        (left / "developer.reply.md").write_text("earlier", encoding="utf-8")
+        self.cli.script(developer={"reply": DRAFT_REPLY})
+        state = draft_tests(self.home, task_id)
+        self.assertEqual(state["test_draft"]["transcripts"], "iteration-001/test-draft-08")
+        self.assertEqual((left / "developer.reply.md").read_text(encoding="utf-8"), "earlier")
+        self.assertIn("Written by the test author.", (path / "runs" / "iteration-001" / "test-draft-08" / "developer.last-message.txt").read_text(encoding="utf-8"))
 
 
 class ParseTests(Case):

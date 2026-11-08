@@ -166,7 +166,8 @@ the history recorded since the last saved checkpoint are lost with it and are
 not written afterwards (section 15).
 
 If the runner dies with `SIGKILL`, child processes may continue working. `TaskLock`
-and `*.active-process.json` prevent forced unlocking while recorded PIDs are
+and `*.active-process.json` (in `runs/iteration-NNN/` and in its
+`test-draft-KK/` folders) prevent forced unlocking while recorded PIDs are
 active. This does not replace OS supervision or prevent malicious processes from
 creating additional children.
 
@@ -281,7 +282,13 @@ names), notes masked and bounded, or the failure. Events
 `test_draft_started`, `test_draft_completed` and `test_draft_failed` carry
 counts and fixed words only. The task keeps its pause and `last_error`; no
 check runs, nothing is enabled, no retry plan is made, and evidence bound to
-the files as they were is invalidated by `_sync` as after any change. Existing task locks and phase checkpoints remain
+the files as they were is invalidated by `_sync` as after any change. Each
+request writes its transcripts and `test-draft.md` in a new folder,
+`runs/iteration-NNN/test-draft-KK/` (`core._draft_folder`, named in
+`test_draft.transcripts`), never in the iteration's own folder: the adapter
+names files after the role, and the development step's `developer.*` files
+stay as they were (November 8, 2026). Its journal events carry `step:
+"test_draft"`. Existing task locks and phase checkpoints remain
 authoritative. Before starting, `app.start_run` refuses a task that is done or
 blocked, locked, already being started, or (for an automatic run) already
 attended by a waiting process. It registers the process immediately and
@@ -704,7 +711,9 @@ without reasoning.
 with mode 0600. The first line identifies the journal (`J-` and twelve
 hexadecimal digits). Every other line is one event with `v`, `seq`, `at` (UTC,
 milliseconds), `task`, `iteration`, `role`, `provider`, `attempt` and `type`,
-then the fields of its type. `seq` grows by one within the task: a new attempt
+then the fields of its type. An attempt that is not a step of the loop adds
+`step` to each of its events (`test_draft`, a request for tests; November 8,
+2026). `seq` grows by one within the task: a new attempt
 reads the last number and continues, and a line left unfinished by a crash is
 closed with a newline first, so readers skip it and nothing is numbered twice.
 An attempt is one call of an agent, or one test stage; `core._invoke` and the

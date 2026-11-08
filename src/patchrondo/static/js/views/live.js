@@ -41,10 +41,13 @@ function elapsed(since) {
   return `${hours ? `${hours}:${String(minutes).padStart(2, "0")}` : minutes}:${String(rest).padStart(2, "0")}`;
 }
 
+// A request for tests is the developer called outside the loop; its events carry `step`.
+const DRAFTING = (event) => event.step === "test_draft";
+
 function actor(event) {
   if (event.role === "tests") return "Project tests";
   if (event.role === "environment") return "PatchRondo · preparation";
-  return `${agentName(event.provider)} · ${ROLES[event.role] || event.role}`;
+  return `${agentName(event.provider)} · ${ROLES[event.role] || event.role}${DRAFTING(event) ? " · writing tests" : ""}`;
 }
 
 // One journal event as { kind, icon, tone, title, detail, mono, state }. Nothing is inferred beyond the event.
@@ -77,7 +80,7 @@ export function describe(event) {
         detail: event.text || null, open: true };
     case "completion": {
       const done = event.outcome === "completed";
-      const title = done ? OUTCOMES.completed[event.role] || "Step returned" : `${OUTCOMES[event.outcome] || "Step ended"}${event.kind ? ` · ${humanize(event.kind).toLowerCase()}` : ""}`;
+      const title = done ? (DRAFTING(event) ? "Test writing returned" : OUTCOMES.completed[event.role] || "Step returned") :`${OUTCOMES[event.outcome] || "Step ended"}${event.kind ? ` · ${humanize(event.kind).toLowerCase()}` : ""}`;
       const note = [Number.isFinite(event.seconds) ? `${event.seconds} s` : null, event.unrecorded ? `${plural(event.unrecorded, "event")} not recorded (limit)` : null].filter(Boolean).join(" · ");
       return { kind: done ? "status" : "error", icon: done ? "check" : event.outcome === "interrupted" ? "pause" : "x",
         tone: done ? "ok" : event.outcome === "failed" ? "danger" : "warn", title, note };
@@ -86,7 +89,8 @@ export function describe(event) {
       switch (event.status) {
         // The model and effort are the configuration the step was started with; the session line below it is what the CLI reports.
         case "started": return { kind: "status", icon: "play", tone: "accent", title: event.role === "tests" ? "Project tests started"
-          : event.role === "environment" ? "PatchRondo started preparing" : `${agentName(event.provider)} started as ${ROLES[event.role] || event.role}`,
+          : event.role === "environment" ? "PatchRondo started preparing"
+          : DRAFTING(event) ? `${agentName(event.provider)} started writing tests, as you asked` : `${agentName(event.provider)} started as ${ROLES[event.role] || event.role}`,
           note: ["developer", "reviewer"].includes(event.role) ? configured(event) || "CLI default model" : "" };
         // Recorded by the environment check: its stages, what it repaired and what it found.
         case "stage": return { kind: "status", icon: "shield", tone: "neutral", title: event.text || humanize(event.stage || "stage") };

@@ -635,16 +635,17 @@ def _instructions(settings: dict) -> str:
 
 
 def _invoke(adapter, path: Path, state: dict, role: str, prompt: str, workspace: Path, run_dir: Path,
-            settings: dict | None = None):
+            settings: dict | None = None, step: str | None = None):
     """Call the agent of `role`, recording the attempt in the task's activity journal.
 
     The journal only observes: the reply, and every failure, pass through unchanged.
     `settings` are the frozen agent settings of the step; an adapter that is
-    not `configurable` is called as before and never sees them.
+    not `configurable` is called as before and never sees them. `step` names
+    a call outside the loop's steps in the journal; the adapter never sees it.
     """
     provider = state[role]
     with activity.attempt(path, iteration=state["iteration"], role=role, provider=provider,
-                          details=_configured(settings or {})) as journal:
+                          details=_configured(settings or {}), step=step) as journal:
         options = {"journal": journal} if getattr(adapter, "journals", False) else {}
         if settings and getattr(adapter, "configurable", False):
             options["settings"] = settings
@@ -1345,8 +1346,28 @@ DRAFT_FILES = 50
 DRAFT_NOTES = 4000
 
 
+DRAFT_STEP = "test_draft"  # the journal's name for these calls
+DRAFT_FOLDER = re.compile(r"test-draft-(\d{2,6})")
+
+
 class DraftRefused(ValueError):
     """The task is not waiting for the test consent: there is nothing to write tests for here."""
+
+
+def _draft_folder(path: Path, iteration: int) -> Path:
+    """A new folder for the transcripts of one request for tests: `runs/iteration-NNN/test-draft-KK`.
+
+    The adapter names its files after the role, and the test author is the
+    developer: in the iteration's own folder it would replace the transcripts
+    of the development step. The number is past every folder of that name
+    already there, so a request never writes into the folder of an earlier one,
+    also after a crash that left a folder no state names.
+    """
+    iteration_dir = private_dir(path / "runs" / f"iteration-{iteration:03d}")
+    used = [int(match.group(1)) for entry in iteration_dir.iterdir() if (match := DRAFT_FOLDER.fullmatch(entry.name))]
+    folder = iteration_dir / f"test-draft-{max(used, default=0) + 1:02d}"
+    folder.mkdir(mode=0o700)  # never an existing folder
+    return private_dir(folder)
 
 
 def _draft_prompt(path: Path, state: dict, workspace: Path, context: str = "") -> str:
@@ -1441,7 +1462,9 @@ def draft_tests(home: Path, task_id: str, *, adapter=None, force_unlock: bool = 
     The task stays paused for the consent, with the same `last_error`; no test
     runs and nothing is enabled. A failure is recorded there too and changes
     nothing else. Evidence bound to the files as they were is invalidated, as
-    after any change of the files.
+    after any change of the files. Each request writes its transcripts in a
+    folder of its own (`_draft_folder`, named in `test_draft.transcripts`), and
+    its journal events carry `step: "test_draft"`.
     """
     root = Path(agents_root) if agents_root is not None else agents.workspace_root(home)
     path = task_dir(home, task_id)
@@ -1467,11 +1490,13 @@ def draft_tests(home: Path, task_id: str, *, adapter=None, force_unlock: bool = 
             _save(path, state)
             if manager is not None:  # before the agent, as before any provider call
                 _environment(manager, home, path, state, cfg, live=live)
-            run_dir = private_dir(path / "runs" / f"iteration-{state['iteration']:03d}")
+            # Its own folder: the transcripts of the development step of this iteration stay as they were.
+            run_dir = _draft_folder(path, state["iteration"])
+            draft["transcripts"] = f"{run_dir.parent.name}/{run_dir.name}"
             before = _changed_files(workspace)
             context = _context(home, cfg, path, state, workspace, "developer")
             reply = _invoke(adapter, path, state, "developer", _draft_prompt(path, state, workspace, context),
-                            workspace, run_dir, settings)
+                            workspace, run_dir, settings, step=DRAFT_STEP)
             atomic_text(run_dir / "test-draft.md", f"# Tests written on request — iteration {state['iteration']}\n\n"
                                                    f"{reply.text[:30000]}\n")
             after = _changed_files(workspace)

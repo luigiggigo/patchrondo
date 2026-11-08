@@ -365,6 +365,21 @@ class WorkflowTests(unittest.TestCase):
             with TaskLock(path, force=True):
                 pass
 
+    def test_force_unlock_blocks_an_agent_writing_tests_on_request(self):
+        from patchrondo.storage import TaskLock, private_dir
+        import os
+        task_id, _ = self._task()
+        path = self.home / "tasks" / task_id
+        save_json(path / ".run.lock", {"pid": -1})
+        private_dir(path / "runs" / "iteration-001")
+        # A request for tests runs the developer from a folder of its own (core._draft_folder).
+        save_json(private_dir(path / "runs" / "iteration-001" / "test-draft-01") / "developer.active-process.json",
+                  {"pid": os.getpid()})
+        with self.assertRaisesRegex(RuntimeError, "still active"):
+            with TaskLock(path, force=True):
+                pass
+        self.assertTrue((path / ".run.lock").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

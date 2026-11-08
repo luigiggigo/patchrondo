@@ -27,9 +27,9 @@ from typing import NamedTuple
 from . import __version__, acceptance as criteria, activity, agents, bundle, doctor, environment, evidence, provenance, providers, rag
 from . import firstcommit, picker, recovery, repair, runinfo, streams, verification
 from .commands import join_command, split_command
-from .core import (TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config, create_task,
-                   decide_authorization, effective_config, gate_currency, preflight, recheck_acceptance, record_environment,
-                   refresh_agent_settings, validate_config, validate_overrides)
+from .core import (DRAFT_FOLDER, TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config,
+                   create_task, decide_authorization, effective_config, gate_currency, preflight, recheck_acceptance,
+                   record_environment, refresh_agent_settings, validate_config, validate_overrides)
 from .gitops import fingerprint
 from .storage import FileMutex, LockBusy, TaskLock, now, private_dir, read_json, save_json
 from .workspace import NotFound, Project, Workspace
@@ -1167,13 +1167,24 @@ class App:
         for folder in sorted(runs.glob("iteration-*")) if runs.is_dir() else []:
             if not folder.is_dir() or folder.is_symlink():
                 continue
+            number = folder.name.partition("-")[2]
+            group = f"Iteration {int(number)}" if number.isdigit() else folder.name
+            drafts = []
             for file in sorted(folder.iterdir()):
+                if DRAFT_FOLDER.fullmatch(file.name) and file.is_dir() and not file.is_symlink():
+                    drafts.append(file)  # a request for tests: its own transcripts, under a group of their own
+                    continue
                 if file.suffix not in LOG_SUFFIXES or file.is_symlink() or not file.is_file():
                     continue
-                number = folder.name.partition("-")[2]
-                files.append({"id": f"{folder.name}/{file.name}", "label": file.name,
-                              "group": f"Iteration {int(number)}" if number.isdigit() else folder.name,
+                files.append({"id": f"{folder.name}/{file.name}", "label": file.name, "group": group,
                               "size": file.stat().st_size, "file": file})
+            for draft in drafts:
+                label = f"{group} · tests written on request {int(DRAFT_FOLDER.fullmatch(draft.name).group(1))}"
+                for file in sorted(draft.iterdir()):
+                    if file.suffix not in LOG_SUFFIXES or file.is_symlink() or not file.is_file():
+                        continue
+                    files.append({"id": f"{folder.name}/{draft.name}/{file.name}", "label": file.name, "group": label,
+                                  "size": file.stat().st_size, "file": file})
         return files
 
     def task_detail(self, project: Project, task_id) -> dict:

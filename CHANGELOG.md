@@ -1098,6 +1098,51 @@ runtime file changed.
   confirmation, the files, the field filled with the proposal, and completes
   the task with the written tests. Six new mutation protections.
 
+### Tests written on request keep their own transcripts — November 8, 2026
+
+- **Correction** (user report from a real run, November 8, 2026). The
+  adapter names the files of a step after its role, and `draft_tests` calls
+  the developer: it wrote into the iteration's folder, so
+  `developer.prompt.md`, `developer.reply.md`, `developer.stdout.log`,
+  `developer.stderr.log`, `developer.command.txt` and
+  `developer.last-message.txt` of that iteration's development step were
+  replaced by the test author's, and `test-draft.md` by the next request's.
+- Each request now writes in a folder of its own,
+  `runs/iteration-NNN/test-draft-KK/` (`core._draft_folder`): its number is
+  past every `test-draft-*` folder of the iteration, also one a crash left
+  that no state names, and the folder must not exist. `test-draft.md` goes
+  there too. `test_draft.transcripts` names the folder
+  (`iteration-001/test-draft-01`). The call is still the developer's:
+  `agents.command` builds the same command with the same frozen settings,
+  and the adapter is unchanged.
+- The journal tells the calls apart: every event of a request's attempt
+  carries `step: "test_draft"` (`activity.attempt(step=…)`, through
+  `core._invoke`). Events of the loop's steps carry no `step`, as before.
+  Live Activity says "writing tests" for them.
+- The Logs tab lists a request's files under "Iteration N · tests written on
+  request K", with IDs `iteration-NNN/test-draft-KK/<file>`; the viewer reads
+  only listed IDs, as before. Forced unlocking (`TaskLock(force=True)`) also
+  looks for `*.active-process.json` in those folders: a test author still
+  running blocks it like a development step.
+- Evidence bundles are unchanged: a detailed bundle copies only the logs a
+  ledger record names (`reviewer.reply.md`, check logs), and no record names
+  a developer transcript or a request's file. The test checks that a bundle
+  after requests holds no such file and attributes each log to the record
+  that names it.
+- Compatibility: nothing already written is moved, renamed or rewritten. A
+  task whose `iteration-NNN/test-draft.md` was written before keeps it, and
+  the Logs tab still lists it in the iteration's group; a saved `test_draft`
+  without `transcripts` reads as before. Transcripts a request already
+  replaced are not restored: PatchRondo kept no other copy (the journal keeps
+  that step's bounded, redacted activity, and `handoff.md` its answer).
+- Tests: `tests/test_draft_tests.py` `TranscriptTests` (2 tests, with the
+  scripted CLI of `tests/support.py` behind `providers.execute`, so the
+  adapter writes real transcripts: the development step's files byte for
+  byte after two requests, each request's files in its folder, the journal,
+  a detailed bundle after the task completed; a folder left by a crash never
+  written into); a forced-unlock test in `tests/test_workflow.py`; a Logs
+  test in `tests/test_ui.py`. Five new mutation protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

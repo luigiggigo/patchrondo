@@ -116,10 +116,13 @@ def _last_seq(file: Path, size: int) -> int:
 class Journal:
     """Appends the events of one attempt. It never raises: failing to record must not fail the work."""
 
-    def __init__(self, task_path: Path, *, iteration: int, role: str, provider: str, clock=None):
+    def __init__(self, task_path: Path, *, iteration: int, role: str, provider: str, clock=None, step: str | None = None):
         self.file = Path(task_path) / JOURNAL
         self.base = {"task": Path(task_path).name, "iteration": iteration, "role": role, "provider": provider,
                      "attempt": "A-" + uuid.uuid4().hex[:12]}
+        if step:
+            # A call outside the loop's own steps (`test_draft`). Without it, an event is a step of the loop, as before.
+            self.base["step"] = step
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.lock = threading.Lock()
         self.fd: int | None = None
@@ -187,15 +190,18 @@ class Journal:
 
 
 @contextmanager
-def attempt(task_path: Path, *, iteration: int, role: str, provider: str, clock=None, details: dict | None = None):
+def attempt(task_path: Path, *, iteration: int, role: str, provider: str, clock=None, details: dict | None = None,
+            step: str | None = None):
     """Record one attempt of a step: its start, what the caller emits, and how it ended.
 
     Whatever ends the attempt is raised again unchanged. `completed` means the
     step returned; whether its result is accepted is decided by the engine afterwards.
     `details` are facts about the attempt known when it starts, such as the
-    model it was configured with; they are recorded with its start.
+    model it was configured with; they are recorded with its start. `step`
+    names a call that is not a step of the loop (`test_draft`): every event
+    of the attempt carries it.
     """
-    journal = Journal(task_path, iteration=iteration, role=role, provider=provider, clock=clock)
+    journal = Journal(task_path, iteration=iteration, role=role, provider=provider, clock=clock, step=step)
     started = time.monotonic()
     journal.emit("status", status="started", **(details or {}))
     outcome, kind = "completed", None
