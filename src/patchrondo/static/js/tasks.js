@@ -73,7 +73,8 @@ export const ERRORS = {
   awaiting_authorization: { title: "The code is approved; some criteria need your authorization", help: "An operation such as a download or a publication is never done without your decision. Decide in “Criteria and checks”; nothing is run either way." },
   completion_refused: { title: "Every criterion is verified, and completion is still refused", help: "The completion gate found a reason not to finish the task: a switch that turns off what the configured checks rely on, or evidence that changed after it was judged. The message says which; no agent was called. Resume evaluates it again." },
   acceptance_unreadable: { title: "The saved criteria cannot be read", help: "They were saved by another version of PatchRondo, or changed by hand. Nothing replaced them and no agent was called. Open the task with the version that saved them, or put back its state.json, then resume." },
-  attempt_uncertain: { title: "An agent call may still be running", help: "A run stopped before it could record how an agent call ended, or the call was stopped while what it started may still run. No other call starts meanwhile. Check that no process of it is left; then run the command the message gives (patchrondo release-attempt …) and resume." },
+  attempt_uncertain: { title: "An agent call may still be running", help: "A run stopped before it could record how an agent call ended, or the call was stopped while what it started may still run. No other call starts meanwhile. Check that no process of it is left; then run the command the message gives (patchrondo release-attempt … --confirm-stopped) and resume. Releasing says nothing about what the call did." },
+  budget_exhausted: { title: "A budget allows no further agent call", help: "The budget of this step or of the task, frozen when it started, cannot take the next call; the message names the limit and its unit. Nothing was started, nothing raised the budget, and the calls and evidence so far are kept. This version cannot amend a budget: create a follow-up task to go on." },
   attempt_folder_exists: { title: "The folder of an agent call already exists", help: "No record of this task names that folder, so nothing was written into it and no agent was called. Check what made it and move it away, then resume: the next call gets a folder of its own." },
   attempt_limit_reached: { title: "No more agent calls can be recorded", help: "This task reached the most agent calls PatchRondo records for one step or one task. Create a follow-up task." },
   execution_unreadable: { title: "The saved record of agent calls cannot be read", help: "It was saved by another version of PatchRondo, or changed by hand. Nothing replaced it and no agent was called. Open the task with the version that saved it, or put back its state.json, then resume." },
@@ -103,6 +104,7 @@ export const RECOVERY_STOPS = {
   wait_budget_exceeded: "The next wait would exceed the total wait budget",
   reset_beyond_budget: "The provider reset is beyond the total wait budget; no earlier call was made",
   invalid_schedule: "The saved plan was unreadable or no longer matched a usage-limit pause",
+  budget_exhausted: "A budget of the step or the task could not take another call, so no retry was planned",
 };
 export const stopReason = (reason) => RECOVERY_STOPS[reason] || `${humanize(reason)} is never retried automatically`;
 
@@ -178,6 +180,7 @@ const PAUSE_REASONS = {
   verification_error: "a check gave no usable result", verification_blocked: "a check could not be started",
   attempt_uncertain: "an agent call may still be running", attempt_folder_exists: "the folder of an agent call already exists",
   attempt_limit_reached: "no more agent calls can be recorded", execution_unreadable: "the record of agent calls cannot be read",
+  budget_exhausted: "a budget allows no further agent call",
 };
 // How a recorded agent call ended (`execution.AttemptOutcome`), and whether what it started is known to have stopped.
 const CALL_OUTCOMES = {
@@ -261,7 +264,7 @@ export function describeEvent(event, task) {
       return { text: `Call ${event.attempt || ""} ${word}`, tone, icon: "info", detail: TERMINATIONS[event.termination] || null };
     }
     case "attempt_released":
-      return { text: `You released call ${event.attempt || ""}`, tone: "neutral", icon: "user", detail: "You stated that its processes stopped; nothing was run" };
+      return { text: `You released call ${event.attempt || ""}`, tone: "neutral", icon: "user", detail: "You stated that its processes stopped; nothing was run, and what it did stays unknown" };
     case "task_completed": return { text: "Task completed", tone: "ok", icon: "check" };
     case "task_paused": return { text: `Paused: ${PAUSE_REASONS[event.reason] || humanize(event.reason).toLowerCase()}`, tone: "warn", icon: "pause" };
     case "task_blocked": return { text: `Blocked: ${(ERRORS[event.reason]?.title || humanize(event.reason)).toLowerCase()}`, tone: "danger", icon: "x" };

@@ -7,6 +7,16 @@ classification can be wrong, so every retry is bounded by the configured caps.
 
 `run_task` calls `admit`, `on_failure` and `note_progress` while it holds the
 lock. `supervise` is the outer loop that waits between runs.
+
+Budgets of Adaptive Execution (`execution.py`) bound every call, a retry
+included. This module stays the only one that plans and starts quota
+retries; `run_task` tells it when the next call of the step would be refused
+by a budget (`refused`, the refusal's details), and then no retry is planned
+or started: the recovery stops with `budget_exhausted`. A streak of quota
+failures ends (`note_progress`) only when the task leaves the step the
+streak is about (another phase or iteration) or ends; an answer received in
+the same step does not end it, and neither the streak nor its end is a
+measure of the task's progress.
 """
 from __future__ import annotations
 
@@ -149,21 +159,33 @@ def _section(state: dict) -> dict | None:
     return section if isinstance(section, dict) else None
 
 
-def _stop(state: dict, section: dict, reason: str) -> None:
+BUDGET_DETAILS = ("scope", "unit")  # what a stop for a budget names: fixed words, never counts of another record
+
+
+def _stop(state: dict, section: dict, reason: str, refused: dict | None = None) -> None:
     section.update(status="stopped", stop_reason=reason, resume_at=None, schedule_source=None)
     state["recovery"] = section
-    _audit(state, "recovery_stopped", reason=reason, failures=section.get("consecutive_failures"))
+    budget = {key: refused.get(key) for key in BUDGET_DETAILS} if isinstance(refused, dict) else None
+    _audit(state, "recovery_stopped", reason=reason, failures=section.get("consecutive_failures"),
+           **({"budget": budget} if budget else {}))
 
 
 def _decide(state: dict, cfg: dict, *, failures: int, first: datetime, failure_at: datetime,
-            now: datetime) -> None:
-    """Replace the recovery section with the plan for the quota failure in `last_error`."""
+            now: datetime, refused: dict | None = None) -> None:
+    """Replace the recovery section with the plan for the quota failure in `last_error`.
+
+    `refused`: the next call of the step would be refused by a budget; the
+    streak is counted as always and stopped, with no time planned.
+    """
     limits, error = cfg["recovery"], state["last_error"]
     section = {"status": "scheduled", "consecutive_failures": failures,
                "max_consecutive_retries": limits["max_consecutive_retries"],
                "first_failure_at": stamp(first), "provider": error.get("provider"),
                "phase": state["phase"], "iteration": state["iteration"],
                "resume_at": None, "schedule_source": None, "stop_reason": None}
+    if refused is not None:
+        _stop(state, section, "budget_exhausted", refused)  # before any plan: a retry no budget could take
+        return
     decision = plan(failures=failures, first_failure_at=first, failure_at=failure_at,
                     retry_at=stated_reset(error), cfg=limits, now=now)
     if decision["action"] == "stop":
@@ -175,7 +197,8 @@ def _decide(state: dict, cfg: dict, *, failures: int, first: datetime, failure_a
            source=decision["source"], provider=section["provider"])
 
 
-def admit(state: dict, cfg: dict, *, active: bool, retry_of: str | None, now: datetime) -> tuple[bool, bool]:
+def admit(state: dict, cfg: dict, *, active: bool, retry_of: str | None, now: datetime,
+          refused: dict | None = None) -> tuple[bool, bool]:
     """Under the task lock: may this run call a provider now? Returns (proceed, state_changed).
 
     `retry_of` is the `resume_at` a supervisor waited for. Such a retry proceeds
@@ -183,6 +206,12 @@ def admit(state: dict, cfg: dict, *, active: bool, retry_of: str | None, now: da
     another process is left to its owner. Without `retry_of` the run was
     requested explicitly: it still honors a pending plan while recovery is
     active, and replaces it when recovery is off (manual resume).
+
+    `refused` (the details of a budget's refusal of the step's next call)
+    takes precedence over any plan: a retry no budget could take is never
+    planned or started. A plan in force stops with `budget_exhausted`; a
+    supervisor's retry then does not proceed, and an explicit run goes on so
+    that the run itself pauses saying which budget refused the call.
     """
     section = _section(state)
     if not active:
@@ -195,6 +224,12 @@ def admit(state: dict, cfg: dict, *, active: bool, retry_of: str | None, now: da
     scheduled = section is not None and section.get("status") == "scheduled"
     if retry_of is not None and not (scheduled and section.get("resume_at") == retry_of):
         return False, False
+    if refused is not None:
+        if section is not None and section.get("status") in {"scheduled", "retrying"}:
+            _stop(state, section, "budget_exhausted", refused)
+            return retry_of is None, True
+        state["recovery"] = None
+        return True, False
     error = state.get("last_error")
     quota = state.get("status") == "paused" and isinstance(error, dict) and error.get("kind") == "quota"
     if scheduled:
@@ -224,8 +259,12 @@ def admit(state: dict, cfg: dict, *, active: bool, retry_of: str | None, now: da
     return True, True
 
 
-def on_failure(state: dict, cfg: dict, *, active: bool, now: datetime) -> None:
-    """Under the task lock, after `last_error` is set: plan a retry or end the recovery."""
+def on_failure(state: dict, cfg: dict, *, active: bool, now: datetime, refused: dict | None = None) -> None:
+    """Under the task lock, after `last_error` is set: plan a retry or end the recovery.
+
+    `refused`: a budget would refuse the step's next call, so a quota failure
+    stops the recovery (`budget_exhausted`) instead of planning a retry.
+    """
     section = _section(state)
     if not active:
         state["recovery"] = None
@@ -243,11 +282,18 @@ def on_failure(state: dict, cfg: dict, *, active: bool, now: datetime) -> None:
     same_point = (first is not None and type(section.get("consecutive_failures")) is int
                   and (section.get("phase"), section.get("iteration")) == (state["phase"], state["iteration"]))
     _decide(state, cfg, failures=section["consecutive_failures"] + 1 if same_point else 1,
-            first=first if same_point else now, failure_at=now, now=now)
+            first=first if same_point else now, failure_at=now, now=now, refused=refused)
 
 
 def note_progress(state: dict) -> None:
-    """Before each checkpoint: a retry that moved the task on ends the failure streak."""
+    """Before each checkpoint: a retry that moved the task on ends the failure streak.
+
+    The exact condition: the recovery is `retrying` and the task is done or
+    blocked, or its phase or iteration differ from the ones the streak was
+    recorded at. A call that answered in the same step (an attempt
+    `COMPLETED`) shows that the provider answers again, but ends nothing
+    here; and this end is not evidence of progress, which nothing reads it as.
+    """
     section = _section(state)
     if section is None or section.get("status") != "retrying":
         return

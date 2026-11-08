@@ -80,7 +80,10 @@ def parser() -> argparse.ArgumentParser:
                                    "(no model calls)")
     released.add_argument("task_id", help="Task ID such as T-0123456789ab")
     released.add_argument("attempt", help="The attempt the pause names, such as CX-0003")
-    bundled = sub.add_parser("bundle", help="Export the evidence of a task as a ZIP, or check such a file (no model calls)")
+    released.add_argument("--confirm-stopped", action="store_true",
+                          help="Required: you checked that no process of that call is left. PatchRondo cannot verify "
+                               "it, and the release says nothing about what the call did")
+    bundled =sub.add_parser("bundle", help="Export the evidence of a task as a ZIP, or check such a file (no model calls)")
     steps = bundled.add_subparsers(dest="bundle_command", required=True)
     exported = steps.add_parser("export", help="Write an evidence bundle of a task: its records, decisions and a manifest of hashes")
     exported.add_argument("task_id", help="Task ID such as T-0123456789ab")
@@ -289,8 +292,9 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Left out: {entry['item']}: {entry['reason']}")
                 print("Hashes show changes after the export; nothing is signed. Check it with: patchrondo bundle verify FILE")
             elif command == "release-attempt":
-                state = release_attempt(home, opts.task_id, opts.attempt)
-                print(f"{state['id']} · {opts.attempt} released: you stated that its processes stopped. Nothing was run. "
+                state = release_attempt(home, opts.task_id, opts.attempt, confirm=opts.confirm_stopped)
+                print(f"{state['id']} · {opts.attempt} released: you stated that its processes stopped. Nothing was run, "
+                      "and its outcome stays as recorded (what it did is not known). "
                       f"To continue: patchrondo resume {opts.task_id}")
             elif command == "status":
                 print(json.dumps(read_json(task_dir(home, opts.task_id) / "state.json"), indent=2, ensure_ascii=False))

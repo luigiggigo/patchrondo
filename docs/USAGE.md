@@ -905,9 +905,33 @@ recorded (since November 8, 2026):
   result, Codex's tokens from its completed turns; a value the CLI did not
   report stays unknown and is charged as the most the call was allowed. The
   step and task budgets of the profile are charged, once per call, and are
-  never reset by a failure or a Resume. In this version they are recorded
-  only: they refuse no call, and **nothing continues a step by itself**. A
-  turn limit still pauses after one call; a Resume is one more call.
+  never reset by a failure or a Resume. **Nothing continues a step by
+  itself**: a turn limit still pauses after one call; a Resume is one more
+  call.
+- **Budgets are hard limits** (since November 8, 2026). A call starts only
+  if the budget of its step and the task's budget can both take the most it
+  may use: one provider call, its timeout and, for Claude, its turn limit.
+  Otherwise the task pauses with `budget_exhausted` before anything starts,
+  and the message names the limit and its unit, for example "2 of 2
+  provider calls used" or "41 of 80 Claude turns used, and the next call may
+  use 40". Budgets are frozen when the
+  step and the task first start: a Resume, a retry after a usage limit, an
+  edited configuration or turning execution off do not raise them for a
+  step that already started. The calls recorded so far and the evidence are
+  kept, and a Resume changes nothing while the budget still refuses the
+  call. This version has no way to amend a budget: create a follow-up task
+  to go on. With the `standard` profile a step allows two calls, so a turn
+  limit can be resumed once in the same step, and only when the turns left
+  in the step still cover a whole call (a call that used 41 of its 40 turns
+  leaves 39 of 80, less than the next call's 40).
+- **How a call ended.** Each call gets one outcome: `COMPLETED` (an answer in
+  the form its role needs), `TURN_LIMIT_REACHED`, `QUOTA_EXHAUSTED`,
+  `TIMEOUT`, `INTERRUPTED`, `PERMISSION_DENIED` (the system refused to start
+  the CLI or to write one of its files), `INVALID_FINAL_OUTPUT` (no answer,
+  or an answer the workflow cannot read, such as an unreadable review),
+  `PROVIDER_ERROR`, `ENVIRONMENT_BLOCKED` or `UNKNOWN`. A call that answered
+  has not finished its step: the review is judged, the tests run, and only
+  the completion gate finishes a task.
 - **A call that may still be running holds the task.** When a run finds a
   call with no end on record (the run was killed or the computer stopped),
   or a call was stopped while what it started may still run (a timeout or
@@ -917,15 +941,22 @@ recorded (since November 8, 2026):
   left and release it:
 
   ```bash
-  patchrondo release-attempt T-a1b2c3d4e5f6 CX-0003
+  patchrondo release-attempt T-a1b2c3d4e5f6 CX-0003 --confirm-stopped
   patchrondo resume T-a1b2c3d4e5f6
   ```
 
-  The release only records your statement; it runs nothing. It is refused
-  while the call's folder holds a process file of a process that may be
-  alive, as `--unlock` is (on native Windows, any process file: remove it
-  yourself once you checked). A call saved as starting whose folder was
-  never made provably started nothing, and is closed by the next run.
+  The release only records your statement; it runs nothing, and
+  `--confirm-stopped` is required because PatchRondo cannot verify it (a
+  missing process file proves nothing). It is refused unless the task is
+  paused (a task left running by a killed run: resume it first, which pauses
+  it and names the call), for any call but the one the pause names, while
+  the call's folder cannot be read, and while it holds a process file of a
+  process that may be alive, as `--unlock` is (on native Windows, any
+  process file: remove it yourself once you checked). Releasing says nothing
+  about what the call did: its outcome stays unknown, it stays charged the
+  most it was allowed, its files are not used as an answer and nothing is
+  undone. A call saved as starting whose folder was never made provably
+  started nothing, and is closed by the next run.
 - A step that started before execution was enabled finishes as it started,
   flat and without a record. A record this version cannot read pauses the
   task with `execution_unreadable` and is kept as it is.
@@ -1166,6 +1197,16 @@ now without automatic recovery stays possible in both cases.
   meets the lock stops.
 - Setting `recovery.enabled` to `false` stops a process that was activated by
   the configuration at its next wake-up, without a provider call.
+- **Budgets bound retries too.** With Adaptive Execution enabled, a retry is
+  one more call of the same step and must fit its budgets like any call.
+  When it would not, no retry is planned, or a saved plan is stopped instead
+  of started: recovery ends with "a budget of the step or the task could not
+  take another call", the pause still says `quota`, and the next manual run
+  pauses with `budget_exhausted` without calling anything. With the
+  `standard` profile that means one retry per step. A streak of usage
+  limits ends only when the task moves past the step it happened in; a retry
+  that answered shows the provider is available again, and is not counted
+  as progress of the task.
 
 ## State layout
 

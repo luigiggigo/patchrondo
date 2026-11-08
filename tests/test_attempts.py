@@ -55,6 +55,8 @@ class FakeCLI:
                            "role": "reviewer" if reviewer else "developer"})
         if plan.get("missing"):
             raise FileNotFoundError(argv[0])
+        if plan.get("denied"):  # the system refused to start it (not executable, access denied)
+            raise PermissionError(13, "Permission denied", argv[0])
         held = plan.get("tree", process.GROUP)
         if launch is not None:
             launch._began(PID, held)
@@ -97,13 +99,13 @@ class FakeCLI:
         if plan.get("error"):
             return [], 1, "boom: the CLI failed\n"
         lines = [{"type": "system", "subtype": "init", "model": "fake", "tools": ["Read"]},
-                 {"type": "assistant", "message": {"content": [{"type": "text", "text": "Working"}]}}]
+                 {"type": "assistant", "message": {"content": [{"type": "text", "text": plan.get("say", "Working")}]}}]
         if plan.get("quota"):
             return lines + [{"type": "result", "subtype": "success", "is_error": True,
                              "result": "Usage limit reached. Retry after 3600 seconds."}], 1, ""
         if plan.get("max_turns"):
             return lines + [{"type": "result", "subtype": "error_max_turns", "is_error": True,
-                             "num_turns": plan.get("turns", 41)}], 1, ""
+                             "num_turns": plan.get("turns", 41)}], 1, plan.get("stderr", "")
         if plan.get("no_result"):
             return lines, 0, ""
         final = {"type": "result", "subtype": "success", "is_error": False}
@@ -214,6 +216,7 @@ class LifecycleTests(AttemptCase):
         self.assertTrue(all(call["launch"] for call in self.cli.calls))
 
     def test_manual_resumes_add_attempts_with_unique_ids_and_folders_in_one_iteration(self):
+        self.configure(execution={"enabled": True, "profile": "deep_autonomous"})  # three developer calls per step
         task_id, path = self.task()
         self.cli.plan({"max_turns": True}, {"max_turns": True})
         for _ in range(2):
@@ -277,7 +280,7 @@ class LifecycleTests(AttemptCase):
 class LimitTests(AttemptCase):
     def test_limits_frozen_with_the_step_survive_resume_and_a_changed_configuration(self):
         task_id, _ = self.task()
-        self.cli.plan({"max_turns": True})
+        self.cli.plan({"max_turns": True, "turns": 10})  # leaves the step's 80 turns room for a second 40-turn call
         run_task(self.home, task_id)
         first = self.cli.calls[0]
         self.assertEqual((first["argv"][first["argv"].index("--max-turns") + 1], first["timeout"]), ("40", 2700))
@@ -364,7 +367,9 @@ class OutcomeTests(AttemptCase):
         state = run_task(self.home, task_id)
         self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "invalid_review"))
         item = execution.load(state).step.last
-        self.assertEqual((item.phase, item.outcome), ("review", AttemptOutcome.COMPLETED))  # the CLI answered
+        # The CLI exited by itself with an answer the workflow cannot read: not COMPLETED (Step 05).
+        self.assertEqual((item.phase, item.outcome, item.failure_kind, item.termination),
+                         ("review", AttemptOutcome.INVALID_FINAL_OUTPUT, "invalid_review", Termination.EXITED))
         self.assertNotIn("code_approved", [entry["event"] for entry in state["history"]])
         self.assertFalse([entry for entry in evidence.read(path).records if entry["kind"] == "review"])
 
@@ -432,7 +437,7 @@ class UncertainTests(AttemptCase):
                 run_task(self.home, task_id)
                 self.assertIs(self.record(path).step.last.termination, Termination.UNVERIFIED)
                 self.assert_held(task_id, path, "CX-0001")
-                released = release_attempt(self.home, task_id, "CX-0001")
+                released = release_attempt(self.home, task_id, "CX-0001", confirm=True)
                 item = execution.load(released).step.last
                 self.assertEqual((item.termination, item.outcome), (Termination.RELEASED, case.get("timeout") and
                                                                     AttemptOutcome.TIMEOUT or AttemptOutcome.INTERRUPTED))
@@ -502,7 +507,7 @@ class CrashTests(AttemptCase):
 
         self.crash(task_id, patch("patchrondo.core.runfiles.allocate", side_effect=allocated))
         UncertainTests.assert_held(self, task_id, path, "CX-0001")
-        released = release_attempt(self.home, task_id, "CX-0001")
+        released = release_attempt(self.home, task_id, "CX-0001", confirm=True)
         item = execution.load(released).step.last
         self.assertEqual((item.outcome, item.termination, item.elapsed_seconds), (AttemptOutcome.UNKNOWN,
                                                                                   Termination.RELEASED, 2700))
@@ -528,15 +533,15 @@ class CrashTests(AttemptCase):
         self.assertTrue(marker.exists())
         with patch("patchrondo.storage._alive", return_value=True):  # native Windows, or a live PID
             with self.assertRaisesRegex(RuntimeError, "may still be running"):
-                release_attempt(self.home, task_id, "CX-0001")
+                release_attempt(self.home, task_id, "CX-0001", confirm=True)
         self.assertTrue(marker.exists())  # never removed by PatchRondo
         self.assertEqual(self.saved(path), held)
         marker.write_text("not json", encoding="utf-8")
         with self.assertRaisesRegex(RuntimeError, "Unreadable process file"):
-            release_attempt(self.home, task_id, "CX-0001")
+            release_attempt(self.home, task_id, "CX-0001", confirm=True)
         save_json(marker, {"pid": PID, "command": "claude"})
         with patch("patchrondo.storage._alive", return_value=False):  # POSIX: no such process
-            release_attempt(self.home, task_id, "CX-0001")
+            release_attempt(self.home, task_id, "CX-0001", confirm=True)
         self.assertEqual(run_task(self.home, task_id)["status"], "done")
 
     def test_lost_after_its_cli_exited_it_is_still_uncertain(self):
@@ -558,17 +563,18 @@ class CrashTests(AttemptCase):
         task_id, path = self.task()
         self.cli.plan({"crash": "running"})
         self.crash(task_id)
+        self.assertEqual(run_task(self.home, task_id)["last_error"]["kind"], "attempt_uncertain")  # paused, naming it
         for name in ("CX-0002", "CX-9999", "AC-01"):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "nothing to release"):
-                release_attempt(self.home, task_id, name)
+                release_attempt(self.home, task_id, name, confirm=True)
         (self.folder(path, "develop", 1) / "developer.active-process.json").unlink()
         out = io.StringIO()
         with redirect_stdout(out):
-            code = cli.main(["--home", str(self.home), "release-attempt", task_id, "CX-0001"])
+            code = cli.main(["--home", str(self.home), "release-attempt", task_id, "CX-0001", "--confirm-stopped"])
         self.assertEqual(code, 0, out.getvalue())
         self.assertIn("CX-0001 released", out.getvalue())
         with self.assertRaisesRegex(ValueError, "nothing to release"):
-            release_attempt(self.home, task_id, "CX-0001")  # once only
+            release_attempt(self.home, task_id, "CX-0001", confirm=True)  # once only
 
 
 class FolderTests(AttemptCase):
@@ -604,7 +610,7 @@ class LegacyTests(AttemptCase):
         self.configure(execution=section)
         self.cli.calls.clear()
         task_id, path = self.task()
-        self.cli.plan({"max_turns": True})
+        self.cli.plan({"max_turns": True, "turns": 10})
         run_task(self.home, task_id)
         return run_task(self.home, task_id), list(self.cli.calls)
 

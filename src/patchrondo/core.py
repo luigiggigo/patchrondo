@@ -770,7 +770,8 @@ def _settle_attempts(path: Path, state: dict) -> None:
     raise AttemptUncertain(
         f"Attempt {item.attempt_id} of the {item.role} (iteration {item.iteration}) {what}. No other call is started "
         f"while it may still run. Check that no process of it is left (its files are in runs/{_folder_of(item)}), "
-        f"then run: patchrondo release-attempt {state['id']} {item.attempt_id} and resume.",
+        f"then run: patchrondo release-attempt {state['id']} {item.attempt_id} --confirm-stopped and resume. "
+        "Releasing says nothing about what the call did: its outcome stays unknown and its files are not used as an answer.",
         "attempt_uncertain", provider=item.provider)
 
 
@@ -811,70 +812,127 @@ def _step_settings(root: Path, home: Path, cfg: dict, state: dict, role: str) ->
     return settings, record
 
 
-def _outcome(exc: BaseException | None) -> tuple[execution.AttemptOutcome, str | None]:
-    """How a call ended, from what it returned or raised: the kinds stay those of `_failure`, read through the table."""
-    if exc is None:
-        return execution.AttemptOutcome.COMPLETED, None
-    if isinstance(exc, KeyboardInterrupt):
-        return execution.AttemptOutcome.INTERRUPTED, "interrupted"
-    if isinstance(exc, subprocess.TimeoutExpired):
-        return execution.AttemptOutcome.TIMEOUT, "timeout"
-    kind = getattr(exc, "kind", None) if isinstance(exc, AgentFailure) else \
-        "system_error" if isinstance(exc, (OSError, RuntimeError)) else None
-    if not isinstance(kind, str) or not execution.FAILURE_KIND.fullmatch(kind):
-        return execution.AttemptOutcome.UNKNOWN, None
-    outcome = execution.outcome_for_failure(kind)
-    return (execution.AttemptOutcome.UNKNOWN, None) if outcome is None else (outcome, kind)
-
-
 def _termination(exc: BaseException | None, observation, outcome: execution.AttemptOutcome) -> execution.Termination:
-    """Whether the call's process, and what it started, are known to have stopped.
+    """Whether the call's process, and what it started, are known to have stopped (`execution.termination_of`).
 
     Only a process group (POSIX) or a job object that took the last signal
-    stops everything a CLI started; agents run without a job object on
-    native Windows, so a call stopped there is `UNVERIFIED`. An adapter that
-    reports no process is taken at its word only for an ending of its own.
+    stops everything a CLI started; what the `Launch` of a metered adapter
+    saw is passed on as it is.
     """
-    if exc is None:
-        return execution.Termination.EXITED
-    if observation is None:
-        stopped = outcome in (execution.AttemptOutcome.TIMEOUT, execution.AttemptOutcome.INTERRUPTED,
-                              execution.AttemptOutcome.UNKNOWN)
-        return execution.Termination.UNVERIFIED if stopped else execution.Termination.EXITED
+    if exc is None or observation is None:
+        return execution.termination_of(outcome, failed=exc is not None, observed=False)
     launch = observation.launch
-    if launch.pid is None:
-        found = execution.Termination.NOT_STARTED
-    elif launch.stopped:
-        held = launch.process_tree in (GROUP, JOB) and not launch.kill_refused
-        found = execution.Termination.STOPPED if held else execution.Termination.UNVERIFIED
-    else:
-        found = execution.Termination.EXITED
-    if outcome is execution.AttemptOutcome.TIMEOUT and found in (execution.Termination.EXITED,
-                                                                 execution.Termination.NOT_STARTED):
-        return execution.Termination.UNVERIFIED  # a timeout no process showed: never taken for a clean end
-    return found
+    held = launch.process_tree in (GROUP, JOB) and not launch.kill_refused
+    return execution.termination_of(outcome, failed=True, observed=True, started=launch.pid is not None,
+                                    stopped=launch.stopped, whole=held)
+
+
+# --- budgets of a recorded step (Phase 2.5, Step 05) ----------------------------------------
+#
+# Every call of a recorded step is admitted by `ExecutionRecord.new_attempt`, the one place that adds an attempt,
+# against the step's budget and the task's as they were frozen. What is read here only says it earlier: before an
+# environment check could start a CLI, at a Resume that would change nothing, and to quota recovery.
+
+UNIT_WORDS = {execution.Unit.PROVIDER_CALLS: ("provider call", "provider calls", "one call"),
+              execution.Unit.CLAUDE_TURNS: ("Claude turn", "Claude turns", "its turn limit"),
+              execution.Unit.SECONDS: ("second", "seconds", "its timeout")}
+
+
+class BudgetExhausted(AgentFailure):
+    """A budget of the step or of the task cannot take the next call: nothing is started, and nothing raises the budget."""
+
+    def __init__(self, message: str, refusal: execution.Refusal, *, provider: str | None = None):
+        super().__init__(message, "budget_exhausted", provider=provider)
+        self.refusal = refusal
+
+
+def _budget_message(refusal: execution.Refusal, role: str, iteration: int) -> str:
+    one, many, what = UNIT_WORDS[refusal.unit]
+    owner = f"the {role}'s step of iteration {iteration}" if refusal.scope is execution.Scope.PHASE else "the task"
+    unknown = (f" ({refusal.unknown} call{'s' if refusal.unknown != 1 else ''} whose {many} are unknown, so nothing more "
+               "can be shown to fit)") if refusal.unknown else ""
+    return (f"The budget of {owner} cannot take another call of the {role}: {refusal.used} of {refusal.limit} {many} "
+            f"used{unknown}, and the next call may use {refusal.requested} {one if refusal.requested == 1 else many} "
+            f"({what}). No agent was called and nothing was started. Budgets are frozen when a step and a task first "
+            "start and are never raised by a run, a Resume or a change of configuration; the calls recorded so far "
+            "and the evidence are kept. This version has no way to amend a budget: create a follow-up task to go on.")
+
+
+def _refusal(state: dict, cfg: dict) -> execution.Refusal | None:
+    """Whether the next call of the step the task is at would be refused by a budget. Reads only; None: not refused.
+
+    Only a recorded step, or a step about to begin that would be recorded
+    (execution enabled, no settings frozen for it yet), is ever refused; a
+    step that runs without a record has no budget. For a step about to begin,
+    the task's budget is asked whether it could take the smallest call. An
+    attempt that may still run is left to `_settle_attempts`, and a record
+    that cannot be read to `_execution`: neither is a refusal.
+    """
+    phase = {"develop": execution.Phase.DEVELOP, "review": execution.Phase.REVIEW}.get(state.get("phase"))
+    if phase is None:
+        return None
+    try:
+        record = execution.load(state)
+    except execution.InvalidRecord:
+        return None
+    if record is None:
+        return None
+    step, role = record.step, execution.ROLE_OF[phase]
+    if step is not None and (step.iteration, step.phase) == (state.get("iteration"), phase):
+        return None if step.uncertain is not None else record.admission()
+    runs = state.get("agent_runs") if isinstance(state.get("agent_runs"), dict) else {}
+    if agents.step_key(state, role) in runs:
+        return None  # started without a record: it runs as it started
+    try:
+        chosen = execution.settings_of(cfg)
+    except execution.InvalidSettings:
+        return None
+    if chosen is None or not chosen.enabled or state.get(role) not in agents.PROVIDERS:
+        return None
+    return record.task_admission(execution.smallest_request(state[role]))
+
+
+def _admit(state: dict, cfg: dict) -> None:
+    """Stop the run before anything starts a CLI when the next call of its step would be refused by a budget."""
+    refusal = _refusal(state, cfg)
+    if refusal is not None:
+        role = "developer" if state["phase"] == "develop" else "reviewer"
+        raise BudgetExhausted(_budget_message(refusal, role, state["iteration"]), refusal, provider=state[role])
 
 
 def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace: Path, run_dir: Path, settings: dict,
-             record: execution.ExecutionRecord | None) -> tuple:
-    """One call of a step: (its reply, the folder it wrote in). Without a record: `_invoke` in `run_dir`, as before.
+             record: execution.ExecutionRecord | None, accept=None) -> tuple:
+    """One call of a step: (its reply, the folder it wrote in, what `accept` made of the reply).
 
-    With one, the call is an attempt of the step, saved before anything is
-    created or started, in a folder of its own that is never reused, with
-    the step's frozen turn limit and timeout. Every failure is raised again
-    unchanged, after its attempt was ended in the state; the run's pause
-    saves that end in the same write as the pause. Nothing here decides
-    whether another call follows.
+    `accept`, when given, reads the reply as its role needs it (the review's
+    parsing) and raises an `AgentFailure` when it cannot. Without a record:
+    `_invoke` in `run_dir`, then `accept`, as before. With one, the call is
+    an attempt of the step, admitted by its budget and the task's
+    (`ExecutionRecord.new_attempt`), saved before anything is created or
+    started, in a folder of its own that is never reused, with the step's
+    frozen turn limit and timeout. Its end is the outcome of the call and of
+    `accept` together: an answer `accept` refuses is `INVALID_FINAL_OUTPUT`,
+    never `COMPLETED`. Every failure is raised again unchanged, after its
+    attempt was ended in the state; the run's pause saves that end in the
+    same write as the pause. Nothing here decides whether another call follows.
     """
     if record is None:
-        return _invoke(adapter, path, state, role, prompt, workspace, run_dir, settings), run_dir
+        reply = _invoke(adapter, path, state, role, prompt, workspace, run_dir, settings)
+        return reply, run_dir, accept(reply) if accept is not None else None
     step = record.step
+    if not getattr(adapter, "configurable", False):
+        # Such an adapter is never given settings, so the step's frozen turn limit and timeout could not bind its call.
+        raise AgentFailure("The adapter of this run cannot be given the frozen call limits of this step, so no call was "
+                           "started. Run it with the official CLI adapter.", "configuration", provider=step.provider)
     frozen = (state.get("agent_runs") or {}).get(agents.step_key(state, role)) or {}
     digest = frozen.get("digest") if isinstance(frozen.get("digest"), str) and execution.DIGEST.fullmatch(frozen["digest"]) \
         else None
     try:
         record, item = record.new_attempt(started_at=_instant(), settings_digest=digest,
                                           workspace_before=_fingerprint_or_none(workspace))
+    except execution.Inadmissible as exc:
+        raise BudgetExhausted(_budget_message(exc.refusal, role, state["iteration"]), exc.refusal,
+                              provider=step.provider) from exc
     except execution.InvalidRecord as exc:
         raise AgentFailure(f"No further call of this step can be recorded: {exc}", "attempt_limit_reached",
                            provider=step.provider) from exc
@@ -887,7 +945,7 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
 
     def close(exc: BaseException | None, observation=None, *, termination=None, outcome=None) -> None:
         latest = current["record"]
-        found, kind = _outcome(exc)
+        found, kind = execution.outcome_of(exc)
         found = outcome or found
         ending = termination or _termination(exc, observation, found)
         if ending is execution.Termination.NOT_STARTED:
@@ -933,6 +991,7 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
     try:
         reply = _invoke(adapter, path, state, role, prompt, workspace, folder, call, observation=observation,
                         attempt=item.attempt_id)
+        accepted = accept(reply) if accept is not None else None  # an answer its role cannot use is not COMPLETED
     except BaseException as exc:
         try:
             close(exc, observation)
@@ -941,30 +1000,71 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
         raise
     close(None, observation)
     _save(path, state)
-    return reply, folder
+    return reply, folder, accepted
 
 
-def release_attempt(home: Path, task_id: str, attempt_id: str) -> dict:
+RELEASE_CONFIRMATION = ("Releasing a call is your statement that none of its processes is left, which PatchRondo "
+                        "cannot verify: an absent process file is no proof. Check that no process of the call is "
+                        "running, then confirm with --confirm-stopped. The release runs nothing, and says nothing "
+                        "about what the call did: its outcome stays unknown and its changes are not undone.")
+
+
+def _process_files(folder: Path) -> list[Path]:
+    """The process files in an attempt's folder. Anything that cannot be looked at is never taken for none."""
+    try:
+        if os.path.lexists(folder) and not runfiles.plain_folder(folder):
+            raise RuntimeError(f"The folder of the call is not a plain folder (a link, a junction or a file): {folder}. "
+                               "Check it manually")
+        names = sorted(os.listdir(folder))
+    except FileNotFoundError:
+        return []  # never made: nothing was started in it
+    except OSError as exc:
+        raise RuntimeError(f"The folder of the call cannot be read ({exc.strerror or exc}): {folder}. Check it "
+                           "manually") from None
+    return [folder / name for name in names if name.endswith(runfiles.PROCESS_SUFFIX)]
+
+
+def release_attempt(home: Path, task_id: str, attempt_id: str, *, confirm: bool = False) -> dict:
     """The user's statement that the processes of an uncertain attempt stopped, so that the task may call again.
 
     Under the task lock; no agent and no command is run, and the status of
-    the task does not change: a Resume continues. Refused unless `attempt_id`
-    is the attempt that may still run, and while its folder holds a process
-    file of a process that may be alive (as `--unlock` refuses; on native
-    Windows any process file, which only a person who checked may remove).
+    the task does not change: a Resume continues. Never automatic, and
+    refused unless `confirm` is the user's explicit acknowledgement; unless
+    the task is paused (a run stopped it and named the attempt; a task left
+    `running` by a lost run is resumed first, which pauses it); unless the
+    state and the record are of `task_id` and `attempt_id` is the attempt
+    that may still run; and while its folder cannot be read or holds a
+    process file of a process that may be alive (as `--unlock` refuses; on
+    native Windows any process file, which only a person who checked may
+    remove). The release ends an attempt without an end as `UNKNOWN`, its
+    charges kept, or turns `UNVERIFIED` into `RELEASED`: nothing says that
+    what the call did succeeded or can be undone. The history records the
+    acknowledgement and what was checked, in fixed words.
     """
+    if confirm is not True:
+        raise ValueError(RELEASE_CONFIRMATION)
+    if type(attempt_id) is not str or not execution.ATTEMPT_ID.fullmatch(attempt_id):
+        raise ValueError(f"{str(attempt_id)[:40]} is not an attempt ID (such as CX-0003): nothing to release")
     path = task_dir(home, task_id)
     with TaskLock(path):
         state = read_json(path / "state.json")
+        if state.get("id") != task_id:
+            raise ValueError(f"The state in the folder of {task_id} belongs to another task: nothing was released")
+        if state.get("status") != "paused":
+            raise ValueError(f"The task is {state.get('status')}, not paused: a call is released only once a run has "
+                             "stopped the task and named it. Resume the task first; it pauses again without calling "
+                             "an agent while a call may still be running")
         try:
             record = execution.load(state)
         except execution.InvalidRecord as exc:
             raise ValueError(f"The execution record of this task cannot be read: {exc}") from exc
+        if record is not None and record.task_id != task_id:
+            raise ValueError("The execution record names another task: nothing was released")
         item = record.step.uncertain if record is not None and record.step is not None else None
         if item is None or item.attempt_id != attempt_id:
             raise ValueError(f"{attempt_id} is not an attempt of this task that may still be running: nothing to release")
-        folder = path / runfiles.RUNS / _folder_of(item)
-        for entry in sorted(folder.glob("*" + runfiles.PROCESS_SUFFIX)) if folder.is_dir() else []:
+        found = _process_files(path / runfiles.RUNS / _folder_of(item))
+        for entry in found:
             try:
                 pid = int(read_json(entry)["pid"])
             except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError):
@@ -973,8 +1073,12 @@ def release_attempt(home: Path, task_id: str, attempt_id: str) -> dict:
                 raise RuntimeError(f"The process file {entry} names PID {pid}, which may still be running. Check it; "
                                    "remove the file only once that process and what it started have stopped")
         record = record.release(attempt_id, ended_at=_instant(item.started_at))
+        released = record.step.last
         state[execution.KEY] = record.to_dict()
-        _event(state, "attempt_released", attempt=attempt_id)
+        # Fixed words: the user's acknowledgement, what was known before, what was checked; never a claim about effects.
+        _event(state, "attempt_released", attempt=attempt_id, acknowledged="processes_stopped",
+               previously="no_end" if not item.ended else "unverified", process_files=len(found),
+               outcome=str(released.outcome), effects="unknown")
         _save(path, state)
         return state
 
@@ -1260,6 +1364,8 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
         error["source"] = "acceptance"  # the details are in the task's `acceptance` record
     if isinstance(exc, CompletionRefused):
         error["source"] = "gate"  # the details are in the task's `gate` record
+    if isinstance(exc, BudgetExhausted):
+        error["budget"] = exc.refusal.to_dict()  # which limit, in which unit: the scope, the limit, used and asked
     provider = getattr(exc, "provider", None)
     if kind == "quota":
         provider = provider or state["developer" if state["phase"] == "develop" else "reviewer"]
@@ -1513,8 +1619,15 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
             # Idempotent Resume: while the execution record cannot be read, or a call may still be running and
             # nobody released it, a run may do nothing: no event, no environment check, no provider call.
             return state
-        # Checked before `last_error` is cleared: a planned retry must not start early.
-        proceed, changed = recovery.admit(state, cfg, active=auto, retry_of=retry_of, now=clock())
+        refusal = _refusal(state, cfg)
+        if state["status"] == "paused" and isinstance(error, dict) and error.get("kind") == "budget_exhausted" \
+                and refusal is not None:
+            # Idempotent Resume: a budget is never raised by a run, so while it still refuses the next call nothing
+            # can happen: no event, no environment check, no provider call.
+            return state
+        # Checked before `last_error` is cleared: a planned retry must not start early, nor one no budget could take.
+        proceed, changed = recovery.admit(state, cfg, active=auto, retry_of=retry_of, now=clock(),
+                                          refused=None if refusal is None else refusal.to_dict())
         if not proceed:
             if changed:
                 _save(path, state)
@@ -1537,7 +1650,12 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
         try:
             _settle_attempts(path, state)  # no call starts while one of an earlier run may still be running
             if state["phase"] != "validate":
-                sync()  # a task created before criteria were tracked gets them here, with nothing taken as verified
+                # A task created before criteria were tracked gets them here, with nothing taken as verified.
+                record, _ = sync()
+                reusable = state["phase"] == "review" and record.code.get("status") == criteria.Code.APPROVED \
+                    and isinstance(state.get("review"), dict)
+                if state["phase"] == "develop" or (state["phase"] == "review" and not reusable):
+                    _admit(state, cfg)  # a call follows: refused by a budget before any check starts a CLI
             elif _validate_stage(sync, cfg, path, state, workspace):
                 return state
             if manager is not None:
@@ -1551,9 +1669,9 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     _event(state, "development_started", **_configured(settings))
                     _save(path, state)
                     context = _context(home, cfg, path, state, workspace, "developer")
-                    reply, _ = _attempt(adapter, path, state, "developer",
-                                        _developer_prompt(path, state, workspace, context, record.developer_brief()),
-                                        workspace, run_dir, settings, executing)
+                    reply, _, _ = _attempt(adapter, path, state, "developer",
+                                           _developer_prompt(path, state, workspace, context, record.developer_brief()),
+                                           workspace, run_dir, settings, executing)
                     atomic_text(path / "handoff.md", f"# Handoff — iteration {iteration}\n\n{reply.text[:30000]}\n")
                     state["handoff"] = str(path / "handoff.md")
                     _event(state, "development_completed", agent=state["developer"])
@@ -1578,6 +1696,7 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     if reused:
                         review = state["review"]
                     else:
+                        _admit(state, cfg)  # a review call follows: refused by a budget before the check starts a CLI
                         if manager is not None:
                             # Before every review; a ready result is reused only while nothing it depends on changed.
                             _environment(manager, home, path, state, cfg, live=live, reviewer_only=True)
@@ -1586,18 +1705,22 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                         _save(path, state)
                         context = _context(home, cfg, path, state, workspace, "reviewer")
                         registry = _findings(state, path)
-                        reply, answered_in = _attempt(adapter, path, state, "reviewer",
-                                                      _review_prompt(path, state, workspace, context,
-                                                                     record.reviewer_brief(evidence.read(path))
-                                                                     + findings.brief(registry)),
-                                                      workspace, run_dir, settings, executing)
-                        # The answer is validated against the plan: what the reviewer says about a criterion it
-                        # cannot verify is recorded and proves nothing. An approval that leaves one of its criteria
-                        # without an outcome is not a complete review: a Resume asks for it again.
-                        try:
-                            review = record.settle_review(parse_review(reply.text), iteration)
-                        except criteria.IncompleteReview as exc:
-                            raise AgentFailure(str(exc), "invalid_review") from exc
+
+                        def settled(answer, judged=record, at=iteration):
+                            # The answer is validated against the plan: what the reviewer says about a criterion it
+                            # cannot verify is recorded and proves nothing. An approval that leaves one of its
+                            # criteria without an outcome is not a complete review: a Resume asks for it again.
+                            # Read inside the call's attempt, so an answer it refuses never ends one as COMPLETED.
+                            try:
+                                return judged.settle_review(parse_review(answer.text), at)
+                            except criteria.IncompleteReview as exc:
+                                raise AgentFailure(str(exc), "invalid_review") from exc
+
+                        reply, answered_in, review = _attempt(adapter, path, state, "reviewer",
+                                                              _review_prompt(path, state, workspace, context,
+                                                                             record.reviewer_brief(evidence.read(path))
+                                                                             + findings.brief(registry)),
+                                                              workspace, run_dir, settings, executing, accept=settled)
                         current = _check_test_context(state, cfg, workspace)
                         # Each issue is recorded as a finding, or linked to one of an earlier review by a fixed rule.
                         review = registry.settle(review, record) if registry is not None else findings.unlinked(review)
@@ -1660,9 +1783,16 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
             state["last_error"] = _failure(exc, state, failed_at)
             held = isinstance(exc, (ValidationPending, CompletionRefused)) and isinstance(state.get("gate"), dict)
             _event(state, "task_paused", reason=state["last_error"]["kind"],
-                   **({"gate": gate.brief_of(state["gate"])} if held else {}))
-            # The retry plan is saved with the pause, before the lock is released.
-            recovery.on_failure(state, cfg, active=auto, now=failed_at)
+                   **({"gate": gate.brief_of(state["gate"])} if held else {}),
+                   **({"budget": state["last_error"]["budget"]} if "budget" in state["last_error"] else {}))
+            # The retry plan is saved with the pause, before the lock is released. A retry no budget could take is
+            # never planned: the refusal of the step's next call is read from the record as this failure left it.
+            try:
+                refused = _refusal(state, cfg) if state["last_error"]["kind"] == "quota" else None
+            except Exception:  # noqa: BLE001 - the pause is saved whatever; the retry's own admission still decides
+                refused = None
+            recovery.on_failure(state, cfg, active=auto, now=failed_at,
+                                refused=None if refused is None else refused.to_dict())
             _save(path, state)
             _report(path, state)
             return state
@@ -1822,6 +1952,20 @@ def draft_tests(home: Path, task_id: str, *, adapter=None, force_unlock: bool = 
         try:
             _settle_attempts(path, state)  # no call starts while one of the task may still be running
             settings = _agent_settings(root, home, cfg, state, "developer")
+            record = _execution(state)
+            step = record.step if record is not None else None
+            if step is not None and (step.iteration, step.phase) == (state["iteration"], execution.Phase.DEVELOP):
+                # The developer's step is recorded: this call must fit the task's budget, and runs with that step's
+                # frozen turn limit and timeout. It is not an attempt of the step (it is not charged: see Step 05).
+                if not getattr(adapter, "configurable", False):
+                    raise AgentFailure("The adapter of this request cannot be given the frozen call limits of the "
+                                       "developer's step, so no call was started.", "configuration", provider=provider)
+                refusal = record.task_admission(execution.call_request(step.call))
+                if refusal is not None:
+                    raise BudgetExhausted(_budget_message(refusal, "developer", state["iteration"]), refusal,
+                                          provider=provider)
+                settings = {**settings, "timeout_seconds": step.call.timeout_seconds,
+                            **({"max_turns": step.call.turn_limit} if step.call.turn_limit is not None else {})}
             _event(state, "test_draft_started", **_configured(settings))
             _save(path, state)
             if manager is not None:  # before the agent, as before any provider call

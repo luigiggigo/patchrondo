@@ -36,7 +36,7 @@ def call(provider="claude", turns=40, timeout=900) -> CallLimits:
 
 
 def opened(provider="claude", phase=Phase.DEVELOP, iteration=1, limits=None) -> ExecutionRecord:
-    task_limits = {Unit.CLAUDE_TURNS: 200, Unit.PROVIDER_CALLS: 20, Unit.SECONDS: 36000, Unit.TOKENS: None}
+    task_limits = {Unit.CLAUDE_TURNS: 1000, Unit.PROVIDER_CALLS: 20, Unit.SECONDS: 36000, Unit.TOKENS: None}
     record = ExecutionRecord.open(TASK, task_limits)
     if limits is None:
         limits = dict(LIMITS) if provider == "claude" else {key: value for key, value in LIMITS.items()
@@ -370,7 +370,8 @@ class LegacyTests(unittest.TestCase):
 
     def test_only_the_attempt_wrapper_of_core_uses_the_records(self):
         """Since Step 04 the records are read and written by the wrapper around a call in `core.py` and by the user's
-        release, nowhere else: not the command of a step, the adapters, recovery or the gate."""
+        release, nowhere else: not the command of a step, the adapters, recovery or the gate. Since Step 05 the
+        budget's refusal is read there too (and by the request for tests), and passed to recovery as plain details."""
         users = {}
         for source in sorted(SOURCES.glob("*.py")):
             if source.name == "execution.py":
@@ -387,8 +388,9 @@ class LegacyTests(unittest.TestCase):
         self.assertEqual(set(users), {"core.py"})
         self.assertEqual({function for function, _ in users["core.py"]},
                          {"validate_config", "_execution", "_execution_unreadable", "_uncertain_attempt", "_unused",
-                          "_ended_event", "_settle_attempts", "_step_settings", "_outcome", "_termination", "_attempt",
-                          "close", "running", "release_attempt", "_folder_of"})
+                          "_ended_event", "_settle_attempts", "_step_settings", "_termination", "_attempt",
+                          "close", "running", "release_attempt", "_folder_of", "_refusal", "_budget_message", "__init__",
+                          "draft_tests"})
         self.assertIn(("validate_config", "settings_of"), users["core.py"])
 
 
@@ -738,6 +740,162 @@ class SeparationTests(unittest.TestCase):
         kept = copy.deepcopy(state)
         execution.load(state)
         self.assertEqual(state, kept)
+
+
+class OutcomeTableTests(unittest.TestCase):
+    """Step 05: the one mapping every attempt is ended with (`outcome_of`, `termination_of`)."""
+
+    @staticmethod
+    def failure(kind) -> providers.AgentFailure:
+        failure = providers.AgentFailure("failed")
+        failure.kind = kind
+        return failure
+
+    def test_every_kind_of_the_table_through_a_failure(self):
+        for kind, outcome in execution.OUTCOME_OF_KIND.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(execution.outcome_of(providers.AgentFailure("failed", kind)), (outcome, kind))
+
+    def test_the_outcomes_the_step_distinguishes(self):
+        expected = {"max_turns": AttemptOutcome.TURN_LIMIT_REACHED, "quota": AttemptOutcome.QUOTA_EXHAUSTED,
+                    "timeout": AttemptOutcome.TIMEOUT, "interrupted": AttemptOutcome.INTERRUPTED,
+                    "sandbox_access_denied": AttemptOutcome.PERMISSION_DENIED,
+                    "invalid_review": AttemptOutcome.INVALID_FINAL_OUTPUT,
+                    "empty_output": AttemptOutcome.INVALID_FINAL_OUTPUT,
+                    "invalid_output": AttemptOutcome.INVALID_FINAL_OUTPUT,
+                    "agent_error": AttemptOutcome.PROVIDER_ERROR, "model_unavailable": AttemptOutcome.PROVIDER_ERROR,
+                    "system_error": AttemptOutcome.UNKNOWN}
+        for kind, outcome in expected.items():
+            with self.subTest(kind=kind):
+                self.assertEqual(execution.outcome_of(self.failure(kind)), (outcome, kind))
+        self.assertNotEqual(AttemptOutcome.QUOTA_EXHAUSTED, AttemptOutcome.TURN_LIMIT_REACHED)
+
+    def test_failures_without_a_kind_read_as_core_saves_them(self):
+        state = {"phase": "develop", "developer": "claude", "reviewer": "codex"}
+        cases = ((KeyboardInterrupt(), AttemptOutcome.INTERRUPTED, "interrupted"),
+                 (__import__("subprocess").TimeoutExpired(["cli"], 1), AttemptOutcome.TIMEOUT, "timeout"),
+                 (PermissionError(13, "Permission denied"), AttemptOutcome.PERMISSION_DENIED, "system_error"),
+                 (FileNotFoundError(2, "missing"), AttemptOutcome.UNKNOWN, "system_error"),
+                 (OSError("disk"), AttemptOutcome.UNKNOWN, "system_error"),
+                 (RuntimeError("broken"), AttemptOutcome.UNKNOWN, "system_error"))
+        for failure, outcome, kind in cases:
+            with self.subTest(failure=type(failure).__name__):
+                self.assertEqual(execution.outcome_of(failure), (outcome, kind))
+                # The saved `last_error.kind` is unchanged: the outcome only reads it.
+                self.assertEqual(core._failure(failure, state, __import__("datetime").datetime.now(
+                    __import__("datetime").timezone.utc))["kind"], kind)
+        self.assertEqual(execution.outcome_of(ValueError("bug")), (AttemptOutcome.UNKNOWN, None))
+        self.assertEqual(execution.outcome_of(None), (AttemptOutcome.COMPLETED, None))
+
+    def test_unknown_and_malformed_kinds_are_unknown_never_an_answer(self):
+        self.assertEqual(execution.outcome_of(self.failure("something_new")), (AttemptOutcome.UNKNOWN, "something_new"))
+        for bad in (None, 3, True, "", "Bad Kind", "1kind", "x" * 70, "quota "):
+            with self.subTest(kind=bad):
+                self.assertEqual(execution.outcome_of(self.failure(bad)), (AttemptOutcome.UNKNOWN, None))
+        self.assertIn("budget_exhausted", execution.ENGINE_KINDS)
+        for kind in execution.ENGINE_KINDS:
+            with self.subTest(kind=kind):
+                self.assertEqual(execution.outcome_of(self.failure(kind)), (AttemptOutcome.UNKNOWN, None))
+        everything = [self.failure(kind) for kind in [*execution.OUTCOME_OF_KIND, *execution.ENGINE_KINDS, "new", None]]
+        everything += [KeyboardInterrupt(), OSError(), RuntimeError(), ValueError()]
+        self.assertNotIn(AttemptOutcome.COMPLETED, {execution.outcome_of(failure)[0] for failure in everything})
+
+    def test_a_refined_outcome_keeps_the_saved_kind_and_nothing_else_does(self):
+        self.assertEqual(execution.outcomes_for_failure("system_error"),
+                         {AttemptOutcome.UNKNOWN, AttemptOutcome.PERMISSION_DENIED})
+        self.assertEqual(execution.outcomes_for_failure("quota"), {AttemptOutcome.QUOTA_EXHAUSTED})
+        self.assertEqual(execution.outcomes_for_failure("tests_disabled"), frozenset())
+        record = finished(opened(), AttemptOutcome.PERMISSION_DENIED, kind="system_error")
+        self.assertEqual(ExecutionRecord.from_dict(record.to_dict()), record)
+        for outcome, kind in ((AttemptOutcome.PERMISSION_DENIED, "timeout"), (AttemptOutcome.TURN_LIMIT_REACHED,
+                                                                             "system_error"),
+                              (AttemptOutcome.COMPLETED, "system_error"), (AttemptOutcome.UNKNOWN, "quota")):
+            with self.subTest(outcome=outcome, kind=kind), self.assertRaises(InvalidRecord):
+                finished(opened(), outcome, kind=kind, termination=Termination.EXITED)
+
+    def test_the_termination_rule(self):
+        rule = execution.termination_of
+        self.assertIs(rule(AttemptOutcome.COMPLETED, failed=False, observed=False), Termination.EXITED)
+        for outcome in (AttemptOutcome.TIMEOUT, AttemptOutcome.INTERRUPTED, AttemptOutcome.UNKNOWN):
+            self.assertIs(rule(outcome, failed=True, observed=False), Termination.UNVERIFIED)
+        self.assertIs(rule(AttemptOutcome.PROVIDER_ERROR, failed=True, observed=False), Termination.EXITED)
+        self.assertIs(rule(AttemptOutcome.PERMISSION_DENIED, failed=True, observed=True), Termination.NOT_STARTED)
+        self.assertIs(rule(AttemptOutcome.TIMEOUT, failed=True, observed=True), Termination.UNVERIFIED)
+        self.assertIs(rule(AttemptOutcome.TIMEOUT, failed=True, observed=True, started=True), Termination.UNVERIFIED)
+        self.assertIs(rule(AttemptOutcome.TIMEOUT, failed=True, observed=True, started=True, stopped=True, whole=True),
+                      Termination.STOPPED)
+        self.assertIs(rule(AttemptOutcome.TIMEOUT, failed=True, observed=True, started=True, stopped=True),
+                      Termination.UNVERIFIED)
+        self.assertIs(rule(AttemptOutcome.INVALID_FINAL_OUTPUT, failed=True, observed=True, started=True),
+                      Termination.EXITED)
+
+
+class AdmissionTests(unittest.TestCase):
+    """Step 05: no attempt is added that its step's budget or the task's cannot take."""
+
+    def test_a_call_is_asked_for_the_most_it_may_use(self):
+        self.assertEqual(execution.call_request(call()), {Unit.PROVIDER_CALLS: 1, Unit.SECONDS: 900, Unit.CLAUDE_TURNS: 40})
+        self.assertEqual(execution.call_request(call("codex")), {Unit.PROVIDER_CALLS: 1, Unit.SECONDS: 900})
+        self.assertEqual(execution.smallest_request("codex"), {Unit.PROVIDER_CALLS: 1, Unit.SECONDS: 1})
+        self.assertEqual(execution.smallest_request("claude")[Unit.CLAUDE_TURNS], 1)
+        # What a call is asked for is what it is charged while it runs.
+        _, item = started(opened())
+        self.assertEqual({unit: amount for unit, amount in item.charges().items() if unit is not Unit.TOKENS},
+                         execution.call_request(call()))
+
+    def test_lines_are_asked_in_a_fixed_order(self):
+        record = ExecutionRecord.open(TASK, {Unit.PROVIDER_CALLS: 20, Unit.SECONDS: 1000})
+        record = record.begin_step(1, Phase.DEVELOP, "claude", {Unit.PROVIDER_CALLS: 1, Unit.CLAUDE_TURNS: 80,
+                                                                Unit.SECONDS: 3600}, call(), ExecutionProfile.CUSTOM)
+        self.assertIsNone(record.admission())
+        record = finished(record)  # the step's one call is used; the task's seconds (300 + 900 > 1000) are short too
+        refusal = record.admission()
+        self.assertEqual(refusal.to_dict(), {"scope": "phase", "unit": "provider_calls", "limit": 1, "used": 1,
+                                             "unknown": 0, "requested": 1})
+        self.assertEqual(execution.ADMISSION_ORDER[0], (Scope.PHASE, Unit.PROVIDER_CALLS))
+        self.assertEqual(record.task_admission({Unit.SECONDS: 900}).to_dict(),
+                         {"scope": "task", "unit": "seconds", "limit": 1000, "used": 300, "unknown": 0,
+                          "requested": 900})
+
+    def test_new_attempt_refuses_and_changes_nothing(self):
+        record = finished(finished(opened(limits={Unit.PROVIDER_CALLS: 2, Unit.CLAUDE_TURNS: 200, Unit.SECONDS: 3600})))
+        kept = record.to_dict()
+        with self.assertRaises(execution.Inadmissible) as caught:
+            started(record)
+        self.assertIsInstance(caught.exception, InvalidRecord)
+        self.assertEqual(caught.exception.refusal, record.admission())
+        self.assertEqual((caught.exception.refusal.scope, caught.exception.refusal.unit), (Scope.PHASE, Unit.PROVIDER_CALLS))
+        self.assertEqual(record.to_dict(), kept)
+
+    def test_each_unit_and_scope_can_refuse(self):
+        cases = (({Unit.CLAUDE_TURNS: 70}, {}, (Scope.PHASE, Unit.CLAUDE_TURNS)),      # 31 + 40 > 70
+                 ({Unit.SECONDS: 1100}, {}, (Scope.PHASE, Unit.SECONDS)),             # 300 + 900 > 1100
+                 ({}, {Unit.PROVIDER_CALLS: 1}, (Scope.TASK, Unit.PROVIDER_CALLS)),
+                 ({}, {Unit.SECONDS: 1100}, (Scope.TASK, Unit.SECONDS)),
+                 ({}, {Unit.CLAUDE_TURNS: 70}, (Scope.TASK, Unit.CLAUDE_TURNS)))
+        for phase, task, expected in cases:
+            with self.subTest(expected=expected):
+                record = ExecutionRecord.open(TASK, task).begin_step(1, Phase.DEVELOP, "claude", phase, call(),
+                                                                     ExecutionProfile.CUSTOM)
+                refusal = finished(record).admission()
+                self.assertEqual((refusal.scope, refusal.unit), expected)
+
+    def test_a_limited_line_with_an_unknown_charge_admits_nothing(self):
+        budget = BudgetState(Scope.TASK, (BudgetLine(Unit.PROVIDER_CALLS), BudgetLine(Unit.SECONDS, 3600, 0, 1)))
+        refusal = execution._refused({Scope.TASK: budget}, {Unit.SECONDS: 1})
+        self.assertEqual((refusal.unit, refusal.unknown, refusal.used), (Unit.SECONDS, 1, 0))
+        self.assertIsNone(execution._refused({Scope.TASK: BudgetState.open(Scope.TASK, {})}, {Unit.SECONDS: 10**9}))
+
+    def test_admission_reads_only_and_a_release_charges_nothing_twice(self):
+        record, item = started(opened(limits={Unit.PROVIDER_CALLS: 2, Unit.CLAUDE_TURNS: 70, Unit.SECONDS: 1800}))
+        kept = record.to_dict()
+        # Charged the most it may use while it may run: 900 + 900 seconds fit the step, 40 + 40 turns do not fit 70.
+        self.assertEqual(record.admission().unit, Unit.CLAUDE_TURNS)
+        self.assertEqual(record.to_dict(), kept)
+        released = record.release(item.attempt_id, ended_at=T2)
+        self.assertEqual((released.budget, released.step.budget), (record.budget, record.step.budget))
+        self.assertEqual(released.admission(), record.admission())
+        self.assertEqual(ExecutionRecord.from_dict(released.to_dict()).admission(), released.admission())
 
 
 if __name__ == "__main__":

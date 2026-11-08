@@ -328,10 +328,18 @@ CLI alone. With Adaptive Execution enabled, each call is recorded before it
 starts; a call stopped without proof that what it started stopped, or found
 with no recorded end after a lost run, holds the task (`attempt_uncertain`):
 no other agent call starts until you have checked and run `patchrondo
-release-attempt`, which only records your statement and is refused while the
-call's process file names a process that may be alive (on native Windows,
-any). Without Adaptive Execution, a Resume after such a timeout starts the
-next call as before.
+release-attempt … --confirm-stopped`, which only records your statement and
+is refused without that acknowledgement, while the task was not paused by a
+run, while the call's folder cannot be read, and while the call's process
+file names a process that may be alive (on native Windows, any). A release
+claims nothing about what the call did: its outcome stays unknown and its
+changes are not undone. Without Adaptive Execution, a Resume after such a
+timeout starts the next call as before.
+
+**Budgets of agent calls.** With Adaptive Execution enabled, no agent call
+starts that the frozen budget of its step or of the task cannot take,
+automatic quota retries included; the task pauses with `budget_exhausted`
+and nothing raises a budget by itself.
 
 **What a result is worth.** Code under test can print anything and can write a report that says what it
 likes. The runner refuses a report that was there before the run, a report

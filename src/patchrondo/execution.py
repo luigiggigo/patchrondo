@@ -1,14 +1,17 @@
-"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-04).
+"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-05).
 
 It defines what `core.run_task` saves and reads under `state["execution"]`,
 the optional `execution` section of a project's configuration and the limits
 it resolves to. It calls no agent, runs nothing, reads no file and writes
 nothing. `core.validate_config` refuses an `execution` section this version
-cannot use; `core._open_step`, `core._attempt` and `core.release_attempt`
+cannot use; `core._step_settings`, `core._attempt` and `core.release_attempt`
 (Step 04) record each call of a step whose project enabled execution, and
-apply its call limits. The command of a step (`agents.command`), quota
+apply its call limits. Since Step 05 the outcome of every call is read from
+one table here (`outcome_of`, `termination_of`), and no attempt can be added
+that its step's budget or the task's cannot take (`ExecutionRecord.admission`,
+enforced by `new_attempt`). The command of a step (`agents.command`), quota
 recovery and the gate do not know this module, and nothing here starts a
-call: no budget decides one yet (automatic continuation is a later step).
+call: a budget only ever refuses one (automatic continuation is a later step).
 
 Units of work, from the largest:
 
@@ -25,18 +28,26 @@ Units of work, from the largest:
                 reference that only the provider understands. It is never an ID of
                 PatchRondo, and nothing resumes it until a native resume is validated.
 
-The outcome of an attempt describes the CLI call only. `COMPLETED` means that
-the CLI gave a final answer: the workflow still parses and judges it, a phase
-ends only when `run_task` moves on, and a task is done only through
-`core._complete` with the gate's `PASS`. No record here has a field for the
-status of a task or for the end of a phase.
+The outcome of an attempt describes the CLI call only. Three things are kept
+apart. The CLI's own end is its termination (`EXITED`: it ended by itself).
+A usable answer is the outcome `COMPLETED`: the CLI gave a final answer in the
+form its role needs (a developer's handoff that is not empty; a reviewer's
+answer that `core.parse_review` reads and that gives each of its criteria an
+outcome). A CLI that exited with an answer the workflow cannot read is
+`INVALID_FINAL_OUTPUT`, never `COMPLETED`. The end of a phase is the
+workflow's: the verdict, the tests and `run_task` moving on decide it, and a
+task is done only through `core._complete` with the gate's `PASS`. No record
+here has a field for the status of a task or for the end of a phase.
 
-Budgets name their unit. Claude turns, provider calls and seconds can be
+Budgets name their unit. Claude turns, provider calls and seconds are
 enforced; tokens are only observed and never limited. A Codex call has no
 Claude turns (`NOT_APPLICABLE`), and usage a CLI did not report is
 `UNKNOWN`, never 0. Where a call's usage is unknown, its charge is the most
 the call was allowed (its turn limit, its timeout); a limited budget with an
-uncharged unknown left in it allows nothing more.
+uncharged unknown left in it allows nothing more. A call is admitted only when
+every limited line of its step's budget and of the task's can take the most
+that call may use (one provider call, its timeout, its turn limit), since
+that is what it is charged while it runs.
 
 Each attempt has a status (`STARTING`, saved before anything is created or
 started; `RUNNING`, saved once the CLI's process exists and its process file
@@ -63,6 +74,7 @@ from datetime import datetime
 from enum import StrEnum
 import json
 import re
+import subprocess
 from types import MappingProxyType
 from typing import Mapping
 
@@ -204,13 +216,19 @@ OUTCOME_OF_KIND = {
     "agent_error": AttemptOutcome.PROVIDER_ERROR,
     "system_error": AttemptOutcome.UNKNOWN,  # an OSError or RuntimeError: what the call did is not known
 }
+# A kind a more precise error of the system narrows, never the reverse. `system_error` is what `core._failure` saves
+# for any OSError or RuntimeError; a PermissionError among them is the system refusing access (the CLI could not be
+# started, or a file of the call could not be written), which the saved kind does not say.
+REFINED = {"system_error": frozenset({AttemptOutcome.PERMISSION_DENIED})}
 # Kinds of the engine's own pauses: no agent call ends with them, so no attempt does.
 ENGINE_KINDS = frozenset({"tests_disabled", "verification_error", "verification_blocked", "stale_tests",
                           "completion_refused", "awaiting_validation", "awaiting_authorization",
                           "acceptance_unreadable", "validation_failed",
                           # Step 04: pauses before a call is started, never the end of one.
                           "attempt_uncertain", "attempt_folder_exists", "attempt_limit_reached",
-                          "execution_unreadable"})
+                          "execution_unreadable",
+                          # Step 05: a budget refused the next call before anything was started.
+                          "budget_exhausted"})
 
 
 def outcome_for_failure(kind) -> AttemptOutcome | None:
@@ -218,6 +236,74 @@ def outcome_for_failure(kind) -> AttemptOutcome | None:
     if isinstance(kind, str) and kind in ENGINE_KINDS:
         return None
     return OUTCOME_OF_KIND.get(kind, AttemptOutcome.UNKNOWN) if isinstance(kind, str) else AttemptOutcome.UNKNOWN
+
+
+def outcomes_for_failure(kind) -> frozenset:
+    """Every outcome a call that failed with `kind` may be recorded with: its outcome, and what `REFINED` narrows it to."""
+    outcome = outcome_for_failure(kind)
+    return frozenset() if outcome is None else frozenset({outcome}) | REFINED.get(kind, frozenset())
+
+
+def outcome_of(failure: BaseException | None) -> tuple[AttemptOutcome, str | None]:
+    """How one call ended, and the failure kind kept with it: the one mapping every attempt is ended with.
+
+    `failure` is what the call raised, None when it returned an answer that
+    its role accepts. The kind is the one `core._failure` saves as
+    `last_error.kind`, read through `OUTCOME_OF_KIND`; no kind or pause text
+    changes here. In this order: an answer; an interruption; a timeout of the
+    process; a failure that names its kind (an `AgentFailure`: the adapters
+    decide it from the CLI's own result first, Claude's `error_max_turns`
+    subtype or an `is_error` result, and read output text only after that, and
+    never what the agent wrote while it worked); an error of the system,
+    narrowed to `PERMISSION_DENIED` for a refused access. Anything else is
+    `UNKNOWN`, never an answer: a malformed kind keeps no kind.
+    """
+    if failure is None:
+        return AttemptOutcome.COMPLETED, None
+    if isinstance(failure, KeyboardInterrupt):
+        return AttemptOutcome.INTERRUPTED, "interrupted"
+    if isinstance(failure, subprocess.TimeoutExpired):
+        return AttemptOutcome.TIMEOUT, "timeout"
+    if hasattr(failure, "kind"):
+        kind = failure.kind
+        if type(kind) is not str or not FAILURE_KIND.fullmatch(kind):
+            return AttemptOutcome.UNKNOWN, None
+        outcome = outcome_for_failure(kind)
+        return (AttemptOutcome.UNKNOWN, None) if outcome is None else (outcome, kind)
+    if isinstance(failure, PermissionError):
+        return AttemptOutcome.PERMISSION_DENIED, "system_error"
+    if isinstance(failure, (OSError, RuntimeError)):
+        return AttemptOutcome.UNKNOWN, "system_error"
+    return AttemptOutcome.UNKNOWN, None
+
+
+def termination_of(outcome: AttemptOutcome, *, failed: bool, observed: bool, started: bool = False,
+                   stopped: bool = False, whole: bool = False) -> Termination:
+    """Whether a call's process, and what it started, are known to have stopped: the one rule for every attempt.
+
+    `failed`: the call raised. `observed`: the adapter reported its process
+    (`providers.Observation`), and then `started` (a process was created),
+    `stopped` (PatchRondo had to stop it) and `whole` (a process group or a job
+    object took the last signal, and no signal was refused). Agents run
+    without a job object on native Windows, so a call stopped there is
+    `UNVERIFIED`. An adapter that reports no process is taken at its word only
+    for an ending of its own, and a timeout no process showed is never taken
+    for a clean end.
+    """
+    if not failed:
+        return Termination.EXITED
+    if not observed:
+        stopping = outcome in (AttemptOutcome.TIMEOUT, AttemptOutcome.INTERRUPTED, AttemptOutcome.UNKNOWN)
+        return Termination.UNVERIFIED if stopping else Termination.EXITED
+    if not started:
+        found = Termination.NOT_STARTED
+    elif stopped:
+        found = Termination.STOPPED if whole else Termination.UNVERIFIED
+    else:
+        found = Termination.EXITED
+    if outcome is AttemptOutcome.TIMEOUT and found in (Termination.EXITED, Termination.NOT_STARTED):
+        return Termination.UNVERIFIED
+    return found
 
 
 # --- validation -----------------------------------------------------------------------------------------------
@@ -527,7 +613,7 @@ class AttemptRecord:
             expected = outcome_for_failure(self.failure_kind)
             if expected is None:
                 raise InvalidRecord("an engine pause is not the outcome of an agent call")
-            if expected is not self.outcome:
+            if self.outcome not in outcomes_for_failure(self.failure_kind):
                 raise InvalidRecord(f"failure kind {self.failure_kind} is the outcome {expected}, not {self.outcome}")
         elif self.outcome is AttemptOutcome.QUOTA_EXHAUSTED or self.outcome is AttemptOutcome.TURN_LIMIT_REACHED:
             raise InvalidRecord(f"{self.outcome} is read from the failure the call ended with")
@@ -638,7 +724,8 @@ class CallLimits:
 
     Every attempt of the step is started with these values, whatever the
     project's configuration or the agent settings say by then: a resume, a
-    retry and a quota recovery never resolve them again.
+    retry and a quota recovery never resolve them again, and an agent setting
+    frozen or refreshed with other values never replaces them in a call.
     """
     turn_limit: int | None   # Claude's `--max-turns`; None for Codex
     turn_source: "Source"
@@ -768,6 +855,64 @@ class StepExecution:
         return step
 
 
+# --- admission of a call (Step 05) ----------------------------------------------------------------------------
+
+# The order in which the lines of the two budgets are asked; the first that cannot take the call refuses it.
+ADMISSION_ORDER = ((Scope.PHASE, Unit.PROVIDER_CALLS), (Scope.PHASE, Unit.CLAUDE_TURNS), (Scope.PHASE, Unit.SECONDS),
+                   (Scope.TASK, Unit.PROVIDER_CALLS), (Scope.TASK, Unit.CLAUDE_TURNS), (Scope.TASK, Unit.SECONDS))
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """Why a call cannot start: the first limited line, in `ADMISSION_ORDER`, that cannot take what the call may use."""
+    scope: Scope
+    unit: Unit
+    limit: int
+    used: int
+    unknown: int     # calls whose usage in this unit is unknown: while any is in the line, it admits nothing
+    requested: int   # the most the call may use in this unit (one call, its timeout, its turn limit)
+
+    def to_dict(self) -> dict:
+        return {"scope": str(self.scope), "unit": str(self.unit), "limit": self.limit, "used": self.used,
+                "unknown": self.unknown, "requested": self.requested}
+
+
+class Inadmissible(InvalidRecord):
+    """A new attempt that its step's budget or the task's cannot take. Nothing was added to the record."""
+
+    def __init__(self, refusal: Refusal):
+        super().__init__(f"the {refusal.scope} budget cannot admit another call ({refusal.unit}: {refusal.used} of "
+                         f"{refusal.limit} used, {refusal.requested} more asked)")
+        self.refusal = refusal
+
+
+def call_request(call: CallLimits) -> dict[Unit, int]:
+    """The most one call with these frozen limits may use: what it is charged while it runs, and what it must fit in."""
+    request = {Unit.PROVIDER_CALLS: 1, Unit.SECONDS: call.timeout_seconds}
+    if call.turn_limit is not None:
+        request[Unit.CLAUDE_TURNS] = call.turn_limit
+    return request
+
+
+def smallest_request(provider: str) -> dict[Unit, int]:
+    """The least any call of `provider` uses: one call, one second and, for Claude, one turn."""
+    request = {Unit.PROVIDER_CALLS: 1, Unit.SECONDS: 1}
+    if provider == "claude":
+        request[Unit.CLAUDE_TURNS] = 1
+    return request
+
+
+def _refused(budgets: Mapping[Scope, BudgetState], request: Mapping[Unit, int]) -> Refusal | None:
+    for scope, unit in ADMISSION_ORDER:
+        budget = budgets.get(scope)
+        line = budget.line(unit) if budget is not None else None
+        if line is None or unit not in request:
+            continue
+        if not line.allows(request[unit]):
+            return Refusal(scope, unit, line.limit, line.used, line.unknown, request[unit])
+    return None
+
+
 @dataclass(frozen=True)
 class ExecutionRecord:
     """The execution record of a task: the next attempt number, the task's budget and the current step.
@@ -821,13 +966,17 @@ class ExecutionRecord:
         """The record with a new `STARTING` attempt of the current step, charged in advance, and that attempt.
 
         The attempt is started with the step's frozen call limits. None is
-        added while an attempt of the step may still run.
+        added while an attempt of the step may still run, nor one that the
+        step's budget or the task's cannot take (`Inadmissible`, `admission`).
         """
         step = self.step
         if step is None:
             raise InvalidRecord("there is no current step")
         if step.uncertain is not None:
             raise InvalidRecord("the current step has an attempt that may still run")
+        refusal = self.admission()
+        if refusal is not None:
+            raise Inadmissible(refusal)
         claude = step.provider == "claude"
         item = AttemptRecord(
             attempt_id(self.next_attempt), self.task_id, step.iteration, step.phase, len(step.attempts) + 1,
@@ -838,6 +987,30 @@ class ExecutionRecord:
         record = replace(self, next_attempt=self.next_attempt + 1, budget=self.budget.charged(item.charges()),
                          step=replace(step, budget=step.budget.charged(item.charges()), attempts=step.attempts + (item,)))
         return record, item
+
+    def admission(self) -> Refusal | None:
+        """Whether one more call of the current step fits its budget and the task's. Reads only; None: it does.
+
+        The call is asked for what it may use with the step's frozen limits
+        (`call_request`): one provider call, its timeout and, for Claude, its
+        turn limit, which is also what it is charged while it runs. Every
+        limited line is asked, in `ADMISSION_ORDER`; a line with an unknown
+        charge in it admits nothing (`BudgetLine.allows`). The limits are the
+        ones frozen in the record, whatever the configuration says now: a
+        budget is never raised, lowered or resolved again here.
+        """
+        step = self.step
+        if step is None:
+            raise InvalidRecord("there is no current step")
+        return _refused({Scope.PHASE: step.budget, Scope.TASK: self.budget}, call_request(step.call))
+
+    def task_admission(self, request: Mapping[Unit, int]) -> Refusal | None:
+        """Whether the task's budget alone could take a call asking for `request`. Reads only; None: it could.
+
+        For a call that is not an attempt of the current step: a step about to
+        begin (asked with `smallest_request`, before its limits are resolved;
+        its own `admission` decides at its call), and a request for tests."""
+        return _refused({Scope.TASK: self.budget}, request)
 
     def update(self, item: AttemptRecord) -> "ExecutionRecord":
         """The record with the current step's last attempt replaced by a later state of it; charges follow."""
@@ -949,8 +1122,9 @@ def dumps(record) -> str:
 #     }
 #
 # The section is validated whatever `enabled` says, so a configuration never becomes unusable when it is switched
-# on. Nothing in it is applied by this version. It is read from the project's configuration only: a task cannot
-# override it, and there is no global level.
+# on. Its call limits and budgets apply to each step that first starts while it is enabled, frozen with that step
+# (Steps 04-05); `adaptive`, `continuation` and `no_progress_windows` are not applied by this version. It is read
+# from the project's configuration only: a task cannot override it, and there is no global level.
 
 class InvalidSettings(ValueError):
     """An `execution` section this version cannot use. The configuration is refused; nothing is repaired or defaulted."""

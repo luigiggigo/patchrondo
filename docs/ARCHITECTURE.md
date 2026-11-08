@@ -2860,7 +2860,8 @@ its file yet, a `RUNNING` attempt, one whose CLI exited before its end was
 saved), and an attempt that ended `UNVERIFIED`, is uncertain: the run pauses
 with `attempt_uncertain` and calls nothing, and a Resume returns the saved
 state until the user releases it (`core.release_attempt`, `patchrondo
-release-attempt TASK CX-NNNN`). The release holds the task lock, runs
+release-attempt TASK CX-NNNN --confirm-stopped`; the acknowledgement and
+the checks before it are Step 05's). The release holds the task lock, runs
 nothing, changes no status and is refused while the attempt's folder holds a
 process file whose process may be alive (`storage._alive`: on native Windows,
 any). It ends an attempt without an end as `UNKNOWN`, charged as before, or
@@ -2870,13 +2871,15 @@ Boundaries of Step 04:
 
 - No call is started by the record: a run makes the calls it made before,
   and a `max_turns` failure pauses after one call. The step and task budgets
-  are charged and never reset, and refuse nothing yet; deciding a further
-  call from them is automatic continuation, a later step.
+  are charged and never reset; in Step 04 they refused nothing (Step 05
+  enforces them, below). Deciding a further call from them is automatic
+  continuation, a later step.
 - Quota stays with `recovery`: a usage limit ends the attempt
   `QUOTA_EXHAUSTED` / `EXITED`, and a retry is a new attempt of the same step.
 - The reviewer's command is built as always (read-only); a reply still goes
-  through `parse_review`, the tests and `_complete`. An unreadable review is
-  an attempt `COMPLETED` (the CLI answered) and a pause `invalid_review`.
+  through `parse_review`, the tests and `_complete`. In Step 04 an unreadable
+  review was an attempt `COMPLETED` and a pause `invalid_review`; since
+  Step 05 it is `INVALID_FINAL_OUTPUT` (records saved before are kept).
 - Neither the record nor the history holds a PID or a provider session; the
   process file stays in the attempt's folder, which the lock reads.
 - A request for tests (`draft_tests`) is not an attempt: it keeps its
@@ -2884,3 +2887,116 @@ Boundaries of Step 04:
 - Tests: `tests/test_attempts.py` (a fake CLI in the process, crashes at
   each boundary, real processes for `Launch`), `tests/test_execution.py`
   (`AttemptLifecycleTests`).
+
+### Outcomes, budgets and releases (Step 05)
+
+**One mapping of outcomes.** `execution.outcome_of` reads how a call ended
+and `execution.termination_of` whether its processes are known to have
+stopped; `core._attempt` ends every attempt through them (the earlier
+`core._outcome` is gone, `core._termination` only passes on what the
+`Launch` saw). The order is: an answer; an interruption (`INTERRUPTED`); a
+timeout of the process (`TIMEOUT`); a failure that names its kind, read
+through `OUTCOME_OF_KIND` (`max_turns` → `TURN_LIMIT_REACHED`, `quota` →
+`QUOTA_EXHAUSTED`, `empty_output`, `invalid_output`, `invalid_review` →
+`INVALID_FINAL_OUTPUT`, `agent_error`, `model_unavailable` →
+`PROVIDER_ERROR`, …); an error of the system (`system_error`, narrowed to
+`PERMISSION_DENIED` for a `PermissionError` through `REFINED`); anything
+else `UNKNOWN`. A kind that is not well formed keeps no kind; an engine
+pause is never the end of a call. The saved `last_error.kind` and every
+pause text are unchanged: the outcome only reads the kind. The adapters stay
+the only classifier of provider output, and they decide from the CLI's own
+result first (Claude's `error_max_turns` subtype, an `is_error` result)
+and from text after that; what the agent printed while it worked is never a
+diagnostic. A login or usage diagnostic on the CLI's standard error still
+decides over the turn subtype, as before (`providers.OfficialCLI._step`).
+
+Three things stay apart: the CLI's own end (`Termination.EXITED`), a
+usable answer (`COMPLETED`: a developer's handoff that is not empty, a
+reviewer's answer that `parse_review` reads and that `settle_review` finds
+complete) and the end of a phase (the workflow's decision; `done` only
+through `_complete`). The review's answer is now read inside its attempt
+(`_attempt(..., accept=...)`), so an answer the workflow refuses ends the
+attempt `INVALID_FINAL_OUTPUT` with the kind `invalid_review`, never
+`COMPLETED`. Missing usage is never an answer either: it stays `UNKNOWN`
+and is charged the most the call was allowed.
+
+**Admission.** `ExecutionRecord.new_attempt`, the only place that adds an
+attempt, refuses one that its step's budget or the task's cannot take
+(`Inadmissible`, from `admission`). A call is asked for what it may use with
+the step's frozen `CallLimits` (`call_request`: one provider call, its
+timeout in seconds and, for Claude, its turn limit), which is also what it
+is charged while it runs. Lines are asked in `ADMISSION_ORDER`: the step's
+provider calls, Claude turns and seconds, then the task's provider calls,
+Claude turns (when a task budget has them) and seconds; the first that
+cannot take the call refuses it. Codex has no turn line. A line with an
+unknown charge in it admits nothing (`BudgetLine.allows`). The budgets are
+the ones frozen in the record when the step and the task first started: a
+Resume, a quota retry, an edited configuration, `execution.enabled: false`
+and a refreshed agent setting never raise, lower or resolve them again for
+a recorded step, and a call of such a step is always started with the
+step's turn limit and timeout, whatever the agent settings say (an adapter
+that is not `configurable`, which would never be given them, makes no
+recorded call: `configuration`).
+
+A refusal pauses with `budget_exhausted` (`core.BudgetExhausted`):
+`last_error.budget` and the `task_paused` event name the scope (`phase` or
+`task`), the unit, the limit, what was used, the unknown charges and what
+the call asked for; the message says it in words. Nothing is started, no
+attempt and no ID are added, nothing is charged, the attempts, the ledger
+and the findings are kept, and the phase, the iteration and the gate do not
+change. What is read before that only says it earlier (`core._refusal`,
+read-only): before the environment check of a run whose next call is a
+development or a review (no `codex sandbox` or login probe starts for a
+call that would be refused), before a review step begins (the task's budget
+asked for the smallest call, `smallest_request`), and at a Resume, which
+returns the saved state while the refusal holds (no event, no check, no
+call). A budget cannot be amended in this version; a later mechanism may
+resume such a task after an authorized adjustment.
+
+A request for tests (`draft_tests`) of a task whose developer step is
+recorded is admitted by the task's budget with that step's call request and
+runs with the step's turn limit and timeout. It is not an attempt and is not
+charged: a limit of this step.
+
+**Quota recovery.** `recovery.py` stays the only owner of quota retries.
+`run_task` passes it the refusal of the step's next call (`refused`): a
+quota failure that no budget would let be retried stops the recovery with
+`budget_exhausted` instead of planning one (`_decide`), and a saved plan
+that a budget now refuses is stopped, never started: a supervisor's retry
+does not proceed, and an explicit run goes on to pause with
+`budget_exhausted`. The pause of the failure keeps its kind (`quota`), the
+counters keep counting, and quota stays apart from `max_turns`, which is
+never retried. With the standard profile a step allows two calls: one
+failure and one retry; a second failure stops the recovery. A streak ends
+(`note_progress`, unchanged) only when the task leaves the step of the
+streak or ends: an answer received in the same step shows that the
+provider answers again, but ends nothing, and neither the streak nor its end
+is read as progress of the task.
+
+**Releases.** `release_attempt` now needs `confirm=True` (`--confirm-stopped`):
+PatchRondo cannot verify that a call's processes stopped, and an absent
+process file is no proof. It is refused unless the task is paused (a task a
+lost run left `running` is resumed first, which pauses it naming the
+attempt), unless the state and the record are of the task named, for an ID
+that is not an attempt ID, for any attempt but the uncertain one, while the
+attempt's folder cannot be read or is not a plain folder, and while a
+process file there names a process that may be alive. It ends an attempt
+without an end as `UNKNOWN` with the most it was allowed still charged; its
+files are never used as an answer and nothing is undone. `attempt_released`
+records, in fixed words, the acknowledgement (`processes_stopped`), what was
+known before (`no_end` or `unverified`), the process files found, the
+outcome and `effects: "unknown"`. Nothing releases an attempt
+automatically, and process trees stay unsupervised on native Windows.
+
+- Compatibility: without the section, with it off for a step that starts
+  without a record, and for a step started before execution was enabled,
+  nothing of this applies; a task without the `execution` key has no budget.
+  Disabling execution applies to steps that start afterwards: their calls
+  are not recorded, not charged and not refused. Saved records, IDs, folders
+  and checkpoints are read as they are; nothing is migrated.
+- Tests: `tests/test_budgets.py` (each budget at its limit, unknown turns,
+  idempotent Resume, frozen budgets across configuration changes and
+  disabling, refreshed agent settings, adapters, requests for tests, quota
+  recovery at and within the boundary, saved plans, uncertain attempts,
+  releases), `tests/test_execution.py` (`OutcomeTableTests`,
+  `AdmissionTests`), `tests/test_attempts.py` (an unreadable review).

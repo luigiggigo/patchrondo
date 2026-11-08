@@ -1271,6 +1271,63 @@ without it nothing changes.
   the attempt's folder, same files, each call in its own folder).
   Twenty-one new mutation protections.
 
+### Adaptive Execution: typed outcomes, enforced budgets and releases — November 8, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 05). With
+`execution.enabled`, budgets now refuse calls; without it nothing changes.
+
+- One mapping of outcomes: `execution.outcome_of` and `termination_of` end
+  every attempt (they replace `core._outcome` and the rule inside
+  `core._termination`). `AgentFailure.kind`, `last_error.kind` and every
+  pause text are unchanged; a `PermissionError` (saved as `system_error`) is
+  recorded as `PERMISSION_DENIED`; a malformed kind keeps no kind and is
+  `UNKNOWN`. The reviewer's answer is read inside its attempt, so an
+  unreadable review ends it `INVALID_FINAL_OUTPUT` (`invalid_review`, the CLI
+  `exited`) instead of `COMPLETED`; records saved before are kept as they
+  are. A call's end, a usable answer and the end of a phase stay three
+  different things.
+- Hard budgets: `ExecutionRecord.new_attempt` refuses an attempt that its
+  step's budget or the task's cannot take (`admission`: one provider call,
+  the call's timeout and, for Claude, its turn limit, asked of every limited
+  line in a fixed order). A refusal pauses with the new kind
+  `budget_exhausted` before anything starts; `last_error.budget` and the
+  `task_paused` event name the scope, the unit, the limit, what was used and
+  what was asked. Budgets stay frozen with the step and the task: a Resume,
+  a retry, an edited configuration, turning execution off and a refreshed
+  agent setting never raise them for a recorded step, and a Resume returns
+  the saved state while the refusal holds. The refusal is read before the
+  environment check, so no CLI self-check starts for a call that would be
+  refused. A budget cannot be amended yet. An adapter that cannot be given
+  a step's frozen limits makes no recorded call.
+- Quota recovery stays the only retrier and is held to the budgets: a quota
+  failure that no budget would let be retried stops the recovery with
+  `budget_exhausted`, and a saved plan a budget now refuses is stopped, never
+  started. The quota pause keeps its kind, counters keep counting, and the
+  streak still ends only when the task leaves the step (an answer in the
+  same step is not counted as progress).
+- Releasing an uncertain call needs `--confirm-stopped` (`confirm=True`),
+  a task paused by a run, a valid attempt ID of that task and a readable
+  plain folder, besides the existing check of live process files.
+  `attempt_released` records the acknowledgement and what was checked in
+  fixed words, with `effects: "unknown"`.
+- A request for tests of a task whose developer step is recorded runs with
+  that step's turn limit and timeout and must fit the task's budget; it is
+  still not an attempt and is not charged.
+- Compatibility: tasks without the `execution` key, configurations without
+  the section or with it off, and steps started without a record behave as
+  before; nothing is migrated. The task page and the report word the new
+  pause and stop reason. See "Adaptive Execution: limits and recorded calls"
+  in `docs/USAGE.md` and section 20 of `docs/ARCHITECTURE.md`.
+- Tests: `tests/test_budgets.py` (23 tests: each budget at its limit,
+  unknown turns, idempotent Resume, frozen budgets across configuration
+  changes and disabling, a refreshed agent setting, adapters, requests for
+  tests, quota recovery within and at the budget, saved plans, uncertain
+  attempts, releases, permission errors); `tests/test_execution.py` (12 new
+  tests: the outcome table, the termination rule, admission). Step 04 tests
+  adapted where budgets now refuse their third call or their scenario's
+  second 40-turn call, and where releases now need the acknowledgement.
+  Twenty-three new mutation protections; four patterns moved with the code.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

@@ -13,6 +13,7 @@ STOP_REASONS = {
     "wait_budget_exceeded": "the next backoff would exceed the total wait budget",
     "reset_beyond_budget": "the provider reset is beyond the total wait budget; no earlier call was made",
     "invalid_schedule": "the saved plan was unreadable or no longer matched a quota pause",
+    "budget_exhausted": "a budget of the step or the task could not take another call; no retry was planned",
 }
 RECOVERY_DETAILS = ("attempt", "resume_at", "scheduled_for", "source", "provider", "reason", "failures", "retries")
 # What the other events name since October 17, 2026: the verdict, ledger records and findings (ARCHITECTURE section 15).
