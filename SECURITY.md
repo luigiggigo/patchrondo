@@ -322,6 +322,17 @@ may still be running. An agent step, or a command of the test stage before
 checks, stopped that way says the same in the message of the pause and at
 the end of its log. A process that leaves the group is not stopped.
 
+**An agent call that may still be running.** Agent CLIs run without a job
+object on native Windows, so a timeout or an interruption there stops the
+CLI alone. With Adaptive Execution enabled, each call is recorded before it
+starts; a call stopped without proof that what it started stopped, or found
+with no recorded end after a lost run, holds the task (`attempt_uncertain`):
+no other agent call starts until you have checked and run `patchrondo
+release-attempt`, which only records your statement and is refused while the
+call's process file names a process that may be alive (on native Windows,
+any). Without Adaptive Execution, a Resume after such a timeout starts the
+next call as before.
+
 **What a result is worth.** Code under test can print anything and can write a report that says what it
 likes. The runner refuses a report that was there before the run, a report
 that contradicts the exit code or its own counts, and a run that changed the

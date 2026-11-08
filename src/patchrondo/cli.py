@@ -11,7 +11,7 @@ import sys
 
 from . import __version__, acceptance, agents, bundle, doctor, evidence, rag, recovery, runinfo
 from .core import (attach_evidence, config, create_task, decide_authorization, draft_tests, initialize, recheck_acceptance,
-                   task_config, task_dir)
+                   release_attempt, task_config, task_dir)
 from .storage import read_json
 from .workspace import REGISTRY, Project, Workspace
 
@@ -75,6 +75,11 @@ def parser() -> argparse.ArgumentParser:
     choice = decide.add_mutually_exclusive_group(required=True)
     choice.add_argument("--grant", action="store_true", help="You take the operation on yourself, and its evidence")
     choice.add_argument("--deny", action="store_true", help="The operation is not done; the criterion stays open")
+    released = sub.add_parser("release-attempt",
+                              help="After checking that no process of an agent call is left, let the task call again "
+                                   "(no model calls)")
+    released.add_argument("task_id", help="Task ID such as T-0123456789ab")
+    released.add_argument("attempt", help="The attempt the pause names, such as CX-0003")
     bundled = sub.add_parser("bundle", help="Export the evidence of a task as a ZIP, or check such a file (no model calls)")
     steps = bundled.add_subparsers(dest="bundle_command", required=True)
     exported = steps.add_parser("export", help="Write an evidence bundle of a task: its records, decisions and a manifest of hashes")
@@ -283,6 +288,10 @@ def main(argv: list[str] | None = None) -> int:
                 for entry in manifest["omissions"]:
                     print(f"Left out: {entry['item']}: {entry['reason']}")
                 print("Hashes show changes after the export; nothing is signed. Check it with: patchrondo bundle verify FILE")
+            elif command == "release-attempt":
+                state = release_attempt(home, opts.task_id, opts.attempt)
+                print(f"{state['id']} · {opts.attempt} released: you stated that its processes stopped. Nothing was run. "
+                      f"To continue: patchrondo resume {opts.task_id}")
             elif command == "status":
                 print(json.dumps(read_json(task_dir(home, opts.task_id) / "state.json"), indent=2, ensure_ascii=False))
             elif command == "report":

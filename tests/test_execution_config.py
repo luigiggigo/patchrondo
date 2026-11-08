@@ -17,8 +17,9 @@ from unittest.mock import patch
 
 from patchrondo import agents, core, execution, gate
 from patchrondo.core import create_task, run_task, validate_config, validate_overrides
-from patchrondo.execution import (BudgetState, ExecutionLimits, ExecutionProfile, ExecutionRecord, InvalidSettings,
-                                  Phase, Scope, Source, Unit, Usage, Availability, AttemptOutcome)
+from patchrondo.execution import (BudgetState, CallLimits, ExecutionLimits, ExecutionProfile, ExecutionRecord,
+                                  InvalidSettings, Phase, Scope, Source, Termination, Unit, Usage, Availability,
+                                  AttemptOutcome)
 from patchrondo.process import Result
 from patchrondo.providers import OfficialCLI
 from patchrondo.storage import read_json, save_json
@@ -491,10 +492,9 @@ class AccountingTests(unittest.TestCase):
     def test_the_resolved_limits_open_the_budgets_of_step_01(self):
         for provider in ("claude", "codex"):
             limits = resolve(STANDARD, provider, "developer")
-            record = ExecutionRecord.open(TASK, limits.task_limits()).begin_step(1, Phase.DEVELOP, provider,
-                                                                                limits.phase_limits())
-            record, attempt = record.new_attempt(started_at=T0, turn_limit=limits.call_turns.value,
-                                                 timeout_seconds=limits.call_seconds.value)
+            record = ExecutionRecord.open(TASK, limits.task_limits()).begin_step(
+                1, Phase.DEVELOP, provider, limits.phase_limits(), CallLimits.of(limits), limits.profile)
+            record, attempt = record.new_attempt(started_at=T0)
             with self.subTest(provider=provider):
                 self.assertEqual(attempt.turn_limit, limits.call_turns.value)
                 self.assertEqual(record.step.budget.scope, Scope.PHASE)
@@ -503,13 +503,13 @@ class AccountingTests(unittest.TestCase):
 
     def test_unknown_usage_is_charged_as_the_most_the_call_was_allowed(self):
         limits = resolve(STANDARD, "claude", "developer")
-        opened = ExecutionRecord.open(TASK, limits.task_limits()).begin_step(1, Phase.DEVELOP, "claude",
-                                                                            limits.phase_limits())
+        opened = ExecutionRecord.open(TASK, limits.task_limits()).begin_step(
+            1, Phase.DEVELOP, "claude", limits.phase_limits(), CallLimits.of(limits), limits.profile)
 
         def after(turns):
-            record, attempt = opened.new_attempt(started_at=T0, turn_limit=limits.call_turns.value,
-                                                 timeout_seconds=limits.call_seconds.value)
-            ended = attempt.end(AttemptOutcome.COMPLETED, ended_at=T1, elapsed_seconds=300, turns=turns)
+            record, attempt = opened.new_attempt(started_at=T0)
+            ended = attempt.end(AttemptOutcome.COMPLETED, ended_at=T1, elapsed_seconds=300, turns=turns,
+                                termination=Termination.EXITED)
             return record.update(ended)
 
         unknown = after(Usage.unknown(Unit.CLAUDE_TURNS))
@@ -523,13 +523,14 @@ class AccountingTests(unittest.TestCase):
         # Unknown tokens are charged to no limit: there is none to charge, and none can be configured.
         self.assertIsNone(unknown.budget.line(Unit.TOKENS))
         # A call that never ended is charged its whole timeout and one call.
-        running, _ = opened.new_attempt(started_at=T0, turn_limit=40, timeout_seconds=limits.call_seconds.value)
+        running, _ = opened.new_attempt(started_at=T0)
         self.assertEqual(running.step.budget.line(Unit.SECONDS).used, 2700)
         self.assertEqual(running.budget.line(Unit.PROVIDER_CALLS).used, 1)
 
 
 class EngineCompatibilityTests(EngineCase):
-    """Whole tasks: with execution enabled the run starts, saves and decides exactly as without it."""
+    """Whole tasks: off, the run is the run without the section; on (Step 04), it decides exactly as without it and
+    adds only the record of its calls, their folders and the profile's call limits."""
 
     def set_execution(self, section):
         cfg = read_json(self.home / "config.json")
@@ -548,9 +549,26 @@ class EngineCompatibilityTests(EngineCase):
                 "error": (state.get("last_error") or {}).get("kind")}
 
     @staticmethod
-    def files(path):
+    def files(path, recursive=False):
         """The names written in the iteration's folder; the verification runner's own token taken out of its logs."""
-        return sorted(re.sub(r"^[0-9a-f]{8}-", "", item.name) for item in (path / "runs" / "iteration-001").iterdir())
+        folder = path / "runs" / "iteration-001"
+        return sorted(re.sub(r"^[0-9a-f]{8}-", "", item.name) for item in (folder.rglob("*") if recursive else folder.iterdir())
+                      if item.is_file())
+
+    @staticmethod
+    def decided(state):
+        """`shape` without what only a recorded run adds: its attempt events and its `execution` record."""
+        shape = EngineCompatibilityTests.shape(state)
+        shape["events"] = [name for name in shape["events"] if not name.startswith("attempt_")]
+        shape["keys"] = [key for key in shape["keys"] if key != execution.KEY]
+        return shape
+
+    @staticmethod
+    def without_limits(call):
+        """A command without the values of `--max-turns`, which a profile sets, and without the attempt's folder in the
+        paths of Codex's answer and schema, which a recorded call writes there."""
+        return [re.sub(r"[\\/](?:develop|review)[\\/]attempt-\d{3}(?=[\\/])", "", arg)
+                for index, arg in enumerate(call) if index == 0 or call[index - 1] != "--max-turns"]
 
     def run_with(self, section):
         self.set_execution(section)
@@ -560,19 +578,37 @@ class EngineCompatibilityTests(EngineCase):
         # The worktree in Codex's `--cd` is the task's own folder: compare it without the task's ID.
         return state, [[arg.replace(task_id, "T-") for arg in call["args"]] for call in self.cli.calls()[before:]], path
 
-    def test_a_run_with_execution_enabled_is_the_run_without_it(self):
+    def test_a_run_with_execution_off_is_the_run_without_it(self):
         baseline, calls, path = self.run_with(None)
         self.assertEqual(baseline["status"], "done", baseline.get("last_error"))
-        for section in ({"enabled": False, "profile": "fast"}, STANDARD, {"enabled": True, "profile": "deep_autonomous"},
-                        {"enabled": True, "profile": "custom", "limits": CUSTOM_LIMITS}):
+        state, disabled_calls, other = self.run_with({"enabled": False, "profile": "fast"})
+        self.assertEqual(self.shape(state), self.shape(baseline))
+        self.assertEqual(disabled_calls, calls)
+        self.assertNotIn(execution.KEY, state)
+        self.assertEqual(self.files(other), self.files(path))
+        developer = calls[0]
+        self.assertEqual(developer[developer.index("--max-turns") + 1], "12")  # the workflow's, not a profile's
+
+    def test_a_run_with_execution_enabled_decides_as_the_run_without_it(self):
+        baseline, calls, path = self.run_with(None)
+        flat = [name for name in self.files(path, recursive=True) if not name.endswith(".command.txt")]
+        for section, turns in ((STANDARD, "40"), ({"enabled": True, "profile": "deep_autonomous"}, "50"),
+                               ({"enabled": True, "profile": "custom", "limits": CUSTOM_LIMITS},
+                                str(CUSTOM_LIMITS["call"]["developer"]["claude_turns"]))):
             with self.subTest(section=section):
                 state, enabled_calls, other = self.run_with(section)
-                self.assertEqual(self.shape(state), self.shape(baseline))
-                self.assertEqual(enabled_calls, calls)
-                self.assertNotIn(execution.KEY, state)
-                self.assertEqual(self.files(other), self.files(path))
-        developer = calls[0]
-        self.assertEqual(developer[developer.index("--max-turns") + 1], "12")  # the workflow's, not the profile's 40
+                self.assertEqual(self.decided(state), self.decided(baseline))
+                self.assertEqual([self.without_limits(call) for call in enabled_calls],
+                                 [self.without_limits(call) for call in calls])
+                developer = enabled_calls[0]
+                self.assertEqual(developer[developer.index("--max-turns") + 1], turns)  # the profile's, frozen
+                self.assertEqual([entry["attempt_id"] for entry in execution.load(state).step.to_dict()["attempts"]],
+                                 ["CX-0002"])  # the review's; the developer's step left the record
+                # The same files, each call in a folder of its own (with the command it was started with).
+                self.assertEqual([name for name in self.files(other, recursive=True) if not name.endswith(".command.txt")],
+                                 flat)
+                self.assertEqual(sorted(item.name for item in (other / "runs" / "iteration-001").iterdir() if item.is_dir()),
+                                 ["develop", "review"])
 
     def test_a_turn_limit_with_execution_enabled_still_pauses_after_one_call(self):
         self.set_execution({"enabled": True, "profile": "deep_autonomous", "adaptive": True})
@@ -588,10 +624,11 @@ class EngineCompatibilityTests(EngineCase):
         self.assertEqual(started.call_count, 1)  # no automatic continuation
         self.assertEqual((state["status"], state["phase"], state["iteration"], state["last_error"]["kind"]),
                          ("paused", "develop", 1, "max_turns"))
-        self.assertNotIn(execution.KEY, state)
+        attempt = execution.load(state).step.last  # recorded (Step 04), and nothing more
+        self.assertEqual((attempt.attempt_id, str(attempt.outcome)), ("CX-0001", "TURN_LIMIT_REACHED"))
         argv = started.call_args.args[0]
-        self.assertEqual(argv[argv.index("--max-turns") + 1], "12")
-        self.assertEqual(started.call_args.kwargs["timeout"], 60)  # EngineCase's workflow timeout, not the profile's
+        self.assertEqual(argv[argv.index("--max-turns") + 1], "50")  # the profile's, replacing the workflow default
+        self.assertEqual(started.call_args.kwargs["timeout"], 60)  # EngineCase's configured workflow timeout caps it
 
     def test_a_saved_task_is_not_changed_by_a_new_section(self):
         task_id, path = self.task()

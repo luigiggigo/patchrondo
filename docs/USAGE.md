@@ -13,7 +13,7 @@ For installation and requirements, see the [README](../README.md#quick-start).
 - [Live activity](#live-activity)
 - [Command line](#command-line)
 - [Loop behavior](#loop-behavior)
-- [Adaptive Execution settings](#adaptive-execution-settings-validated-not-applied)
+- [Adaptive Execution: limits and recorded calls](#adaptive-execution-limits-and-recorded-calls)
 - [Automatic quota recovery](#automatic-quota-recovery-opt-in)
 - [State layout](#state-layout)
 - [Local retrieval](#local-retrieval-rag)
@@ -871,15 +871,64 @@ these during a task. A file that cannot be read, or that keeps changing while
 it is read, pauses the task with `fingerprint_unavailable`: nothing is taken
 as verified on files PatchRondo could not read.
 
-## Adaptive Execution settings (validated, not applied)
+## Adaptive Execution: limits and recorded calls
 
 Phase 2.5 (Adaptive Agent Execution) adds an optional `execution` section to
-a project's `config.json`. This version validates it and resolves the limits
-it describes (`execution.resolve`); **no run applies them yet**. With or
-without the section, a run starts the same commands with the same
-`--max-turns` and timeout, saves the same state and pauses where it paused
-before: a `max_turns` failure still pauses after one call, and nothing
-continues a step automatically.
+a project's `config.json`. Without it, or with `"enabled": false`, a run
+starts the same commands with the same `--max-turns` and timeout, writes the
+same flat files, saves the same state and pauses where it always did.
+
+With `"enabled": true`, every agent call of a step that starts afterwards is
+recorded (since November 8, 2026):
+
+- **One record per call.** Each call is an attempt with its own ID
+  (`CX-0001`, never given twice in a task), saved in `state.json` under
+  `execution` *before* anything is started, then marked running once its
+  process exists, then ended with how it ended (`COMPLETED`,
+  `TURN_LIMIT_REACHED`, `QUOTA_EXHAUSTED`, `TIMEOUT`, …), whether its
+  process and what it started are known to have stopped, how long it took
+  and the usage its CLI reported. The history gets `attempt_started` and
+  `attempt_ended`. A call that answered is not a finished step: the review
+  is still parsed, the tests still run, and only the completion gate
+  finishes a task.
+- **One folder per call.** `runs/iteration-NNN/develop/attempt-NNN/` and
+  `runs/iteration-NNN/review/attempt-NNN/` hold that call's prompt, command,
+  transcript, error output and answer; nothing of an earlier call is
+  overwritten. The Logs tab lists each one; a review record names the
+  answer of the call that gave it.
+- **Limits frozen with the step.** The Claude turn limit and the timeout of
+  a call come from the profile (see the precedence below) and are frozen
+  when the step first starts: a Resume, a retry after a usage limit and an
+  edited configuration do not change them for that step. The next step
+  starts with the configuration of then.
+- **Usage, observed and charged.** Claude's turns come from its own final
+  result, Codex's tokens from its completed turns; a value the CLI did not
+  report stays unknown and is charged as the most the call was allowed. The
+  step and task budgets of the profile are charged, once per call, and are
+  never reset by a failure or a Resume. In this version they are recorded
+  only: they refuse no call, and **nothing continues a step by itself**. A
+  turn limit still pauses after one call; a Resume is one more call.
+- **A call that may still be running holds the task.** When a run finds a
+  call with no end on record (the run was killed or the computer stopped),
+  or a call was stopped while what it started may still run (a timeout or
+  an interruption on native Windows, where agents have no job object, or a
+  signal the system refused), the task pauses with `attempt_uncertain` and
+  starts nothing, at every Resume, until you check that no process of it is
+  left and release it:
+
+  ```bash
+  patchrondo release-attempt T-a1b2c3d4e5f6 CX-0003
+  patchrondo resume T-a1b2c3d4e5f6
+  ```
+
+  The release only records your statement; it runs nothing. It is refused
+  while the call's folder holds a process file of a process that may be
+  alive, as `--unlock` is (on native Windows, any process file: remove it
+  yourself once you checked). A call saved as starting whose folder was
+  never made provably started nothing, and is closed by the next run.
+- A step that started before execution was enabled finishes as it started,
+  flat and without a record. A record this version cannot read pauses the
+  task with `execution_unreadable` and is kept as it is.
 
 ```json
 "execution": {
@@ -1137,7 +1186,8 @@ now without automatic recovery stays possible in both cases.
           task.md
           state.json            # also the last environment check ("environment"), the task's own agent
                                 # settings ("agent_settings"), what each step was started with ("agent_runs")
-                                # and the criteria with their plan, status and results ("acceptance")
+                                # and the criteria with their plan, status and results ("acceptance");
+                                # with Adaptive Execution on, the calls of the current step ("execution")
           evidence.jsonl        # evidence ledger: append-only, each record chained to the one before
           handoff.md
           feedback.md
@@ -1158,6 +1208,8 @@ now without automatic recovery stays possible in both cases.
               reviewer.reply.md
               3f9c2a1b-test-01.log       # output of check 1 of run 001-3f9c2a1b, secrets masked
               3f9c2a1b-test-01.junit.xml # its report, when it reads one (test-01.log before the runner)
+              develop/attempt-001/       # with Adaptive Execution on: the developer.* files of one call
+              review/attempt-001/        # with Adaptive Execution on: the reviewer.* files of one call
       worktrees/                # the one folder made readable for a review sandbox (Windows)
         T-.../                  # isolated Git worktree for each task
 ```

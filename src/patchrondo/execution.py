@@ -1,12 +1,14 @@
-"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-02).
+"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-04).
 
-It defines what later steps will save and read, the optional `execution`
-section of a project's configuration and the limits it resolves to. It calls
-no agent, runs nothing, reads no file and writes nothing. Only
-`core.validate_config` imports it, to refuse an `execution` section this
-version cannot use; the workflow (`core.run_task`), the command of a step
-(`agents.command`), the adapters (`providers.py`), quota recovery and the gate
-do not know it, so no limit resolved here is applied yet.
+It defines what `core.run_task` saves and reads under `state["execution"]`,
+the optional `execution` section of a project's configuration and the limits
+it resolves to. It calls no agent, runs nothing, reads no file and writes
+nothing. `core.validate_config` refuses an `execution` section this version
+cannot use; `core._open_step`, `core._attempt` and `core.release_attempt`
+(Step 04) record each call of a step whose project enabled execution, and
+apply its call limits. The command of a step (`agents.command`), quota
+recovery and the gate do not know this module, and nothing here starts a
+call: no budget decides one yet (automatic continuation is a later step).
 
 Units of work, from the largest:
 
@@ -35,6 +37,17 @@ Claude turns (`NOT_APPLICABLE`), and usage a CLI did not report is
 `UNKNOWN`, never 0. Where a call's usage is unknown, its charge is the most
 the call was allowed (its turn limit, its timeout); a limited budget with an
 uncharged unknown left in it allows nothing more.
+
+Each attempt has a status (`STARTING`, saved before anything is created or
+started; `RUNNING`, saved once the CLI's process exists and its process file
+is written; `ENDED`), an outcome (how the call ended) and, once ended, a
+termination (whether its process and what it started are known to have
+stopped). The lifecycle a person reads is derived from them, with no status
+of its own: an answer received is `ENDED` with `COMPLETED`; a failure is
+`ENDED` with another outcome; an attempt is uncertain (`uncertain`) when a
+later run finds it without an end, or when it ended with its termination
+`UNVERIFIED`. No call starts beside an uncertain attempt until the user
+releases it (`ExecutionRecord.release`).
 
 Records are versioned (schema 1). Loading is strict: an unknown or missing
 field, a value of another type (`True` is not a number), an unknown enum
@@ -134,6 +147,18 @@ class AttemptOutcome(StrEnum):
         return self is AttemptOutcome.COMPLETED
 
 
+class Termination(StrEnum):
+    """Whether the process of an ended attempt, and what it started, are known to have stopped. Not its outcome."""
+    EXITED = "exited"            # the CLI ended by itself
+    STOPPED = "stopped"          # PatchRondo stopped it and everything it started (a process group, a job object)
+    UNVERIFIED = "unverified"    # stopped, and what it started may still run (no job object; a signal refused)
+    NOT_STARTED = "not_started"  # no process was started for it
+    RELEASED = "released"        # was uncertain; the user stated that its processes stopped (`ExecutionRecord.release`)
+
+
+SETTLED = frozenset({Termination.EXITED, Termination.STOPPED, Termination.NOT_STARTED, Termination.RELEASED})
+
+
 class ContinuationMode(StrEnum):
     NONE = "none"                            # a first call
     CHECKPOINT_RESUME = "checkpoint_resume"  # a new call with a brief of the work so far
@@ -182,7 +207,10 @@ OUTCOME_OF_KIND = {
 # Kinds of the engine's own pauses: no agent call ends with them, so no attempt does.
 ENGINE_KINDS = frozenset({"tests_disabled", "verification_error", "verification_blocked", "stale_tests",
                           "completion_refused", "awaiting_validation", "awaiting_authorization",
-                          "acceptance_unreadable", "validation_failed"})
+                          "acceptance_unreadable", "validation_failed",
+                          # Step 04: pauses before a call is started, never the end of one.
+                          "attempt_uncertain", "attempt_folder_exists", "attempt_limit_reached",
+                          "execution_unreadable"})
 
 
 def outcome_for_failure(kind) -> AttemptOutcome | None:
@@ -300,6 +328,13 @@ class Usage:
     def from_dict(cls, raw, name: str) -> "Usage":
         raw = _fields(raw, name, cls.FIELDS, versioned=False)
         return cls(raw["unit"], raw["availability"], raw["value"])
+
+    @classmethod
+    def reported(cls, unit: "Unit", value) -> "Usage":
+        """What a CLI reported in `unit`: observed only for a whole number in range, otherwise unknown, never 0."""
+        if type(value) is int and 0 <= value <= COUNT_LIMIT:
+            return cls(unit, Availability.OBSERVED, value)
+        return cls.unknown(unit)
 
 
 @dataclass(frozen=True)
@@ -428,12 +463,14 @@ class AttemptRecord:
     outcome: AttemptOutcome | None = None
     failure_kind: str | None = None  # the `AgentFailure.kind` it ended with, as given
     ended_at: str | None = None
-    elapsed_seconds: int | None = None
+    elapsed_seconds: int | None = None  # measured; for an end nobody saw, its timeout (the most it was allowed)
     workspace_after: str | None = None
+    termination: Termination | None = None  # once ended: whether its processes are known to have stopped
 
     FIELDS = ("attempt_id", "task_id", "iteration", "phase", "role", "ordinal", "provider", "settings_digest",
               "turn_limit", "timeout_seconds", "continuation", "session", "status", "started_at", "workspace_before",
-              "turns", "tokens", "outcome", "failure_kind", "ended_at", "elapsed_seconds", "workspace_after")
+              "turns", "tokens", "outcome", "failure_kind", "ended_at", "elapsed_seconds", "workspace_after",
+              "termination")
 
     def __post_init__(self):
         attempt_number(self.attempt_id)
@@ -467,12 +504,20 @@ class AttemptRecord:
             raise InvalidRecord("tokens are observed or unknown")
         if self.status is not AttemptStatus.ENDED:
             if any(value is not None for value in (self.outcome, self.failure_kind, self.ended_at,
-                                                   self.elapsed_seconds, self.workspace_after)):
-                raise InvalidRecord("an attempt that has not ended has no outcome, end or fingerprint after it")
+                                                   self.elapsed_seconds, self.workspace_after, self.termination)):
+                raise InvalidRecord("an attempt that has not ended has no outcome, end, termination or fingerprint after it")
             if Availability.OBSERVED in (self.turns.availability, self.tokens.availability):
                 raise InvalidRecord("an attempt that has not ended has observed nothing")
             return
         _set(self, "outcome", _enum(AttemptOutcome, self.outcome, "outcome"))
+        _set(self, "termination", _enum(Termination, self.termination, "termination"))
+        if self.outcome is AttemptOutcome.COMPLETED and self.termination is not Termination.EXITED:
+            raise InvalidRecord("a call that gave its final answer ended by itself")
+        if self.outcome is AttemptOutcome.TIMEOUT and self.termination in (Termination.EXITED, Termination.NOT_STARTED):
+            raise InvalidRecord("a call that timed out was stopped")
+        if self.termination is Termination.NOT_STARTED and any(
+                usage.availability is Availability.OBSERVED and usage.value for usage in (self.turns, self.tokens)):
+            raise InvalidRecord("a call that never started used nothing")
         if _instant(self.ended_at, "end time") < started:
             raise InvalidRecord("an attempt ends after it starts")
         _int(self.elapsed_seconds, "elapsed seconds", 0, COUNT_LIMIT)
@@ -504,14 +549,25 @@ class AttemptRecord:
     def ended(self) -> bool:
         return self.status is AttemptStatus.ENDED
 
+    @property
+    def uncertain(self) -> bool:
+        """Whether something this call started may still run: it has no end on record, or it was stopped unverified.
+
+        Found by a later run, an attempt without an end is one whose run was
+        lost (a crash, a power cut): whether its CLI was started, and whether
+        it stopped, is not known. Neither is ever taken for "not running".
+        """
+        return not self.ended or self.termination is Termination.UNVERIFIED
+
     def charges(self) -> dict[Unit, int | None]:
         """What this call costs each unit. Conservative while unknown: the call's turn limit, its timeout.
 
         None is an unknown charge (tokens not reported). An attempt that has
-        not ended is charged what it may still use.
+        not ended is charged what it may still use. A call that never started
+        a process (`NOT_STARTED`) costs no provider call.
         """
         charges: dict[Unit, int | None] = {
-            Unit.PROVIDER_CALLS: 1,
+            Unit.PROVIDER_CALLS: 0 if self.termination is Termination.NOT_STARTED else 1,
             Unit.SECONDS: self.elapsed_seconds if self.ended else self.timeout_seconds,
             Unit.TOKENS: self.tokens.value if self.tokens.availability is Availability.OBSERVED else None,
         }
@@ -525,14 +581,31 @@ class AttemptRecord:
             raise InvalidRecord("only a starting attempt becomes running")
         return replace(self, status=AttemptStatus.RUNNING)
 
-    def end(self, outcome: AttemptOutcome, *, ended_at: str, elapsed_seconds: int, failure_kind: str | None = None,
-            workspace_after: str | None = None, turns: Usage | None = None, tokens: Usage | None = None) -> "AttemptRecord":
+    def end(self, outcome: AttemptOutcome, *, ended_at: str, elapsed_seconds: int, termination: Termination,
+            failure_kind: str | None = None, workspace_after: str | None = None, turns: Usage | None = None,
+            tokens: Usage | None = None) -> "AttemptRecord":
         """The same attempt, ended. An attempt ends once."""
         if self.ended:
             raise InvalidRecord("this attempt has already ended")
         return replace(self, status=AttemptStatus.ENDED, outcome=outcome, failure_kind=failure_kind, ended_at=ended_at,
                        elapsed_seconds=elapsed_seconds, workspace_after=workspace_after,
-                       turns=turns or self.turns, tokens=tokens or self.tokens)
+                       turns=turns or self.turns, tokens=tokens or self.tokens, termination=termination)
+
+    def released(self, *, ended_at: str) -> "AttemptRecord":
+        """The attempt after the user stated that its processes stopped. Only an uncertain attempt is released.
+
+        One found without an end ends here with the outcome `UNKNOWN` and the
+        most it was allowed (its timeout, its turn limit, tokens unknown): what
+        it did is not known, and its charges stay what they were. One stopped
+        unverified keeps its outcome and everything it observed; only its
+        termination changes. Nothing else of an ended attempt is ever changed.
+        """
+        if not self.uncertain:
+            raise InvalidRecord("only an attempt that may still run is released")
+        if self.ended:
+            return replace(self, termination=Termination.RELEASED)
+        return self.end(AttemptOutcome.UNKNOWN, ended_at=ended_at, elapsed_seconds=self.timeout_seconds,
+                        termination=Termination.RELEASED)
 
     def to_dict(self) -> dict:
         return {"version": VERSION, "attempt_id": self.attempt_id, "task_id": self.task_id, "iteration": self.iteration,
@@ -543,7 +616,8 @@ class AttemptRecord:
                 "turns": self.turns.to_dict(), "tokens": self.tokens.to_dict(),
                 "outcome": None if self.outcome is None else str(self.outcome), "failure_kind": self.failure_kind,
                 "ended_at": self.ended_at, "elapsed_seconds": self.elapsed_seconds,
-                "workspace_after": self.workspace_after}
+                "workspace_after": self.workspace_after,
+                "termination": None if self.termination is None else str(self.termination)}
 
     @classmethod
     def from_dict(cls, raw, name: str = "attempt") -> "AttemptRecord":
@@ -559,21 +633,71 @@ class AttemptRecord:
 # --- a step and the task's record -----------------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class CallLimits:
+    """What each call of a step is allowed, frozen when the step first starts (decision D2), and where it came from.
+
+    Every attempt of the step is started with these values, whatever the
+    project's configuration or the agent settings say by then: a resume, a
+    retry and a quota recovery never resolve them again.
+    """
+    turn_limit: int | None   # Claude's `--max-turns`; None for Codex
+    turn_source: "Source"
+    timeout_seconds: int
+    timeout_source: "Source"
+
+    FIELDS = ("turn_limit", "turn_source", "timeout_seconds", "timeout_source")
+
+    def __post_init__(self):
+        _set(self, "turn_source", _enum(Source, self.turn_source, "source of the turn limit"))
+        _set(self, "timeout_source", _enum(Source, self.timeout_source, "source of the timeout"))
+        if self.turn_limit is None:
+            if self.turn_source is not Source.NOT_APPLICABLE:
+                raise InvalidRecord("a call without a turn limit has none to come from anywhere")
+        else:
+            _int(self.turn_limit, "turn limit", 1, CALL_LIMIT)
+            if self.turn_source is Source.NOT_APPLICABLE:
+                raise InvalidRecord("a turn limit comes from somewhere")
+        _int(self.timeout_seconds, "timeout", 1, CALL_LIMIT)
+        if self.timeout_source is Source.NOT_APPLICABLE:
+            raise InvalidRecord("a timeout comes from somewhere")
+
+    @classmethod
+    def of(cls, limits: "EffectiveLimits") -> "CallLimits":
+        return cls(limits.call_turns.value, limits.call_turns.source, limits.call_seconds.value, limits.call_seconds.source)
+
+    def to_dict(self) -> dict:
+        return {"turn_limit": self.turn_limit, "turn_source": str(self.turn_source),
+                "timeout_seconds": self.timeout_seconds, "timeout_source": str(self.timeout_source)}
+
+    @classmethod
+    def from_dict(cls, raw, name: str) -> "CallLimits":
+        raw = _fields(raw, name, cls.FIELDS, versioned=False)
+        return cls(raw["turn_limit"], raw["turn_source"], raw["timeout_seconds"], raw["timeout_source"])
+
+
+@dataclass(frozen=True)
 class StepExecution:
-    """The attempts of one step, in order, and its budget. The budget's charges are those of its attempts."""
+    """The attempts of one step, in order, its frozen call limits and its budget. The budget's charges are its attempts'."""
     iteration: int
     phase: Phase
     provider: str
+    profile: "ExecutionProfile"
+    call: CallLimits
     budget: BudgetState
     attempts: tuple[AttemptRecord, ...] = ()
 
-    FIELDS = ("iteration", "phase", "role", "provider", "budget", "attempts")
+    FIELDS = ("iteration", "phase", "role", "provider", "profile", "call", "budget", "attempts")
 
     def __post_init__(self):
         _int(self.iteration, "iteration", 1, ITERATION_LIMIT)
         _set(self, "phase", _enum(Phase, self.phase, "phase"))
         if type(self.provider) is not str or self.provider not in PROVIDERS:
             raise InvalidRecord(f"provider must be one of: {', '.join(PROVIDERS)}")
+        _set(self, "profile", _enum(ExecutionProfile, self.profile, "execution profile"))
+        if not isinstance(self.call, CallLimits):
+            raise InvalidRecord("a step keeps the limits of its calls")
+        if (self.call.turn_limit is not None) != (self.provider == "claude"):
+            raise InvalidRecord("a Claude step has a turn limit, a Codex step none")
         if not isinstance(self.budget, BudgetState) or self.budget.scope is not Scope.PHASE:
             raise InvalidRecord("a step has a budget of scope phase")
         if self.provider != "claude" and self.budget.line(Unit.CLAUDE_TURNS) is not None:
@@ -585,6 +709,8 @@ class StepExecution:
         for index, item in enumerate(attempts, 1):
             if (item.iteration, item.phase, item.provider) != (self.iteration, self.phase, self.provider):
                 raise InvalidRecord(f"attempt {item.attempt_id} belongs to another step")
+            if (item.turn_limit, item.timeout_seconds) != (self.call.turn_limit, self.call.timeout_seconds):
+                raise InvalidRecord(f"attempt {item.attempt_id} was not started with the limits of its step")
             if item.ordinal != index:
                 raise InvalidRecord("the attempts of a step are numbered 1, 2, … in order")
             if index < len(attempts) and not item.ended:
@@ -619,17 +745,24 @@ class StepExecution:
             return StepStatus.RUNNING
         return StepStatus.ANSWER_RECEIVED if last.outcome.answered else StepStatus.STOPPED
 
+    @property
+    def uncertain(self) -> AttemptRecord | None:
+        """The attempt of this step that may still run, if any: only ever its last one."""
+        return self.last if self.last is not None and self.last.uncertain else None
+
     def to_dict(self) -> dict:
         return {"iteration": self.iteration, "phase": str(self.phase), "role": self.role, "provider": self.provider,
-                "budget": self.budget.to_dict(), "attempts": [item.to_dict() for item in self.attempts]}
+                "profile": str(self.profile), "call": self.call.to_dict(), "budget": self.budget.to_dict(),
+                "attempts": [item.to_dict() for item in self.attempts]}
 
     @classmethod
     def from_dict(cls, raw, name: str = "step") -> "StepExecution":
         raw = _fields(raw, name, cls.FIELDS, versioned=False)
         attempts = tuple(AttemptRecord.from_dict(item, f"{name} attempt")
                          for item in _list(raw["attempts"], f"{name} attempts", ORDINAL_LIMIT))
-        step = cls(raw["iteration"], raw["phase"], raw["provider"], BudgetState.from_dict(raw["budget"], f"{name} budget"),
-                   attempts)
+        step = cls(raw["iteration"], raw["phase"], raw["provider"], raw["profile"],
+                   CallLimits.from_dict(raw["call"], f"{name} call limits"),
+                   BudgetState.from_dict(raw["budget"], f"{name} budget"), attempts)
         if raw["role"] != step.role:
             raise InvalidRecord(f"{name} names the role {str(raw['role'])[:20]} for the phase {step.phase}")
         return step
@@ -673,28 +806,33 @@ class ExecutionRecord:
     def open(cls, task_id: str, limits: Mapping[Unit, int | None]) -> "ExecutionRecord":
         return cls(task_id, 1, BudgetState.open(Scope.TASK, limits))
 
-    def begin_step(self, iteration: int, phase: Phase, provider: str,
-                   limits: Mapping[Unit, int | None]) -> "ExecutionRecord":
-        """A new current step. The attempts of the previous one must all have ended; they leave this record."""
-        if self.step is not None and self.step.last is not None and not self.step.last.ended:
-            raise InvalidRecord("the current step still has an attempt that has not ended")
-        step = StepExecution(iteration, phase, provider, BudgetState.open(Scope.PHASE, limits))
+    def begin_step(self, iteration: int, phase: Phase, provider: str, limits: Mapping[Unit, int | None],
+                   call: CallLimits, profile: "ExecutionProfile") -> "ExecutionRecord":
+        """A new current step with its call limits frozen. The previous step's attempts must all have ended and none
+        may still run; they leave this record, and the task's budget keeps what they were charged."""
+        if self.step is not None and self.step.uncertain is not None:
+            raise InvalidRecord("the current step has an attempt that may still run")
+        step = StepExecution(iteration, phase, provider, profile, call, BudgetState.open(Scope.PHASE, limits))
         return replace(self, step=step)
 
-    def new_attempt(self, *, started_at: str, turn_limit: int | None, timeout_seconds: int,
-                    settings_digest: str | None = None, continuation: ContinuationMode = ContinuationMode.NONE,
-                    session: str | None = None, workspace_before: str | None = None) -> tuple["ExecutionRecord", AttemptRecord]:
-        """The record with a new `STARTING` attempt of the current step, charged in advance, and that attempt."""
+    def new_attempt(self, *, started_at: str, settings_digest: str | None = None,
+                    continuation: ContinuationMode = ContinuationMode.NONE, session: str | None = None,
+                    workspace_before: str | None = None) -> tuple["ExecutionRecord", AttemptRecord]:
+        """The record with a new `STARTING` attempt of the current step, charged in advance, and that attempt.
+
+        The attempt is started with the step's frozen call limits. None is
+        added while an attempt of the step may still run.
+        """
         step = self.step
         if step is None:
             raise InvalidRecord("there is no current step")
-        if step.last is not None and not step.last.ended:
-            raise InvalidRecord("the current step still has an attempt that has not ended")
+        if step.uncertain is not None:
+            raise InvalidRecord("the current step has an attempt that may still run")
         claude = step.provider == "claude"
         item = AttemptRecord(
             attempt_id(self.next_attempt), self.task_id, step.iteration, step.phase, len(step.attempts) + 1,
-            step.provider, settings_digest, turn_limit, timeout_seconds, continuation, session, AttemptStatus.STARTING,
-            started_at, workspace_before,
+            step.provider, settings_digest, step.call.turn_limit, step.call.timeout_seconds, continuation, session,
+            AttemptStatus.STARTING, started_at, workspace_before,
             Usage.unknown(Unit.CLAUDE_TURNS) if claude else Usage(Unit.CLAUDE_TURNS, Availability.NOT_APPLICABLE),
             Usage.unknown(Unit.TOKENS))
         record = replace(self, next_attempt=self.next_attempt + 1, budget=self.budget.charged(item.charges()),
@@ -714,6 +852,22 @@ class ExecutionRecord:
                 "workspace_before")
         if any(getattr(item, name) != getattr(last, name) for name in kept):
             raise InvalidRecord("an update keeps the identity, limits and settings of its attempt")
+        before, after = last.charges(), item.charges()
+        return replace(self, budget=self.budget.charged(after, withdrawn=before),
+                       step=replace(step, budget=step.budget.charged(after, withdrawn=before),
+                                    attempts=step.attempts[:-1] + (item,)))
+
+    def release(self, attempt: str, *, ended_at: str) -> "ExecutionRecord":
+        """The record after the user stated that the processes of `attempt`, the uncertain last one, stopped.
+
+        Charges are unchanged: an attempt found without an end was charged the
+        most it was allowed, and keeps that charge.
+        """
+        step = self.step
+        last = step.last if step is not None else None
+        if last is None or last.attempt_id != attempt:
+            raise InvalidRecord("only the last attempt of the current step can be released")
+        item = last.released(ended_at=ended_at)
         before, after = last.charges(), item.charges()
         return replace(self, budget=self.budget.charged(after, withdrawn=before),
                        step=replace(step, budget=step.budget.charged(after, withdrawn=before),

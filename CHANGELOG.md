@@ -1215,6 +1215,62 @@ folders; no run writes them yet.
   the real loop with attempt folders beside it). One mutation protection
   moved to `runfiles.py`, fifteen new.
 
+### Adaptive Execution: the lifecycle of each agent call — November 8, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 04). With
+`execution.enabled`, each call of a step that starts afterwards is recorded;
+without it nothing changes.
+
+- Each call is an attempt (`CX-0001`) saved `STARTING` in `state["execution"]`
+  before its folder is made and its CLI started, `RUNNING` once the process
+  exists and its process file is written, then ended with its outcome, its
+  termination (`exited`, `stopped`, `unverified`, `not_started`,
+  `released`), the seconds measured and the usage its CLI reported (Claude's
+  `num_turns`, Codex's tokens; unknown otherwise). History events
+  `attempt_started`, `attempt_ended`, `attempt_released`. One folder per
+  call, `runs/iteration-NNN/<develop|review>/attempt-NNN/`, made
+  exclusively; a review record names the answer of its attempt.
+- The Claude turn limit and the timeout of a call are resolved from the
+  profile when the step first starts and frozen with it (audit decision D2):
+  a Resume, a quota retry and an edited configuration do not change them for
+  that step. Step and task budgets are charged once per call and never
+  reset; they refuse no call yet. Nothing continues a step by itself.
+- A call that may still be running holds the task: one found without an end
+  after a lost run, or stopped while what it started may still run (a
+  timeout or an interruption on native Windows; a refused group signal),
+  pauses with `attempt_uncertain` at every Resume until the user checks and
+  runs `patchrondo release-attempt TASK CX-NNNN` (refused while a process
+  file of a live process is there; on native Windows, any). A call saved
+  but whose folder was never made is closed as never started. An existing
+  attempt folder is never reused (`attempt_folder_exists`); an unreadable
+  record pauses with `execution_unreadable` and is kept.
+- `process.Launch` (the PID, what holds the process, whether it was
+  stopped; a start the caller cannot record stops the process) and
+  `providers.Observation` (`OfficialCLI.metered`) pass this to the record;
+  without them the CLI is started exactly as before.
+- Compatibility: without the section or with it off, commands, flat files,
+  events, checkpoints, pauses and saved states are unchanged; a step started
+  before execution was enabled finishes as it started. Quota recovery, the
+  reviewer's restrictions, `parse_review`, the test consent and the gate are
+  unchanged. Requests for tests are not recorded as attempts. The task page
+  words the new pauses and events; `tools/ui_e2e.py` and
+  `tools/provider_e2e.py` read either layout. See "Adaptive Execution:
+  limits and recorded calls" in `docs/USAGE.md` and section 20 of
+  `docs/ARCHITECTURE.md`.
+- Tests: `tests/test_attempts.py` (35 tests: the lifecycle and its saves,
+  IDs and folders over manual resumes, roles, frozen limits, legacy steps
+  and configurations, each outcome, Claude and Codex usage, unknown usage,
+  quota, timeouts and interruptions, crashes at six boundaries, release,
+  existing and malformed folders, loop and gate invariance, bundles and
+  journal, real processes for `Launch`); `tests/test_execution.py` updated
+  for the schema (termination, frozen call limits) with five new tests.
+  In `tests/test_execution_config.py`, `EngineCompatibilityTests` keeps a
+  run with execution off identical to a run without the section, and now
+  checks that a run with it on decides identically (same events apart from
+  the attempt events, same calls apart from the profile's `--max-turns` and
+  the attempt's folder, same files, each call in its own folder).
+  Twenty-one new mutation protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

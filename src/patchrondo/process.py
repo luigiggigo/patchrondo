@@ -41,6 +41,34 @@ KILL_REFUSED = ("The system refused to signal what was left of its process group
                 "it started were stopped: they may still be running")
 
 
+class Launch:
+    """What `execute` tells its caller about the process it starts, while it happens. It decides nothing.
+
+    `pid` and `process_tree` are set as soon as the process exists; `stopped`
+    when `execute` had to stop it (its time limit, an interruption), with
+    `kill_refused` as in `Result`. `on_start` is called once per start, after
+    the process file is written: if it raises, the process is stopped and the
+    error goes on, so no process runs that its caller could not record.
+    """
+
+    def __init__(self, on_start=None):
+        self.on_start = on_start
+        self.pid: int | None = None
+        self.process_tree: str | None = None
+        self.stopped = False
+        self.kill_refused = False
+
+    def _began(self, pid: int, held: str) -> None:
+        self.pid, self.process_tree = pid, held
+
+    def _started(self) -> None:
+        if self.on_start is not None:
+            self.on_start()
+
+    def _ended(self, refused: bool) -> None:
+        self.stopped, self.kill_refused = True, refused
+
+
 def stop_refused(result) -> bool:
     """Whether a command stopped at its time limit has a group the system refused the last signal (`kill_refused`).
 
@@ -191,7 +219,8 @@ def _captured(stream, limit: int = 60000) -> str:
 
 
 def execute(argv: list[str], cwd: Path, *, stdin: str = "", timeout: int = 600,
-            pid_file: Path | None = None, on_stdout=None, on_stderr=None, tree: bool = False) -> Result:
+            pid_file: Path | None = None, on_stdout=None, on_stderr=None, tree: bool = False,
+            launch: Launch | None = None) -> Result:
     """Run a command to its end and return its bounded output.
 
     `on_stdout` and `on_stderr` receive the bytes of each stream as they are
@@ -208,37 +237,44 @@ def execute(argv: list[str], cwd: Path, *, stdin: str = "", timeout: int = 600,
     confirmed that its group was signalled or gone: nothing then says that
     what it started was stopped. Either way it is a result, never an error
     of the start, which is raised only by starting the program.
+
+    `launch` (`Launch`) learns the process as it is started and stopped; only
+    callers that record an attempt pass one.
     """
     if not argv or not all(isinstance(x, str) and x for x in argv):
         raise ValueError("Invalid command: expected a list of nonempty arguments")
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         if on_stdout is None and on_stderr is None:
             return _execute(argv, cwd, stdin=stdin, timeout=timeout, pid_file=pid_file,
-                            output=output, errors=errors, tree=tree)
+                            output=output, errors=errors, tree=tree, launch=launch or Launch())
         return _observed(argv, cwd, stdin=stdin, timeout=timeout, pid_file=pid_file,
-                         output=output, errors=errors, observers=(on_stdout, on_stderr), tree=tree)
+                         output=output, errors=errors, observers=(on_stdout, on_stderr), tree=tree,
+                         launch=launch or Launch())
 
 
-def _execute(argv, cwd, *, stdin, timeout, pid_file, output, errors, tree=False) -> Result:
+def _execute(argv, cwd, *, stdin, timeout, pid_file, output, errors, tree=False, launch: Launch) -> Result:
     proc = subprocess.Popen(
         argv, cwd=cwd, env=safe_env(),
         stdin=subprocess.PIPE, stdout=output, stderr=errors,
         text=True, encoding="utf-8", errors="replace", start_new_session=(os.name == "posix"),
     )
     job, held = _job(proc, tree)
+    launch._began(proc.pid, held)
     try:
         if pid_file is not None:
             from .storage import save_json
             save_json(pid_file, {"pid": proc.pid, "command": argv[0]})
+        launch._started()
         proc.communicate(input=stdin, timeout=timeout)
         return Result(proc.returncode, _captured(output), _captured(errors), process_tree=held)
     except subprocess.TimeoutExpired:
         refused = _terminate(proc, job)
+        launch._ended(refused)
         proc.communicate()
         return Result(proc.returncode or 124, _captured(output), _captured(errors), timed_out=True, process_tree=held,
                       kill_refused=refused)
     except BaseException:
-        _terminate(proc, job)
+        launch._ended(_terminate(proc, job))
         raise
     finally:
         if job is not None:
@@ -297,11 +333,12 @@ def _drain(threads: list[threading.Thread], seconds: float) -> None:
             thread.join(max(0.0, deadline - time.monotonic()))
 
 
-def _observed(argv, cwd, *, stdin, timeout, pid_file, output, errors, observers, tree=False) -> Result:
+def _observed(argv, cwd, *, stdin, timeout, pid_file, output, errors, observers, tree=False, launch: Launch) -> Result:
     """`_execute` with both streams on pipes, each read by its own thread so neither can fill up."""
     proc = subprocess.Popen(argv, cwd=cwd, env=safe_env(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, start_new_session=(os.name == "posix"))
     job, held = _job(proc, tree)
+    launch._began(proc.pid, held)
     capture = _Capture()
     readers = [threading.Thread(target=_pump, args=(source, sink, observer, capture), daemon=True,
                                 name=f"patchrondo-read-{name}")
@@ -321,17 +358,19 @@ def _observed(argv, cwd, *, stdin, timeout, pid_file, output, errors, observers,
         if pid_file is not None:
             from .storage import save_json
             save_json(pid_file, {"pid": proc.pid, "command": argv[0]})
+        launch._started()
         for thread in (*readers, writer):
             thread.start()
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             refused = _terminate(proc, job)
+            launch._ended(refused)
             proc.wait()
             return captured(True, refused)
         return captured(False)
     except BaseException:
-        _terminate(proc, job)
+        launch._ended(_terminate(proc, job))
         _drain(readers, DRAIN_SECONDS)
         with capture.lock:
             capture.closed = True

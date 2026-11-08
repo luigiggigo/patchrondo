@@ -9,7 +9,7 @@ import json
 import re
 
 from . import acceptance, agents, streams
-from .process import KILL_REFUSED, Result, execute, short_log, stop_refused, with_refusal
+from .process import KILL_REFUSED, Launch, Result, execute, short_log, stop_refused, with_refusal
 from .storage import atomic_text
 
 
@@ -261,6 +261,32 @@ def _claude_text(body: str, observed_at: datetime | None = None, stderr: str = "
     return body if text is None else text
 
 
+def _claude_turns(final) -> int | None:
+    """The `num_turns` of Claude's result, given the parsed object of a stream or the text of a single-result output."""
+    if isinstance(final, str):
+        try:
+            final = json.loads(final)
+        except json.JSONDecodeError:
+            return None
+    turns = final.get("num_turns") if isinstance(final, dict) else None
+    return turns if type(turns) is int and turns >= 0 else None
+
+
+class Observation:
+    """What one call showed PatchRondo, for the record of its attempt (`core._attempt`). It decides nothing.
+
+    `launch` follows the process (`process.Launch`); `turns` is the
+    `num_turns` of Claude's own final result and `tokens` the input and
+    output tokens of Codex's completed turns, each None when the CLI did not
+    report it. Neither is read from what the agent wrote.
+    """
+
+    def __init__(self, on_start=None):
+        self.launch = Launch(on_start)
+        self.turns: int | None = None
+        self.tokens: int | None = None
+
+
 def _noted(*_args, **_fields) -> None:
     """Stands in for a journal when a step is run without one."""
 
@@ -268,6 +294,7 @@ def _noted(*_args, **_fields) -> None:
 class OfficialCLI:
     journals = True  # `invoke` accepts the journal of the attempt and records the CLI's activity in it
     configurable = True  # `invoke` accepts the agent settings of the step and starts the CLI with them
+    metered = True  # `invoke` accepts an `Observation` and fills it while the CLI runs
 
     def __init__(self, timeout: int = 600, claude_turns: int = 12, clock=None):
         self.timeout = timeout
@@ -276,7 +303,7 @@ class OfficialCLI:
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
     def invoke(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path,
-               journal=None, settings: dict | None = None) -> AgentReply:
+               journal=None, settings: dict | None = None, observation: Observation | None = None) -> AgentReply:
         """Run one step with the provider's CLI and return its final answer.
 
         The CLI is asked to print its activity while it works; what it prints
@@ -288,6 +315,9 @@ class OfficialCLI:
         `settings` are the agent settings of the step for this role and
         provider, as `agents.clean_block` validated them. Without them the
         CLI is started with the command PatchRondo always used.
+
+        `observation` (`Observation`) learns the process and the usage the
+        CLI reported; without it the CLI is started exactly as before.
         """
         if provider not in {"claude", "codex"} or role not in {"developer", "reviewer"}:
             raise ValueError("Invalid provider or role")
@@ -297,14 +327,17 @@ class OfficialCLI:
             switch = f"({streams.SWITCH})" if not streams.enabled() else "in the agent settings of this role"
             emit("status", status="notice", code="stream_off",
                  text=f"Live activity is switched off {switch}: this step shows its result when it ends.")
-            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=False)
+            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=False,
+                              observation=observation)
         try:
-            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=True)
+            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=True,
+                              observation=observation)
         except _StreamRefused as refusal:
             emit("status", status="notice", code="stream_unsupported",
                  text=f"This {provider} CLI did not accept the options for live activity ({refusal}). "
                       "The step runs without them and shows its result when it ends.")
-            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=False)
+            return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=False,
+                              observation=observation)
 
     def verify(self, provider: str, model: str, effort: str | None, folder: Path) -> dict:
         """Ask a model for one word, to learn whether this login can use it: {"ok", "kind", "message"}.
@@ -339,7 +372,7 @@ class OfficialCLI:
         return {"ok": True, "kind": None, "message": short_log(text.strip(), 200)}
 
     def _step(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path, emit,
-              settings: dict | None = None, *, live: bool) -> AgentReply:
+              settings: dict | None = None, *, live: bool, observation: Observation | None = None) -> AgentReply:
         settings = settings or {}
         timeout = settings.get("timeout_seconds") or self.timeout
         turns = settings.get("max_turns") or self.claude_turns
@@ -369,13 +402,20 @@ class OfficialCLI:
         try:
             result = execute(argv, workspace, stdin=prompt, timeout=timeout,
                              pid_file=run_dir / f"{role}.active-process.json",
-                             **({"on_stdout": stream.feed} if stream is not None else {}))
+                             **({"on_stdout": stream.feed} if stream is not None else {}),
+                             **({"launch": observation.launch} if observation is not None else {}))
         except FileNotFoundError as exc:
             raise AgentFailure(f"CLI not found: {argv[0]}. Install the official CLI and authenticate it.",
                                "configuration", provider=provider) from exc
         finally:
             if stream is not None:
                 stream.close()  # also when the step is interrupted: what was read so far stays recorded
+        if observation is not None:
+            # Usage as the CLI reported it in its own final result or completed turns; unknown otherwise, never 0.
+            if provider == "claude":
+                observation.turns = _claude_turns(stream.result if stream is not None else result.stdout)
+            elif stream is not None:
+                observation.tokens = stream.tokens
         # With a stream the log is its transcript: bounded like the captured output, without internal reasoning.
         observed = stream is not None and stream.fed
         stdout = stream.transcript.text() if observed else result.stdout

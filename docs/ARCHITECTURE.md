@@ -2714,8 +2714,9 @@ bundle and never replaces an existing file.
 
 Phase 2.5, Adaptive Agent Execution, is planned in steps
 ([audit](PHASE_2_5_AUDIT.md), section 8). Steps 01 and 02 (November 8,
-2026) add `execution.py`: data contracts and the resolution of limits. No
-step of the workflow uses them yet.
+2026) add `execution.py`: data contracts and the resolution of limits.
+Step 04 (the same day) records each agent call of a step whose project
+enabled execution; see "Attempt lifecycle (Step 04)" below.
 
 - **Records (Step 01).** `AttemptRecord` (one start of a provider CLI for one
   step, ID `CX-0001`), `StepExecution`, `ExecutionRecord`, `BudgetState`
@@ -2748,11 +2749,14 @@ step of the workflow uses them yet.
 
 Boundaries:
 
-- Only `core.validate_config` imports the module, for `settings_of`
-  (`tests/test_execution.py` checks it). `run_task`, `agents.command`, the
+- Only `core.py` imports the module: `validate_config` for `settings_of`,
+  and the wrapper around a call with the user's release (Step 04;
+  `tests/test_execution.py` checks the list). `agents.command`, the
   adapters, `recovery` and the gate do not read the section or the
-  resolution: commands, timeouts, events, checkpoints and pauses are what
-  they were (`tests/test_execution_config.py`, `EngineCompatibilityTests`).
+  resolution. Without the section, or with it off, commands, timeouts,
+  events, checkpoints and pauses are what they were
+  (`tests/test_execution_config.py`, `EngineCompatibilityTests`;
+  `tests/test_attempts.py`, `LegacyTests`).
 - Profiles are not agent presets (model and effort) and not gate policies
   (`gate.POLICY` stays `standard`). The section has no field for a model,
   a tool, a permission or a sandbox, and `native_resume` accepts only
@@ -2760,9 +2764,9 @@ Boundaries:
 - No task override and no global level: the project's configuration alone.
   `workflow.claude_max_turns` stays outside `core.TASK_OVERRIDES`; a task's
   turn limit stays the agent setting `max_turns` at task level.
-- A later step that applies the limits must freeze the resolution with the
-  step (audit decision D2), so that a resume or a continuation does not run
-  with a policy edited meanwhile.
+- Step 04 freezes the resolution of a call's limits with the step (audit
+  decision D2), so that a resume or a retry does not run with a policy
+  edited meanwhile.
 
 ### Attempt folders (Step 03)
 
@@ -2798,9 +2802,85 @@ Boundaries:
   reply with `runfiles.log_name`, which for the flat folder is the name it
   always gave (`iteration-NNN/reviewer.reply.md`). The verification runner
   and the test stage keep their flat files.
-- **Inactive.** `run_task` still gives the adapter the flat iteration
-  folder; nothing calls `allocate`. Step 04 allocates one folder per
-  attempt together with its `AttemptRecord`, saved before the CLI starts.
-  Tasks are never migrated: a task written flat stays flat, and a task that
-  holds flat files, requests for tests and attempt folders is read whole.
+- **Writers.** Since Step 04, `core._attempt` allocates the folder of each
+  attempt of a recorded step, with the record's ordinal; a step without a
+  record still gets the flat iteration folder. Tasks are never migrated: a
+  task written flat stays flat, and a task that holds flat files, requests
+  for tests and attempt folders is read whole.
 - Tests: `tests/test_runfiles.py`.
+
+### Attempt lifecycle (Step 04)
+
+A step is recorded when it first starts while its project has
+`execution.enabled` (`core._step_settings`, called before the event that
+starts the step, so its frozen agent settings, its record and its frozen
+limits are saved in one write). A step already recorded keeps its record and
+its limits whatever the configuration says later; a step whose agent settings
+were frozen without a record (started before, or by an earlier version) runs
+as it started, flat; a task without the `execution` key gains none until such
+a step. The record is `state["execution"]` (`ExecutionRecord`): the next
+attempt number, the task's budget and the current step (`StepExecution`, with
+its `CallLimits` and `profile`). Earlier steps leave the record; the task's
+budget keeps their charges and the history keeps their events.
+
+Each call of a recorded step goes through `core._attempt`, in this order:
+
+1. `new_attempt` gives the next ID and the step's frozen `turn_limit` and
+   `timeout_seconds`; the state is saved with `attempt_started`
+   (`STARTING`). Nothing exists on disk for the attempt yet.
+2. `runfiles.allocate` makes its folder with the record's ordinal,
+   exclusively. A folder that exists is never written into: the attempt
+   ends `ENVIRONMENT_BLOCKED` / `NOT_STARTED` and the run pauses with
+   `attempt_folder_exists`; the next run takes the next ordinal. A link, a
+   junction or a file in the way pauses with `system_error`.
+3. `_invoke` calls the adapter with the step's limits given as agent
+   settings (`timeout_seconds`, and `max_turns` for Claude), so that
+   `agents.command` builds the command as for every call, and with a
+   `providers.Observation` for a `metered` adapter. `process.execute`
+   fills its `Launch`: the PID and what holds the process as soon as it
+   exists; `on_start` after the process file is written, which saves
+   `RUNNING`; `stopped` and `kill_refused` when it had to stop it. A start
+   the caller cannot record (its save raises) stops the process.
+4. The end is put in the state with `attempt_ended`: the outcome from the
+   failure kind (`OUTCOME_OF_KIND`; the kinds and pause texts are
+   unchanged), the termination (`EXITED`; `STOPPED` only when a process
+   group or a job object took the last signal; `UNVERIFIED` otherwise;
+   `NOT_STARTED` when no process started, which costs no provider call), the
+   seconds measured, the fingerprint after, and the usage the CLI reported
+   (`Usage.reported`: Claude's `num_turns`, Codex's tokens of
+   `turn.completed`; unknown otherwise, charged as the most allowed). An
+   answer is saved at once; a failure is saved by the pause, in the same
+   write as the pause and any quota retry plan.
+
+What a later run can prove (`core._settle_attempts`, first in every run and
+in a request for tests): an attempt saved `STARTING` whose folder does not
+exist never started a process, and is ended `INTERRUPTED` / `NOT_STARTED`.
+Anything else without an end (a folder, a process that may not have written
+its file yet, a `RUNNING` attempt, one whose CLI exited before its end was
+saved), and an attempt that ended `UNVERIFIED`, is uncertain: the run pauses
+with `attempt_uncertain` and calls nothing, and a Resume returns the saved
+state until the user releases it (`core.release_attempt`, `patchrondo
+release-attempt TASK CX-NNNN`). The release holds the task lock, runs
+nothing, changes no status and is refused while the attempt's folder holds a
+process file whose process may be alive (`storage._alive`: on native Windows,
+any). It ends an attempt without an end as `UNKNOWN`, charged as before, or
+turns `UNVERIFIED` into `RELEASED`; nothing else of an ended attempt changes.
+
+Boundaries of Step 04:
+
+- No call is started by the record: a run makes the calls it made before,
+  and a `max_turns` failure pauses after one call. The step and task budgets
+  are charged and never reset, and refuse nothing yet; deciding a further
+  call from them is automatic continuation, a later step.
+- Quota stays with `recovery`: a usage limit ends the attempt
+  `QUOTA_EXHAUSTED` / `EXITED`, and a retry is a new attempt of the same step.
+- The reviewer's command is built as always (read-only); a reply still goes
+  through `parse_review`, the tests and `_complete`. An unreadable review is
+  an attempt `COMPLETED` (the CLI answered) and a pause `invalid_review`.
+- Neither the record nor the history holds a PID or a provider session; the
+  process file stays in the attempt's folder, which the lock reads.
+- A request for tests (`draft_tests`) is not an attempt: it keeps its
+  `test-draft-KK/` folder, and is refused while an attempt is uncertain.
+- Tests: `tests/test_attempts.py` (a fake CLI in the process, crashes at
+  each boundary, real processes for `Launch`), `tests/test_execution.py`
+  (`AttemptLifecycleTests`).

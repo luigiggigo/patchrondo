@@ -47,7 +47,7 @@ sys.path.insert(0, str(SOURCE))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import browser  # noqa: E402
-from patchrondo import activity, bundle, doctor, environment, history, picker  # noqa: E402
+from patchrondo import activity, bundle, doctor, environment, history, picker, runfiles  # noqa: E402
 from patchrondo.commands import join_command  # noqa: E402
 from patchrondo.core import config, create_task, initialize  # noqa: E402
 from patchrondo.process import Result as browser_result  # noqa: E402
@@ -1140,7 +1140,9 @@ def scenario_live(env: Env) -> None:
     env.expect("the first agent message appears on the page", "qa('.act-row[data-kind=message]').length >= 1", 12)
     state = read_json(path / "state.json")
     env.check("and the agent process was still running when it did", state["status"] == "running" and state["phase"] == "develop"
-              and not (path / "handoff.md").exists() and any(path.glob("runs/iteration-*/developer.active-process.json")), json.dumps(state)[:300])
+              and not (path / "handoff.md").exists()
+              and any(file.name == "developer.active-process.json" for file in runfiles.process_files(path / "runs")),
+              json.dumps(state)[:300])
     env.expect("the view names the agent, its role and the iteration", "q('.act-now-who').innerText.includes('Claude · developer · iteration 1 of ')", 8)
     env.expect("and says what it is doing, from the latest event", "q('.act-now-doing').innerText.trim().length > 0 && !q('.act-now-doing').innerText.includes('Nothing has been recorded')")
     first = page.js("q('.act-clock') ? q('.act-clock').textContent : ''")
@@ -1225,7 +1227,9 @@ def scenario_live(env: Env) -> None:
               f"{len(delays)} measured, max {max(delays) if delays else None}")
 
     # Nothing private anywhere: not on the page, not in the journal, not in the saved transcripts.
-    files = [path / "activity.jsonl", *path.glob("runs/iteration-*/*.stdout.log")]
+    # Flat while execution is off (this scenario), one folder per attempt when it is on.
+    files = [path / "activity.jsonl", *path.glob("runs/iteration-*/*.stdout.log"),
+             *path.glob("runs/iteration-*/*/attempt-*/*.stdout.log")]
     env.check("internal reasoning is neither shown nor saved", "PRIVATE-REASONING" not in page.js("document.body.textContent")
               and all("PRIVATE-REASONING" not in file.read_text(encoding="utf-8") for file in files) and len(files) == 3)
 

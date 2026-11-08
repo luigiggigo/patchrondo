@@ -16,8 +16,8 @@ import unittest
 from patchrondo import acceptance, activity, agents, core, evidence, execution, findings, history, providers, repair, \
     workspace
 from patchrondo.execution import (AttemptOutcome, AttemptRecord, AttemptStatus, Availability, BudgetLine, BudgetState,
-                                  ContinuationMode, ExecutionRecord, InvalidRecord, Phase, Scope, StepExecution,
-                                  StepStatus, Unit, Usage)
+                                  CallLimits, ContinuationMode, ExecutionProfile, ExecutionRecord, InvalidRecord, Phase,
+                                  Scope, Source, StepExecution, StepStatus, Termination, Unit, Usage)
 
 SOURCES = Path(execution.__file__).resolve().parent
 TASK = "T-0123456789ab"
@@ -28,24 +28,34 @@ T0, T1, T2 = "2026-11-08T10:00:00+00:00", "2026-11-08T10:05:00+00:00", "2026-11-
 LIMITS = {Unit.CLAUDE_TURNS: 80, Unit.PROVIDER_CALLS: 3, Unit.SECONDS: 3600, Unit.TOKENS: None}
 
 
+def call(provider="claude", turns=40, timeout=900) -> CallLimits:
+    """The frozen call limits of a step: 40 Claude turns (none for Codex) and 900 seconds."""
+    if provider == "claude":
+        return CallLimits(turns, Source.PROFILE, timeout, Source.PROFILE)
+    return CallLimits(None, Source.NOT_APPLICABLE, timeout, Source.PROFILE)
+
+
 def opened(provider="claude", phase=Phase.DEVELOP, iteration=1, limits=None) -> ExecutionRecord:
     task_limits = {Unit.CLAUDE_TURNS: 200, Unit.PROVIDER_CALLS: 20, Unit.SECONDS: 36000, Unit.TOKENS: None}
     record = ExecutionRecord.open(TASK, task_limits)
     if limits is None:
         limits = dict(LIMITS) if provider == "claude" else {key: value for key, value in LIMITS.items()
                                                              if key is not Unit.CLAUDE_TURNS}
-    return record.begin_step(iteration, phase, provider, limits)
+    return record.begin_step(iteration, phase, provider, limits, call(provider), ExecutionProfile.CUSTOM)
 
 
 def started(record: ExecutionRecord, **options) -> tuple[ExecutionRecord, AttemptRecord]:
-    claude = record.step.provider == "claude"
-    values = {"started_at": T0, "turn_limit": 40 if claude else None, "timeout_seconds": 900,
-              "settings_digest": DIGEST, "workspace_before": BEFORE, **options}
+    values = {"started_at": T0, "settings_digest": DIGEST, "workspace_before": BEFORE, **options}
     return record.new_attempt(**values)
 
 
+def ended_as(outcome) -> Termination:
+    """How a test call's process ended: stopped at a timeout, by itself otherwise."""
+    return Termination.STOPPED if outcome is AttemptOutcome.TIMEOUT else Termination.EXITED
+
+
 def finished(record: ExecutionRecord, outcome=AttemptOutcome.COMPLETED, *, kind=None, turns=None, tokens=None,
-             elapsed=300) -> ExecutionRecord:
+             elapsed=300, termination=None) -> ExecutionRecord:
     """The record with its current attempt run and ended."""
     record, item = started(record)
     item = item.running()
@@ -55,7 +65,8 @@ def finished(record: ExecutionRecord, outcome=AttemptOutcome.COMPLETED, *, kind=
     if tokens is None:
         tokens = Usage(Unit.TOKENS, Availability.OBSERVED, 12000)
     return record.update(item.end(outcome, ended_at=T1, elapsed_seconds=elapsed, failure_kind=kind,
-                                  workspace_after=AFTER, turns=turns, tokens=tokens))
+                                  workspace_after=AFTER, turns=turns, tokens=tokens,
+                                  termination=termination or ended_as(outcome)))
 
 
 def ended_attempt(provider="claude") -> AttemptRecord:
@@ -357,8 +368,9 @@ class LegacyTests(unittest.TestCase):
                                                            "test_timeout_seconds": 180, "claude_max_turns": 12,
                                                            "allow_no_changes": False})
 
-    def test_no_module_of_patchrondo_uses_the_records_yet(self):
-        """Since Step 02 only `core.validate_config` reads the module, to check the configuration; no run uses it."""
+    def test_only_the_attempt_wrapper_of_core_uses_the_records(self):
+        """Since Step 04 the records are read and written by the wrapper around a call in `core.py` and by the user's
+        release, nowhere else: not the command of a step, the adapters, recovery or the gate."""
         users = {}
         for source in sorted(SOURCES.glob("*.py")):
             if source.name == "execution.py":
@@ -372,7 +384,12 @@ class LegacyTests(unittest.TestCase):
                         (function.name, node.attr) for function in ast.walk(tree) if isinstance(function, ast.FunctionDef)
                         for node in ast.walk(function) if isinstance(node, ast.Attribute)
                         and isinstance(node.value, ast.Name) and node.value.id == "execution")
-        self.assertEqual(users, {"core.py": [("validate_config", "settings_of")]})
+        self.assertEqual(set(users), {"core.py"})
+        self.assertEqual({function for function, _ in users["core.py"]},
+                         {"validate_config", "_execution", "_execution_unreadable", "_uncertain_attempt", "_unused",
+                          "_ended_event", "_settle_attempts", "_step_settings", "_outcome", "_termination", "_attempt",
+                          "close", "running", "release_attempt", "_folder_of"})
+        self.assertIn(("validate_config", "settings_of"), users["core.py"])
 
 
 def failure_kinds() -> set[str]:
@@ -457,7 +474,8 @@ class UsageTests(unittest.TestCase):
 
     def test_codex_activity_is_never_counted_as_claude_turns(self):
         record = ExecutionRecord.open(TASK, LIMITS)
-        record = finished(record.begin_step(1, Phase.REVIEW, "codex", {Unit.PROVIDER_CALLS: 2}))
+        record = finished(record.begin_step(1, Phase.REVIEW, "codex", {Unit.PROVIDER_CALLS: 2}, call("codex"),
+                                            ExecutionProfile.CUSTOM))
         self.assertNotIn(Unit.CLAUDE_TURNS, record.step.last.charges())
         self.assertEqual(record.budget.line(Unit.CLAUDE_TURNS).used, 0)
         self.assertEqual(record.budget.line(Unit.PROVIDER_CALLS).used, 1)
@@ -468,7 +486,8 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(item.charges(), {Unit.PROVIDER_CALLS: 1, Unit.SECONDS: 900, Unit.TOKENS: None,
                                           Unit.CLAUDE_TURNS: 40})
         ended = record.update(item.running().end(AttemptOutcome.COMPLETED, ended_at=T1, elapsed_seconds=120,
-                                                 turns=Usage(Unit.CLAUDE_TURNS, Availability.OBSERVED, 9)))
+                                                 turns=Usage(Unit.CLAUDE_TURNS, Availability.OBSERVED, 9),
+                                                 termination=Termination.EXITED))
         self.assertEqual(ended.step.budget.line(Unit.SECONDS).used, 120)
         self.assertEqual(ended.step.budget.line(Unit.TOKENS).unknown, 1)
         self.assertEqual(ended.budget.line(Unit.CLAUDE_TURNS).used, 9)
@@ -496,7 +515,7 @@ class IdentifierTests(unittest.TestCase):
         for iteration in range(1, 6):
             for phase, provider in ((Phase.DEVELOP, "claude"), (Phase.REVIEW, "codex")):
                 limits = {Unit.PROVIDER_CALLS: 3} if provider == "codex" else {Unit.CLAUDE_TURNS: 80}
-                record = record.begin_step(iteration, phase, provider, limits)
+                record = record.begin_step(iteration, phase, provider, limits, call(provider), ExecutionProfile.CUSTOM)
                 for ordinal in (1, 2):
                     record = finished(record)
                     given.append(record.step.last.attempt_id)
@@ -533,10 +552,10 @@ class IdentifierTests(unittest.TestCase):
         with self.assertRaises(InvalidRecord):
             started(record)  # the previous attempt has not ended
         with self.assertRaises(InvalidRecord):
-            record.begin_step(1, Phase.REVIEW, "codex", {})
-        ended = item.running().end(AttemptOutcome.COMPLETED, ended_at=T1, elapsed_seconds=1)
+            record.begin_step(1, Phase.REVIEW, "codex", {}, call("codex"), ExecutionProfile.CUSTOM)
+        ended = item.running().end(AttemptOutcome.COMPLETED, ended_at=T1, elapsed_seconds=1, termination=Termination.EXITED)
         with self.assertRaises(InvalidRecord):
-            ended.end(AttemptOutcome.COMPLETED, ended_at=T2, elapsed_seconds=2)
+            ended.end(AttemptOutcome.COMPLETED, ended_at=T2, elapsed_seconds=2, termination=Termination.EXITED)
         with self.assertRaises(InvalidRecord):
             ended.running()
         record = record.update(ended)
@@ -545,7 +564,7 @@ class IdentifierTests(unittest.TestCase):
         with self.assertRaises(InvalidRecord):
             ExecutionRecord.open(TASK, {}).update(ended)
         with self.assertRaises(InvalidRecord):
-            ExecutionRecord.open(TASK, {}).new_attempt(started_at=T0, turn_limit=40, timeout_seconds=900)
+            ExecutionRecord.open(TASK, {}).new_attempt(started_at=T0)
         _, other = started(opened())
         with self.assertRaises(InvalidRecord):
             started(record)[0].update(dataclasses.replace(other.running(), started_at=T2))
@@ -558,6 +577,87 @@ class IdentifierTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(InvalidRecord):
                 record.update(dataclasses.replace(item.running(), **{name: value}))
         self.assertEqual(record.update(item.running()).step.last.turn_limit, 40)
+
+
+class AttemptLifecycleTests(unittest.TestCase):
+    """Step 04: termination, uncertainty, release and the frozen call limits of a step."""
+
+    def test_a_call_that_never_started_costs_no_provider_call(self):
+        record, item = started(opened())
+        none = execution.Usage(Unit.CLAUDE_TURNS, Availability.OBSERVED, 0)
+        ended = record.update(item.end(AttemptOutcome.ENVIRONMENT_BLOCKED, ended_at=T1, elapsed_seconds=0,
+                                       termination=Termination.NOT_STARTED, turns=none,
+                                       tokens=Usage(Unit.TOKENS, Availability.OBSERVED, 0)))
+        self.assertEqual(ended.step.budget.line(Unit.PROVIDER_CALLS).used, 0)
+        self.assertEqual(ended.budget.line(Unit.PROVIDER_CALLS).used, 0)
+        with self.assertRaises(InvalidRecord):  # a call that never started used nothing
+            item.end(AttemptOutcome.ENVIRONMENT_BLOCKED, ended_at=T1, elapsed_seconds=0, termination=Termination.NOT_STARTED,
+                     turns=Usage(Unit.CLAUDE_TURNS, Availability.OBSERVED, 3))
+
+    def test_termination_agrees_with_the_outcome(self):
+        _, item = started(opened())
+        for outcome, termination in ((AttemptOutcome.COMPLETED, Termination.STOPPED),
+                                     (AttemptOutcome.COMPLETED, Termination.UNVERIFIED),
+                                     (AttemptOutcome.TIMEOUT, Termination.EXITED),
+                                     (AttemptOutcome.TIMEOUT, Termination.NOT_STARTED)):
+            with self.subTest(outcome=outcome, termination=termination), self.assertRaises(InvalidRecord):
+                item.end(outcome, ended_at=T1, elapsed_seconds=1, termination=termination,
+                         failure_kind="timeout" if outcome is AttemptOutcome.TIMEOUT else None)
+        raw = item.running().to_dict()
+        raw["termination"] = "exited"
+        with self.assertRaises(InvalidRecord):  # a call that has not ended has no termination
+            AttemptRecord.from_dict(raw)
+
+    def test_an_attempt_that_may_still_run_holds_the_next_one_until_released(self):
+        record = finished(opened(), AttemptOutcome.TIMEOUT, kind="timeout", termination=Termination.UNVERIFIED,
+                          turns=Usage.unknown(Unit.CLAUDE_TURNS), tokens=Usage.unknown(Unit.TOKENS), elapsed=900)
+        item = record.step.last
+        self.assertTrue(item.uncertain)
+        self.assertIs(record.step.uncertain, item)
+        for change in (lambda: started(record), lambda: record.begin_step(2, Phase.DEVELOP, "claude", {}, call(),
+                                                                          ExecutionProfile.CUSTOM)):
+            with self.assertRaises(InvalidRecord):
+                change()
+        released = record.release(item.attempt_id, ended_at=T2)
+        self.assertEqual((released.step.last.termination, released.step.last.outcome, released.step.last.ended_at),
+                         (Termination.RELEASED, AttemptOutcome.TIMEOUT, T1))  # only its termination changed
+        self.assertEqual(released.budget, record.budget)
+        self.assertIsNone(released.step.uncertain)
+        self.assertEqual(started(released)[1].ordinal, 2)
+        with self.assertRaises(InvalidRecord):
+            released.release(item.attempt_id, ended_at=T2)  # once
+        with self.assertRaises(InvalidRecord):
+            finished(opened()).release("CX-0001", ended_at=T2)  # an attempt that stopped is not released
+
+    def test_an_attempt_without_an_end_is_released_as_unknown_with_its_charges_kept(self):
+        record, item = started(opened())
+        self.assertTrue(item.uncertain)
+        released = record.release(item.attempt_id, ended_at=T2)
+        last = released.step.last
+        self.assertEqual((last.outcome, last.termination, last.elapsed_seconds, last.turns.availability),
+                         (AttemptOutcome.UNKNOWN, Termination.RELEASED, 900, Availability.UNKNOWN))
+        self.assertEqual((released.budget, released.step.budget), (record.budget, record.step.budget))
+        with self.assertRaises(InvalidRecord):
+            record.release("CX-0002", ended_at=T2)
+
+    def test_every_attempt_of_a_step_has_the_step_limits(self):
+        record = finished(opened())
+        raw = record.to_dict()
+        self.assertEqual(raw["step"]["call"], {"turn_limit": 40, "turn_source": "profile", "timeout_seconds": 900,
+                                               "timeout_source": "profile"})
+        self.assertEqual(ExecutionRecord.from_dict(raw), record)
+        for path, value in ((("step", "attempts", 0, "turn_limit"), 41), (("step", "call", "timeout_seconds"), 901),
+                            (("step", "call", "turn_limit"), None), (("step", "call", "turn_source"), "not_applicable"),
+                            (("step", "profile"), "turbo")):
+            changed = copy.deepcopy(raw)
+            target = changed
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            with self.subTest(path=path), self.assertRaises(InvalidRecord):
+                ExecutionRecord.from_dict(changed)
+        with self.assertRaises(InvalidRecord):  # a Codex step has no turn limit
+            opened("codex", Phase.REVIEW).begin_step(1, Phase.REVIEW, "codex", {}, call("claude"), ExecutionProfile.CUSTOM)
 
 
 class NoMutationTests(unittest.TestCase):
@@ -594,7 +694,7 @@ class NoMutationTests(unittest.TestCase):
         kept = record.to_dict()
         after, item = started(record)
         after.update(item.running())
-        record.begin_step(2, Phase.DEVELOP, "claude", {})
+        record.begin_step(2, Phase.DEVELOP, "claude", {}, call(), ExecutionProfile.CUSTOM)
         self.assertEqual(record.to_dict(), kept)
         limits = dict(LIMITS)
         opened(limits=limits)

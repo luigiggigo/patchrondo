@@ -37,7 +37,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from patchrondo import activity  # noqa: E402
+from patchrondo import activity, runfiles  # noqa: E402
 from patchrondo.core import create_task, initialize, run_task  # noqa: E402
 from patchrondo.gitops import changes, fingerprint, git  # noqa: E402
 from patchrondo.process import execute  # noqa: E402
@@ -137,6 +137,12 @@ def recorded_activity(task_path: Path) -> list[dict]:
     return events
 
 
+def developer_reply(task_path: Path) -> Path:
+    """The developer's answer of iteration 1: the last attempt's, with execution enabled, or the flat file otherwise."""
+    attempts = [folder for phase, _, folder in runfiles.attempts(task_path / "runs" / "iteration-001") if phase == "develop"]
+    return (attempts[-1] if attempts else task_path / "runs" / "iteration-001") / "developer.reply.md"
+
+
 def run_pairing(repo: Path, home: Path, developer: str, reviewer: str, *, run_tests: bool) -> dict:
     """Run one task with the real adapter and check each stage of the loop that the run reaches.
 
@@ -153,7 +159,7 @@ def run_pairing(repo: Path, home: Path, developer: str, reviewer: str, *, run_te
     error = state.get("last_error")
     kind = error.get("kind") if isinstance(error, dict) else error
     message = error.get("message", "") if isinstance(error, dict) else ""
-    reply = home / "tasks" / task_id / "runs" / "iteration-001" / "developer.reply.md"
+    reply = developer_reply(home / "tasks" / task_id)
     review = state.get("review") or {}
     if run_tests:
         expected, ended = "task completed with passing tests and an approved review", state["status"] == "done"

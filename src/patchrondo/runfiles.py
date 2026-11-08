@@ -5,13 +5,13 @@
     runs/iteration-NNN/<phase>/attempt-NNN/<file>   one attempt of a step: phase `develop` (the developer)
                                                     or `review` (the reviewer), NNN its ordinal, 001-999
 
-No run writes attempt folders yet: `core.run_task` still gives the adapter the
-flat iteration folder, where a second call of a step replaces the files of
-the first. Step 04 allocates one folder per attempt (`allocate`) together with
-the attempt's record (`execution.AttemptRecord`, whose `phase` and `ordinal`
-name the folder). The readers know all three layouts already, so a task that
-holds them side by side reads whole, and nothing is ever moved: a task written
-flat stays flat.
+Since Step 04, a step recorded by Adaptive Execution writes each call in an
+attempt folder that `core._attempt` allocates with the attempt's record
+(`execution.AttemptRecord`, whose `phase` and `ordinal` name the folder); a
+step without a record still writes flat, where a second call of a step
+replaces the files of the first. The readers know all three layouts, so a
+task that holds them side by side reads whole, and nothing is ever moved: a
+task written flat stays flat.
 
 Readers accept a name only when it fullmatches these patterns, never a link,
 a junction or another reparse point, and never a path that leaves `runs`:

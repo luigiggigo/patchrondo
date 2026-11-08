@@ -73,6 +73,10 @@ export const ERRORS = {
   awaiting_authorization: { title: "The code is approved; some criteria need your authorization", help: "An operation such as a download or a publication is never done without your decision. Decide in “Criteria and checks”; nothing is run either way." },
   completion_refused: { title: "Every criterion is verified, and completion is still refused", help: "The completion gate found a reason not to finish the task: a switch that turns off what the configured checks rely on, or evidence that changed after it was judged. The message says which; no agent was called. Resume evaluates it again." },
   acceptance_unreadable: { title: "The saved criteria cannot be read", help: "They were saved by another version of PatchRondo, or changed by hand. Nothing replaced them and no agent was called. Open the task with the version that saved them, or put back its state.json, then resume." },
+  attempt_uncertain: { title: "An agent call may still be running", help: "A run stopped before it could record how an agent call ended, or the call was stopped while what it started may still run. No other call starts meanwhile. Check that no process of it is left; then run the command the message gives (patchrondo release-attempt …) and resume." },
+  attempt_folder_exists: { title: "The folder of an agent call already exists", help: "No record of this task names that folder, so nothing was written into it and no agent was called. Check what made it and move it away, then resume: the next call gets a folder of its own." },
+  attempt_limit_reached: { title: "No more agent calls can be recorded", help: "This task reached the most agent calls PatchRondo records for one step or one task. Create a follow-up task." },
+  execution_unreadable: { title: "The saved record of agent calls cannot be read", help: "It was saved by another version of PatchRondo, or changed by hand. Nothing replaced it and no agent was called. Open the task with the version that saved it, or put back its state.json, then resume." },
   max_iterations_reached: { title: "Iteration limit reached", help: "The task used all its iterations without an approved review and passing tests. Review the feedback and create a follow-up task." },
   review_blocked: { title: "The reviewer blocked the task", help: "The reviewer judged that the task cannot proceed as specified. Read the review and create a new task." },
   review_not_approved: { title: "The review was not approved", help: "Read the review for what is missing." },
@@ -172,6 +176,19 @@ const PAUSE_REASONS = {
   awaiting_validation: "criteria wait for a verification", awaiting_authorization: "criteria wait for your authorization",
   acceptance_unreadable: "the saved criteria cannot be read", completion_refused: "the completion gate refused",
   verification_error: "a check gave no usable result", verification_blocked: "a check could not be started",
+  attempt_uncertain: "an agent call may still be running", attempt_folder_exists: "the folder of an agent call already exists",
+  attempt_limit_reached: "no more agent calls can be recorded", execution_unreadable: "the record of agent calls cannot be read",
+};
+// How a recorded agent call ended (`execution.AttemptOutcome`), and whether what it started is known to have stopped.
+const CALL_OUTCOMES = {
+  COMPLETED: ["answered", "ok"], TURN_LIMIT_REACHED: ["ran out of turns", "warn"], QUOTA_EXHAUSTED: ["usage limit", "warn"],
+  TIMEOUT: ["timed out", "warn"], INTERRUPTED: ["interrupted", "warn"], PERMISSION_DENIED: ["access refused", "warn"],
+  ENVIRONMENT_BLOCKED: ["not started", "warn"], INVALID_FINAL_OUTPUT: ["no usable answer", "warn"],
+  PROVIDER_ERROR: ["the CLI failed", "warn"], UNKNOWN: ["ended in an unknown way", "neutral"],
+};
+const TERMINATIONS = {
+  exited: null, stopped: "Stopped with everything it started", not_started: "No process was started",
+  unverified: "Stopped; what it started may still be running", released: "You stated that its processes stopped",
 };
 const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git trust for this project folder" };
 const REPAIR_OUTCOMES = { applied: ["Fixed", "ok"], unchanged: ["Already in place", "neutral"], rolled_back: ["Could not fix; put back as it was", "warn"],
@@ -236,6 +253,15 @@ export function describeEvent(event, task) {
                detail: "The old file is kept beside it; what it verified has to be verified again" };
     case "validation_failed":
       return { text: `A check by you did not pass (${(event.criteria || []).join(", ")}): sent to ${dev} as a change request`, tone: "warn", icon: "repeat" };
+    case "attempt_started":
+      return { text: `${event.phase === "review" ? rev : dev}: call ${event.attempt || ""} started`, tone: "accent", icon: "play",
+               detail: [event.turn_limit ? `up to ${event.turn_limit} turns` : null, event.timeout_seconds ? `timeout ${event.timeout_seconds} s` : null].filter(Boolean).join(" · ") || null };
+    case "attempt_ended": {
+      const [word, tone] = CALL_OUTCOMES[event.outcome] || [humanize(event.outcome || "ended"), "neutral"];
+      return { text: `Call ${event.attempt || ""} ${word}`, tone, icon: "info", detail: TERMINATIONS[event.termination] || null };
+    }
+    case "attempt_released":
+      return { text: `You released call ${event.attempt || ""}`, tone: "neutral", icon: "user", detail: "You stated that its processes stopped; nothing was run" };
     case "task_completed": return { text: "Task completed", tone: "ok", icon: "check" };
     case "task_paused": return { text: `Paused: ${PAUSE_REASONS[event.reason] || humanize(event.reason).toLowerCase()}`, tone: "warn", icon: "pause" };
     case "task_blocked": return { text: `Blocked: ${(ERRORS[event.reason]?.title || humanize(event.reason)).toLowerCase()}`, tone: "danger", icon: "x" };

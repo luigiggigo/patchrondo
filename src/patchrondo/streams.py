@@ -303,6 +303,22 @@ class ClaudeStream(Stream):
 
 
 class CodexStream(Stream):
+    def __init__(self, role: str, workspace: Path, emit):
+        super().__init__(role, workspace, emit)
+        self.token_turns = 0          # `turn.completed` lines seen
+        self.token_total = 0          # their input and output tokens
+        self.token_unreadable = False  # one of them did not report both as whole numbers
+
+    @property
+    def tokens(self) -> int | None:
+        """The input and output tokens of every completed turn, as the CLI reported them; None when any is missing.
+
+        Read from the `usage` of `turn.completed` (the fields the journal
+        already shows). Observed only: a token count limits nothing and proves
+        nothing about the work.
+        """
+        return None if self.token_unreadable or not self.token_turns else self.token_total
+
     def handle(self, obj: dict):
         kind = obj.get("type")
         if kind in {"item.started", "item.updated", "item.completed"}:
@@ -319,8 +335,13 @@ class CodexStream(Stream):
         if kind == "turn.completed":
             self.recognized += 1
             usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
-            self.emit("status", status="turn_completed", input_tokens=_number(usage.get("input_tokens")),
-                      output_tokens=_number(usage.get("output_tokens")))
+            used = (_number(usage.get("input_tokens")), _number(usage.get("output_tokens")))
+            self.token_turns += 1
+            if None in used or min(used) < 0:
+                self.token_unreadable = True
+            else:
+                self.token_total += sum(used)
+            self.emit("status", status="turn_completed", input_tokens=used[0], output_tokens=used[1])
             return True
         if kind == "turn.failed":
             self.recognized += 1
