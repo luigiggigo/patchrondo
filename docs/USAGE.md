@@ -13,6 +13,7 @@ For installation and requirements, see the [README](../README.md#quick-start).
 - [Live activity](#live-activity)
 - [Command line](#command-line)
 - [Loop behavior](#loop-behavior)
+- [Adaptive Execution settings](#adaptive-execution-settings-validated-not-applied)
 - [Automatic quota recovery](#automatic-quota-recovery-opt-in)
 - [State layout](#state-layout)
 - [Local retrieval](#local-retrieval-rag)
@@ -869,6 +870,94 @@ does not declare or submodules that were never initialized. Do not modify
 these during a task. A file that cannot be read, or that keeps changing while
 it is read, pauses the task with `fingerprint_unavailable`: nothing is taken
 as verified on files PatchRondo could not read.
+
+## Adaptive Execution settings (validated, not applied)
+
+Phase 2.5 (Adaptive Agent Execution) adds an optional `execution` section to
+a project's `config.json`. This version validates it and resolves the limits
+it describes (`execution.resolve`); **no run applies them yet**. With or
+without the section, a run starts the same commands with the same
+`--max-turns` and timeout, saves the same state and pauses where it paused
+before: a `max_turns` failure still pauses after one call, and nothing
+continues a step automatically.
+
+```json
+"execution": {
+  "enabled": true,
+  "profile": "standard",
+  "adaptive": false,
+  "limits": {
+    "call":  {"developer": {"claude_turns": 30}},
+    "task":  {"provider_calls": 40}
+  },
+  "continuation": {"checkpoint_resume": true, "native_resume": "off"},
+  "no_progress_windows": 2
+}
+```
+
+- `enabled` (required, boolean). `profile` is required when it is `true`:
+  enabling chooses a profile's limits explicitly. `adaptive`,
+  `continuation` and `no_progress_windows` (1-10) are optional, with the
+  defaults above; `native_resume` accepts only `"off"`, since no provider's
+  own session resume has been validated.
+- The section is project-level only: a task cannot override it, and there
+  is no global level. It is validated even while `enabled` is `false`, so
+  switching it on never makes a configuration unusable. A configuration
+  without the section is not changed.
+- Unknown fields, a boolean or a decimal where a whole number is expected,
+  zero, negative values and values above the hard limits are refused, and
+  the whole configuration with them: nothing is repaired or defaulted. A
+  task with such a configuration does not start.
+
+Execution profiles set limits only. They are not the agent presets (Fast,
+Balanced, Max quality choose a model and an effort) and not a gate policy;
+they never change a model, a tool, a permission or a sandbox.
+
+| Limit | `fast` | `standard` | `deep_autonomous` |
+|---|---:|---:|---:|
+| Claude turns per developer call / per developer step | 25 / 25 | 40 / 80 | 50 / 150 |
+| Claude turns per reviewer call / per reviewer step | 12 / 12 | 15 / 30 | 25 / 50 |
+| Timeout of one call | 1800 s | 2700 s | 3600 s |
+| Calls per developer step / per reviewer step | 2 / 2 | 2 / 2 | 3 / 2 |
+| Seconds per developer step / per reviewer step | 3600 / 3600 | 5400 / 5400 | 10800 / 7200 |
+| Calls per task | 20 | 60 | 150 |
+| Seconds per task | 36000 | 162000 | 540000 |
+
+Turns per call and per step, the timeout and the calls per task are the
+specification's starting values, to be calibrated. The calls of a step are
+derived (enough calls for its turns, at least two), and the seconds of a step
+or a task are its calls times the timeout. `workflow.max_iterations` is not
+part of a profile and stays as configured; step and task budgets do not
+depend on it.
+
+`limits` has three scales, each in named units: `call` and `phase` per role
+(`claude_turns`, `seconds`; `phase` also `provider_calls`), and `task`
+(`provider_calls`, `seconds`). Tokens are observed only and cannot be a
+limit. With `custom` every limit must be given; with a named profile a
+limit may only be lowered. Limits that contradict each other are refused,
+never adjusted: a call above its step, a step's calls or seconds above the
+task's.
+
+Precedence of the limits of one call:
+
+| | Claude turns of a call | Timeout of a call | Step and task budgets |
+|---|---|---|---|
+| No section, or `enabled: false` | agent setting `max_turns` if set, otherwise `workflow.claude_max_turns` (as before) | agent setting `timeout_seconds` if set, otherwise `workflow.agent_timeout_seconds` with a task's override (as before) | none |
+| `enabled: true` | the smallest of: the profile's value (or `execution.limits`), agent setting `max_turns` if set, `workflow.claude_max_turns` if configured | the smallest of: the profile's value (or `execution.limits`), agent setting `timeout_seconds` if set, `workflow.agent_timeout_seconds` if configured | the profile's, or `execution.limits` |
+
+- An agent setting is "set" at any of its three levels; the nearest level
+  decides as always (task, then project, then global), and a step keeps the
+  value it was frozen with.
+- A workflow value is "configured" when it differs from what `initialize`
+  writes (12 turns, 900 seconds), or, for the timeout, when the task
+  overrides it. A value equal to PatchRondo's default cannot be told from the
+  same value typed again; it is read as the default, which enabling a
+  profile replaces.
+- A profile never raises a value that is set or configured: it can only cap
+  one. Each value replaced or capped is listed in the resolution's `notes`.
+- Codex has no Claude turns: its calls are limited by calls and seconds,
+  and its tokens are only observed. Usage a CLI did not report stays
+  unknown and is charged as the most the call was allowed.
 
 ## Automatic quota recovery (opt-in)
 

@@ -358,16 +358,21 @@ class LegacyTests(unittest.TestCase):
                                                            "allow_no_changes": False})
 
     def test_no_module_of_patchrondo_uses_the_records_yet(self):
-        users = []
+        """Since Step 02 only `core.validate_config` reads the module, to check the configuration; no run uses it."""
+        users = {}
         for source in sorted(SOURCES.glob("*.py")):
             if source.name == "execution.py":
                 continue
-            for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
                 names = [alias.name for alias in node.names] if isinstance(node, (ast.Import, ast.ImportFrom)) else []
                 module = node.module or "" if isinstance(node, ast.ImportFrom) else ""
                 if "execution" in names or module.endswith("execution") or "patchrondo.execution" in names:
-                    users.append(source.name)
-        self.assertEqual(users, [])
+                    users[source.name] = sorted(
+                        (function.name, node.attr) for function in ast.walk(tree) if isinstance(function, ast.FunctionDef)
+                        for node in ast.walk(function) if isinstance(node, ast.Attribute)
+                        and isinstance(node.value, ast.Name) and node.value.id == "execution")
+        self.assertEqual(users, {"core.py": [("validate_config", "settings_of")]})
 
 
 def failure_kinds() -> set[str]:

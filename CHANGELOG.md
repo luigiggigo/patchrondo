@@ -1143,6 +1143,45 @@ runtime file changed.
   written into); a forced-unlock test in `tests/test_workflow.py`; a Logs
   test in `tests/test_ui.py`. Five new mutation protections.
 
+### Adaptive Execution: records and settings — November 8, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Steps 01 and 02; audit in
+`docs/PHASE_2_5_AUDIT.md`). Nothing here is applied by a run yet.
+
+- **Step 01.** `src/patchrondo/execution.py`: versioned records of execution
+  (attempts `CX-0001`, steps, the task's record), budgets with an explicit
+  unit, typed outcomes mapped from `AgentFailure.kind`, strict loading that
+  refuses unknown, newer and contradictory records without replacing them.
+  `tests/test_execution.py` (49 tests).
+- **Step 02.** An optional `execution` section of `config.json`, validated by
+  `core.validate_config` (`execution.settings_of`) and left as written:
+  `enabled`, `profile` (`fast`, `standard`, `deep_autonomous`, `custom`),
+  `adaptive`, `limits` of a call, a step and the task, `continuation`
+  (`native_resume` only `"off"`) and `no_progress_windows`. Profiles hold
+  the specification's starting values; a named profile can only be
+  narrowed, `custom` gives every limit, and contradictory limits are refused.
+  Execution profiles are distinct from agent presets and from the gate's
+  policy and change no model, tool, permission or sandbox.
+- `execution.resolve` gives the effective limits of a step with their
+  sources. Off (no section or `enabled: false`) it is exactly the adapter's
+  `--max-turns` and timeout, with no budget. On, a profile caps but never
+  raises an agent setting that is set or a configured workflow value, and
+  replaces `workflow.claude_max_turns` and `workflow.agent_timeout_seconds`
+  only when they hold PatchRondo's defaults; what it replaced or capped is
+  listed. Codex has no Claude turns. See "Adaptive Execution settings" in
+  `docs/USAGE.md` and section 20 of `docs/ARCHITECTURE.md`.
+- Compatibility: configurations without the section, saved tasks, frozen
+  agent settings, commands, events, checkpoints and pauses are unchanged; a
+  turn limit still pauses after one call. A configuration that already held
+  a hand-written `execution` key, which earlier versions ignored, is now
+  validated and refused if this version cannot use it. No task override or
+  global level was added.
+- Tests: `tests/test_execution_config.py` (43 tests: the section, each
+  profile, custom limits, types and bounds, inconsistent budgets, precedence
+  over agent settings at each level and over workflow values, Claude and
+  Codex accounting, unknown usage, whole runs with execution enabled
+  compared with runs without it). Eight new mutation protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

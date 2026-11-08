@@ -20,7 +20,7 @@ from .process import KILL_REFUSED, execute, short_log, stop_refused, with_refusa
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
 from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery
-from . import gate, provenance, verification, winacl
+from . import execution, gate, provenance, verification, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -96,6 +96,9 @@ def validate_config(obj, home: Path) -> dict:
             raise ValueError(f"Invalid workflow.{field}")
     # Checks beyond tests.commands: typed, with a report when they have one. They run under the same consent.
     checks = verification.parse_section(obj.get("verification"), default_timeout=w["test_timeout_seconds"])
+    # Adaptive Execution (Phase 2.5): an optional section, refused when this version cannot use it and otherwise left
+    # as written. A configuration without it gains nothing, and no run applies it yet.
+    execution.settings_of(obj)
     # Optional default roles for new tasks of this project.
     agents = obj.get("agents")
     if agents is not None and (not isinstance(agents, dict) or set(agents) - {"developer", "reviewer"}

@@ -22,7 +22,9 @@ Sections [14](#14-acceptance-criteria-capabilities-and-evidence) and
 and invalidation of its evidence and the acceptance gate that decides
 completion, and section [19](#19-verification-center-and-evidence-bundles)
 the page and the export that show them, of the separate 0.35 proposal.
-Progress & Stagnation Detection remains planned.
+Progress & Stagnation Detection remains planned. Section
+[20](#20-adaptive-execution-records-and-limits) describes the records and
+limits of Phase 2.5, which no run applies yet.
 
 ## 1. Components
 
@@ -2703,3 +2705,57 @@ bundle and never replaces an existing file.
 - Bundles and pages are built in memory within the limits above, two
   exports at a time per interface (HTTP 409 beyond that).
 - The views were exercised with scripted providers only.
+
+## 20. Adaptive Execution: records and limits
+
+Phase 2.5, Adaptive Agent Execution, is planned in steps
+([audit](PHASE_2_5_AUDIT.md), section 8). Steps 01 and 02 (November 8,
+2026) add `execution.py`: data contracts and the resolution of limits. No
+step of the workflow uses them yet.
+
+- **Records (Step 01).** `AttemptRecord` (one start of a provider CLI for one
+  step, ID `CX-0001`), `StepExecution`, `ExecutionRecord`, `BudgetState`
+  and `BudgetLine` with an explicit `Unit` (`claude_turns`,
+  `provider_calls`, `seconds`, `tokens`). Loading is strict: an unknown or
+  newer schema, a field of another type (`True` is not a number) or a record
+  that contradicts itself raises `InvalidRecord`, and the saved value is
+  left as it is. A state without the `execution` key has no record. An
+  attempt's outcome describes the call only; nothing here can mark a phase
+  or a task done.
+- **Settings (Step 02).** `settings_of(cfg)` validates the optional
+  `execution` section of `config.json` into `ExecutionSettings`: a profile
+  (`ExecutionProfile`: `fast`, `standard`, `deep_autonomous`, `custom`),
+  `ExecutionLimits` of three scales (a call and a step per role, the task),
+  continuation and no-progress settings. `core.validate_config` calls it,
+  which makes every reader of the configuration refuse a section this
+  version cannot use; the section is never rewritten or defaulted into the
+  file. Named profiles can only be narrowed; `custom` must give every
+  limit; contradictory limits are refused rather than adjusted.
+- **Limits (Step 02).** `resolve(cfg, provider, role, agent_values, …)`
+  returns `EffectiveLimits`: the call's Claude turns and timeout with their
+  `Source`, and the step and task budgets as `Unit` maps that
+  `BudgetState.open` and `ExecutionRecord.begin_step` take. Off, it is the
+  adapter's formula (`max_turns or workflow.claude_max_turns`,
+  `timeout_seconds or workflow.agent_timeout_seconds`) and no budget. On,
+  the profile's value is capped by an agent setting that is set and by a
+  configured workflow value; replaced and capped values are listed in
+  `notes`. Codex calls have no Claude turns (`NOT_APPLICABLE`) and no turn
+  line in their step budget.
+
+Boundaries:
+
+- Only `core.validate_config` imports the module, for `settings_of`
+  (`tests/test_execution.py` checks it). `run_task`, `agents.command`, the
+  adapters, `recovery` and the gate do not read the section or the
+  resolution: commands, timeouts, events, checkpoints and pauses are what
+  they were (`tests/test_execution_config.py`, `EngineCompatibilityTests`).
+- Profiles are not agent presets (model and effort) and not gate policies
+  (`gate.POLICY` stays `standard`). The section has no field for a model,
+  a tool, a permission or a sandbox, and `native_resume` accepts only
+  `"off"`.
+- No task override and no global level: the project's configuration alone.
+  `workflow.claude_max_turns` stays outside `core.TASK_OVERRIDES`; a task's
+  turn limit stays the agent setting `max_turns` at task level.
+- A later step that applies the limits must freeze the resolution with the
+  step (audit decision D2), so that a resume or a continuation does not run
+  with a policy edited meanwhile.

@@ -1077,6 +1077,27 @@ MUTATIONS = [
     Mutation("the transcripts of a request for tests are not listed", "app.py",
              "                    drafts.append(file)  # a request for tests", "                    pass  # a request for tests",
              ("test_ui.TaskTests",)),
+    # Adaptive Execution settings and their limits (Phase 2.5, Step 02, November 8, 2026). Nothing applies them yet.
+    Mutation("an execution section is not checked", "core.py", "    execution.settings_of(obj)\n", "",
+             ("test_execution_config.SectionTests",)),
+    Mutation("a disabled execution section applies its profile", "execution.py",
+             "    if chosen is None or not chosen.enabled:", "    if chosen is None:",
+             ("test_execution_config.PrecedenceTests",)),
+    Mutation("a profile raises an explicit agent or workflow limit", "execution.py",
+             "        effective = min([*candidates, base], key=lambda limit: limit.value)", "        effective = base",
+             ("test_execution_config.PrecedenceTests",)),
+    Mutation("a named profile is widened by explicit limits", "execution.py",
+             "                if value > allowed:", "                if False:", ("test_execution_config.SectionTests",)),
+    Mutation("inconsistent execution budgets are accepted", "execution.py",
+             "                if self.value(*small) > self.value(*large):", "                if False:",
+             ("test_execution_config.SectionTests",)),
+    Mutation("native resume can be switched on", "execution.py",
+             "        if native not in NATIVE_RESUME or type(native) is not str:", "        if False:",
+             ("test_execution_config.SectionTests",)),
+    Mutation("a Codex step is given Claude turns", "execution.py",
+             "    if agent_turns is not None and not claude:", "    if False:", ("test_execution_config.AccountingTests",)),
+    Mutation("a Codex step budget counts Claude turns", "execution.py",
+             "if claude or unit is not Unit.CLAUDE_TURNS", "if True", ("test_execution_config.AccountingTests",)),
 ]
 
 

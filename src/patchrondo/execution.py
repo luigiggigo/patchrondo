@@ -1,9 +1,12 @@
-"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Step 01).
+"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-02).
 
-Nothing imports this module yet. It defines what later steps will save and
-read; it calls no agent, runs nothing, reads no file and writes nothing. The
-workflow (`core.run_task`), the command of a step (`agents.command`), the
-adapters (`providers.py`), quota recovery and the gate do not know it.
+It defines what later steps will save and read, the optional `execution`
+section of a project's configuration and the limits it resolves to. It calls
+no agent, runs nothing, reads no file and writes nothing. Only
+`core.validate_config` imports it, to refuse an `execution` section this
+version cannot use; the workflow (`core.run_task`), the command of a step
+(`agents.command`), the adapters (`providers.py`), quota recovery and the gate
+do not know it, so no limit resolved here is applied yet.
 
 Units of work, from the largest:
 
@@ -47,9 +50,10 @@ from datetime import datetime
 from enum import StrEnum
 import json
 import re
+from types import MappingProxyType
 from typing import Mapping
 
-from .agents import PROVIDERS
+from .agents import PROVIDERS, ROLES
 
 VERSION = 1
 KEY = "execution"  # the key a later step saves the record under in `state.json`
@@ -771,3 +775,411 @@ def parse(text) -> dict:
 def dumps(record) -> str:
     """The JSON text of a record, keys sorted."""
     return json.dumps(record.to_dict(), sort_keys=True, ensure_ascii=False, allow_nan=False)
+
+
+# --- configuration (Step 02) ----------------------------------------------------------------------------------
+#
+# The optional `execution` section of a project's `config.json`:
+#
+#     "execution": {
+#       "enabled": true,                      required, a JSON boolean
+#       "profile": "standard",                fast | standard | deep_autonomous | custom; required when enabled
+#       "adaptive": false,                    optional, default false
+#       "limits": {                           optional; complete for custom; for a named profile it may only narrow
+#         "call":  {"developer": {"claude_turns": 40, "seconds": 2700}, "reviewer": {...}},
+#         "phase": {"developer": {"claude_turns": 80, "provider_calls": 2, "seconds": 5400}, "reviewer": {...}},
+#         "task":  {"provider_calls": 60, "seconds": 162000}
+#       },
+#       "continuation": {"checkpoint_resume": true, "native_resume": "off"},   optional, these defaults
+#       "no_progress_windows": 2              optional, 1-10, default 2
+#     }
+#
+# The section is validated whatever `enabled` says, so a configuration never becomes unusable when it is switched
+# on. Nothing in it is applied by this version. It is read from the project's configuration only: a task cannot
+# override it, and there is no global level.
+
+class InvalidSettings(ValueError):
+    """An `execution` section this version cannot use. The configuration is refused; nothing is repaired or defaulted."""
+
+
+class ExecutionProfile(StrEnum):
+    """The budgets of Adaptive Execution, chosen under `execution.profile`.
+
+    Not an agent preset (`agents.BUILTIN_PRESETS` sets model and effort, and
+    one of them is also called "fast") and not a gate policy (`gate.POLICY`
+    is fixed to "standard"): a profile sets limits of calls, steps and tasks,
+    nothing else. It never changes a model, a tool, a permission or a sandbox.
+    """
+    FAST = "fast"
+    STANDARD = "standard"
+    DEEP_AUTONOMOUS = "deep_autonomous"
+    CUSTOM = "custom"
+
+
+SCALES = ("call", "phase", "task")
+SCALE_UNITS = {"call": (Unit.CLAUDE_TURNS, Unit.SECONDS),
+               "phase": (Unit.CLAUDE_TURNS, Unit.PROVIDER_CALLS, Unit.SECONDS),
+               "task": (Unit.PROVIDER_CALLS, Unit.SECONDS)}
+# The most each limit may be, whatever the profile. A call's turns and timeout have the bounds of
+# `workflow.claude_max_turns`, `workflow.agent_timeout_seconds` and the agent settings; the calls of a step are
+# numbered up to ORDINAL_LIMIT and those of a task up to ATTEMPT_LIMIT; budgets fit a `BudgetLine`.
+HARD_LIMITS = {("call", Unit.CLAUDE_TURNS): CALL_LIMIT, ("call", Unit.SECONDS): CALL_LIMIT,
+               ("phase", Unit.CLAUDE_TURNS): BUDGET_LIMIT, ("phase", Unit.PROVIDER_CALLS): ORDINAL_LIMIT,
+               ("phase", Unit.SECONDS): BUDGET_LIMIT,
+               ("task", Unit.PROVIDER_CALLS): ATTEMPT_LIMIT, ("task", Unit.SECONDS): BUDGET_LIMIT}
+NO_PROGRESS_WINDOWS = (1, 10)
+NATIVE_RESUME = ("off",)  # no provider's own resume has been validated (audit I9, I10): "off" is the only value
+# `core.DEFAULT_CONFIG["workflow"]`, which a test compares: the values `initialize` writes into every configuration.
+LEGACY_DEFAULTS = {"claude_max_turns": 12, "agent_timeout_seconds": 900}
+
+
+def _profile(turns: dict, calls: dict, seconds: int, task_calls: int) -> dict:
+    """A named profile from the specification's values: turns per call and per step for each role, the timeout of a
+    call and the calls of a task. A step's calls are derived (enough calls for its turns, and at least one
+    continuation); a step's seconds are its calls times the timeout, and a task's seconds its calls times the timeout,
+    so they never limit more than the calls already do."""
+    return {"call": {role: {Unit.CLAUDE_TURNS: turns[role][0], Unit.SECONDS: seconds} for role in ROLES},
+            "phase": {role: {Unit.CLAUDE_TURNS: turns[role][1], Unit.PROVIDER_CALLS: calls[role],
+                             Unit.SECONDS: calls[role] * seconds} for role in ROLES},
+            "task": {Unit.PROVIDER_CALLS: task_calls, Unit.SECONDS: task_calls * seconds}}
+
+
+# Specification §5.1 (revision 1.0, November 8, 2026): Claude turns per call and per step, the timeout of one call,
+# the calls of a task. Starting values to calibrate, not a statement of what a CLI or a subscription allows. Its
+# rows for iterations and for continuation are not limits here: `workflow.max_iterations` stays the user's (audit I5),
+# and continuation is bounded by these budgets.
+PROFILES = {
+    ExecutionProfile.FAST: _profile({"developer": (25, 25), "reviewer": (12, 12)},
+                                    {"developer": 2, "reviewer": 2}, 30 * 60, 20),
+    ExecutionProfile.STANDARD: _profile({"developer": (40, 80), "reviewer": (15, 30)},
+                                        {"developer": 2, "reviewer": 2}, 45 * 60, 60),
+    ExecutionProfile.DEEP_AUTONOMOUS: _profile({"developer": (50, 150), "reviewer": (25, 50)},
+                                               {"developer": 3, "reviewer": 2}, 60 * 60, 150),
+}
+
+
+def _name(scale: str, role: str | None, unit: Unit) -> str:
+    return f"execution.limits.{scale}.{role + '.' if role else ''}{unit}"
+
+
+def _object(value, name: str, allowed: tuple[str, ...]) -> dict:
+    if not isinstance(value, dict):
+        raise InvalidSettings(f"{name} must be a JSON object")
+    unknown = sorted(str(key) for key in value if key not in allowed)
+    if unknown:
+        raise InvalidSettings(f"{name} has unknown fields: {', '.join(unknown)[:200]}")
+    return value
+
+
+def _setting_int(value, name: str, low: int, high: int) -> int:
+    if type(value) is not int or not low <= value <= high:
+        raise InvalidSettings(f"{name} must be a whole number from {low} to {high}")
+    return value
+
+
+def _flag(value, name: str) -> bool:
+    if type(value) is not bool:
+        raise InvalidSettings(f"{name} must be a JSON boolean (true/false)")
+    return value
+
+
+def _units(raw, scale: str, role: str | None, complete: bool) -> dict:
+    units = SCALE_UNITS[scale]
+    name = f"execution.limits.{scale}{'.' + role if role else ''}"
+    if isinstance(raw, dict) and str(Unit.TOKENS) in raw:
+        raise InvalidSettings(f"{name}: tokens are observed only and cannot be limited")
+    block = _object(raw, name, tuple(str(unit) for unit in units))
+    if complete and len(block) != len(units):
+        missing = [str(unit) for unit in units if str(unit) not in block]
+        raise InvalidSettings(f"{name} must set every limit of the custom profile (missing: {', '.join(missing)})")
+    return {Unit(key): _setting_int(value, _name(scale, role, Unit(key)), 1, HARD_LIMITS[scale, Unit(key)])
+            for key, value in block.items()}
+
+
+def _explicit(raw, complete: bool) -> dict:
+    """The limits written under `execution.limits`, typed and within the hard limits, as {(scale, role, unit): n}."""
+    block = _object(raw, "execution.limits", SCALES)
+    if complete and len(block) != len(SCALES):
+        raise InvalidSettings("execution.limits must set call, phase and task for the custom profile")
+    found = {}
+    for scale, value in block.items():
+        if scale == "task":
+            found.update({(scale, None, unit): n for unit, n in _units(value, scale, None, complete).items()})
+            continue
+        roles = _object(value, f"execution.limits.{scale}", ROLES)
+        if complete and len(roles) != len(ROLES):
+            raise InvalidSettings(f"execution.limits.{scale} must set both roles for the custom profile")
+        for role, units in roles.items():
+            found.update({(scale, role, unit): n for unit, n in _units(units, scale, role, complete).items()})
+    return found
+
+
+@dataclass(frozen=True)
+class ExecutionLimits:
+    """The limits of a profile in their units: a call and a step (`phase`) per role, and the task."""
+    call: Mapping[str, Mapping[Unit, int]]
+    phase: Mapping[str, Mapping[Unit, int]]
+    task: Mapping[Unit, int]
+
+    @classmethod
+    def of(cls, table: Mapping) -> "ExecutionLimits":
+        return cls(*(MappingProxyType({role: MappingProxyType(dict(table[scale][role])) for role in ROLES})
+                     for scale in ("call", "phase")), MappingProxyType(dict(table["task"])))
+
+    def value(self, scale: str, role: str | None, unit: Unit) -> int:
+        return self.task[unit] if scale == "task" else getattr(self, scale)[role][unit]
+
+    def check(self) -> "ExecutionLimits":
+        """Refuse limits that contradict each other: a call above its step, a step above the task."""
+        for role in ROLES:
+            for (small, large) in ((("call", role, Unit.CLAUDE_TURNS), ("phase", role, Unit.CLAUDE_TURNS)),
+                                   (("call", role, Unit.SECONDS), ("phase", role, Unit.SECONDS)),
+                                   (("phase", role, Unit.PROVIDER_CALLS), ("task", None, Unit.PROVIDER_CALLS)),
+                                   (("phase", role, Unit.SECONDS), ("task", None, Unit.SECONDS))):
+                if self.value(*small) > self.value(*large):
+                    raise InvalidSettings(f"execution limits are inconsistent: {_name(*small)} ({self.value(*small)}) "
+                                          f"is above {_name(*large)} ({self.value(*large)})")
+        return self
+
+    def to_dict(self) -> dict:
+        return {"call": {role: {str(unit): n for unit, n in self.call[role].items()} for role in ROLES},
+                "phase": {role: {str(unit): n for unit, n in self.phase[role].items()} for role in ROLES},
+                "task": {str(unit): n for unit, n in self.task.items()}}
+
+
+for _limits in PROFILES.values():  # the table holds itself to the rules a configuration is held to
+    ExecutionLimits.of(_limits).check()
+
+
+@dataclass(frozen=True)
+class ExecutionSettings:
+    """A validated `execution` section. `limits` are those in effect for its profile; None without a profile."""
+    enabled: bool
+    profile: ExecutionProfile | None
+    adaptive: bool
+    limits: ExecutionLimits | None
+    explicit: frozenset   # (scale, role or None, unit) of every limit written under `execution.limits`
+    checkpoint_resume: bool
+    native_resume: str
+    no_progress_windows: int
+
+    FIELDS = ("enabled", "profile", "adaptive", "limits", "continuation", "no_progress_windows")
+
+    @classmethod
+    def parse(cls, raw) -> "ExecutionSettings":
+        section = _object(raw, "execution", cls.FIELDS)
+        if "enabled" not in section:
+            raise InvalidSettings("execution.enabled is required")
+        enabled = _flag(section["enabled"], "execution.enabled")
+        profile = None
+        if "profile" in section:
+            if type(section["profile"]) is not str or section["profile"] not in set(ExecutionProfile):
+                raise InvalidSettings(f"execution.profile must be one of: {', '.join(ExecutionProfile)}")
+            profile = ExecutionProfile(section["profile"])
+        elif enabled:
+            raise InvalidSettings("execution.profile is required when execution is enabled: enabling it chooses the "
+                                  "limits of a profile")
+        adaptive = _flag(section.get("adaptive", False), "execution.adaptive")
+        custom = profile is ExecutionProfile.CUSTOM
+        if "limits" in section and profile is None:
+            raise InvalidSettings("execution.limits need an execution.profile")
+        if custom and "limits" not in section:
+            raise InvalidSettings("the custom profile needs execution.limits with every limit")
+        explicit = _explicit(section["limits"], custom) if "limits" in section else {}
+        limits = None
+        if custom:
+            limits = ExecutionLimits.of(_table(explicit)).check()
+        elif profile is not None:
+            base = PROFILES[profile]
+            for (scale, role, unit), value in explicit.items():
+                allowed = base[scale][unit] if scale == "task" else base[scale][role][unit]
+                if value > allowed:
+                    raise InvalidSettings(f"{_name(scale, role, unit)} ({value}) is above the {profile} profile's "
+                                          f"{allowed}: a named profile can only be narrowed; use the custom profile "
+                                          "for larger limits")
+            limits = ExecutionLimits.of(_table(explicit, base)).check()
+        continuation = _object(section.get("continuation", {}), "execution.continuation",
+                               ("checkpoint_resume", "native_resume"))
+        checkpoint = _flag(continuation.get("checkpoint_resume", True), "execution.continuation.checkpoint_resume")
+        native = continuation.get("native_resume", "off")
+        if native not in NATIVE_RESUME or type(native) is not str:
+            raise InvalidSettings("execution.continuation.native_resume can only be \"off\": no provider's own session "
+                                  "resume has been validated")
+        windows = _setting_int(section.get("no_progress_windows", 2), "execution.no_progress_windows",
+                               *NO_PROGRESS_WINDOWS)
+        return cls(enabled, profile, adaptive, limits, frozenset(explicit), checkpoint, native, windows)
+
+
+def _table(explicit: Mapping, base: Mapping | None = None) -> dict:
+    """A table of limits: `base` (a profile) with the explicit values written over it."""
+    table = {scale: ({role: dict(base[scale][role]) if base else {} for role in ROLES} if scale != "task"
+                     else dict(base[scale]) if base else {}) for scale in SCALES}
+    for (scale, role, unit), value in explicit.items():
+        (table[scale] if scale == "task" else table[scale][role])[unit] = value
+    return table
+
+
+def settings_of(cfg) -> ExecutionSettings | None:
+    """The `execution` section of a configuration, validated; None when the configuration has none.
+
+    Only a configuration without the key has none: a null or a section of
+    another shape raises InvalidSettings. The configuration is not changed.
+    """
+    if not isinstance(cfg, dict):
+        raise InvalidSettings("a configuration is a JSON object")
+    return ExecutionSettings.parse(cfg[KEY]) if KEY in cfg else None
+
+
+# --- effective limits -----------------------------------------------------------------------------------------
+
+class Source(StrEnum):
+    """Where an effective limit comes from."""
+    WORKFLOW = "workflow"                  # `workflow.claude_max_turns` or `workflow.agent_timeout_seconds` of the project
+    TASK_OVERRIDE = "task_override"        # `workflow.agent_timeout_seconds` set by the task (`core.TASK_OVERRIDES`)
+    AGENT_SETTINGS = "agent_settings"      # the step's `max_turns` or `timeout_seconds` (global, project or task level)
+    PROFILE = "profile"                    # the value of the execution profile
+    EXECUTION_LIMITS = "execution_limits"  # a value written under `execution.limits`
+    NOT_APPLICABLE = "not_applicable"      # Claude turns of a Codex call
+
+
+@dataclass(frozen=True)
+class Limit:
+    value: int | None
+    source: Source
+    level: str | None = None  # the level of an agent setting, when the caller knows it
+
+    def to_dict(self) -> dict:
+        return {"value": self.value, "source": str(self.source), **({"level": self.level} if self.level else {})}
+
+
+@dataclass(frozen=True)
+class Note:
+    """A configured or default value that the execution profile did not keep, said so instead of silently."""
+    setting: str
+    value: int
+    effective: int
+    reason: str  # "default_replaced": PatchRondo's default, replaced by the profile; "capped": above the profile's limit
+
+    def to_dict(self) -> dict:
+        return {"setting": self.setting, "value": self.value, "effective": self.effective, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class EffectiveLimits:
+    """The limits of one step of one role, resolved. `phase` and `task` are None while execution is off: no budget."""
+    enabled: bool
+    profile: ExecutionProfile | None
+    provider: str
+    role: str
+    call_turns: Limit       # Claude's `--max-turns`; NOT_APPLICABLE with no value for Codex
+    call_seconds: Limit     # the timeout of one call
+    phase: Mapping[Unit, Limit] | None
+    task: Mapping[Unit, Limit] | None
+    notes: tuple[Note, ...] = ()
+
+    def phase_limits(self) -> dict[Unit, int] | None:
+        """For `BudgetState.open(Scope.PHASE, …)` and `ExecutionRecord.begin_step`."""
+        return None if self.phase is None else {unit: limit.value for unit, limit in self.phase.items()}
+
+    def task_limits(self) -> dict[Unit, int] | None:
+        """For `BudgetState.open(Scope.TASK, …)` and `ExecutionRecord.open`."""
+        return None if self.task is None else {unit: limit.value for unit, limit in self.task.items()}
+
+    def to_dict(self) -> dict:
+        def scale(limits):
+            return None if limits is None else {str(unit): limit.to_dict() for unit, limit in limits.items()}
+        return {"enabled": self.enabled, "profile": None if self.profile is None else str(self.profile),
+                "provider": self.provider, "role": self.role, "call_turns": self.call_turns.to_dict(),
+                "call_seconds": self.call_seconds.to_dict(), "phase": scale(self.phase), "task": scale(self.task),
+                "notes": [note.to_dict() for note in self.notes]}
+
+
+def _agent_value(values: Mapping, key: str) -> int | None:
+    value = values.get(key)
+    if value is None:
+        return None
+    return _setting_int(value, f"agent setting {key}", 1, CALL_LIMIT)
+
+
+def resolve(cfg: Mapping, provider: str, role: str, agent_values: Mapping | None = None, *,
+            agent_sources: Mapping | None = None, overrides: Mapping | None = None) -> EffectiveLimits:
+    """The effective limits of a step: deterministic, from what is given, reading and writing nothing.
+
+    `cfg` is the configuration in effect for the task (`core.effective_config`);
+    `agent_values` the step's agent settings (a thawed frozen record, or
+    `agents.resolve(...)["values"]`), of which only `max_turns` and
+    `timeout_seconds` are read; `agent_sources` where they came from;
+    `overrides` the task's validated overrides, which tell a timeout the task
+    set from the project's.
+
+    Off (no section, or `enabled: false`): a call's turns and timeout are what
+    the adapter passes today (`providers.OfficialCLI._step`): the agent
+    setting when it is set, otherwise the workflow's value. No step or task
+    budget exists.
+
+    On: the profile (or `execution.limits`) gives the limits of the call, the
+    step and the task. A call's turns and timeout are the smallest of that
+    value, an agent setting that is set, and a workflow value that was
+    configured: one that differs from what `initialize` writes, or a timeout
+    the task overrides. A workflow value equal to PatchRondo's default is
+    replaced by the profile, which is what enabling a profile opts into. A
+    profile never raises what was configured; each value it replaced or
+    capped is listed in `notes`.
+    """
+    if provider not in PROVIDERS or role not in ROLES:
+        raise InvalidSettings("invalid provider or role")
+    values, sources = agent_values or {}, agent_sources or {}
+    workflow = cfg.get("workflow") if isinstance(cfg, Mapping) else None
+    if not isinstance(workflow, Mapping):
+        raise InvalidSettings("the configuration has no workflow section")
+    claude = provider == "claude"
+    agent_turns = _agent_value(values, "max_turns")
+    if agent_turns is not None and not claude:
+        raise InvalidSettings("Codex has no Claude turns: an agent setting max_turns is for Claude only")
+    agent_seconds = _agent_value(values, "timeout_seconds")
+    workflow_turns = _setting_int(workflow.get("claude_max_turns"), "workflow.claude_max_turns", 1, CALL_LIMIT)
+    workflow_seconds = _setting_int(workflow.get("agent_timeout_seconds"), "workflow.agent_timeout_seconds", 1,
+                                    CALL_LIMIT)
+    overridden = "agent_timeout_seconds" in ((overrides or {}).get("workflow") or {})
+    timeout_source = Source.TASK_OVERRIDE if overridden else Source.WORKFLOW
+    turns_agent = Limit(agent_turns, Source.AGENT_SETTINGS, sources.get("max_turns"))
+    seconds_agent = Limit(agent_seconds, Source.AGENT_SETTINGS, sources.get("timeout_seconds"))
+    not_applicable = Limit(None, Source.NOT_APPLICABLE)
+    chosen = settings_of(cfg)
+    if chosen is None or not chosen.enabled:
+        turns = (turns_agent if agent_turns is not None else Limit(workflow_turns, Source.WORKFLOW)) if claude \
+            else not_applicable
+        seconds = seconds_agent if agent_seconds is not None else Limit(workflow_seconds, timeout_source)
+        return EffectiveLimits(False, None, provider, role, turns, seconds, None, None)
+
+    limits = chosen.limits
+
+    def given(scale, unit, owner):
+        source = Source.EXECUTION_LIMITS if chosen.profile is ExecutionProfile.CUSTOM or \
+            (scale, owner, unit) in chosen.explicit else Source.PROFILE
+        return Limit(limits.value(scale, owner, unit), source)
+
+    notes: list[Note] = []
+
+    def narrowest(base: Limit, agent: Limit, configured: Limit, default: bool, setting: str, agent_setting: str) -> Limit:
+        # A workflow value at PatchRondo's default is no restriction of the user's: the profile replaces it.
+        candidates = [limit for limit in (agent, None if default else configured) if limit and limit.value is not None]
+        effective = min([*candidates, base], key=lambda limit: limit.value)  # the first of equal values: the user's
+        # Said only when the default was in effect before: with an agent setting set, the workflow value was not used.
+        if default and agent.value is None and configured.value != effective.value:
+            notes.append(Note(setting, configured.value, effective.value, "default_replaced"))
+        for limit, name in ((agent, agent_setting), (configured, setting)):
+            if limit in candidates and limit.value > effective.value:
+                notes.append(Note(name, limit.value, effective.value, "capped"))
+        return effective
+
+    turns = narrowest(given("call", Unit.CLAUDE_TURNS, role), turns_agent, Limit(workflow_turns, Source.WORKFLOW),
+                      workflow_turns == LEGACY_DEFAULTS["claude_max_turns"], "workflow.claude_max_turns",
+                      "agent setting max_turns") if claude else not_applicable
+    seconds = narrowest(given("call", Unit.SECONDS, role), seconds_agent, Limit(workflow_seconds, timeout_source),
+                        not overridden and workflow_seconds == LEGACY_DEFAULTS["agent_timeout_seconds"],
+                        "workflow.agent_timeout_seconds", "agent setting timeout_seconds")
+    phase = {unit: given("phase", unit, role) for unit in SCALE_UNITS["phase"] if claude or unit is not Unit.CLAUDE_TURNS}
+    task = {unit: given("task", unit, None) for unit in SCALE_UNITS["task"]}
+    return EffectiveLimits(True, chosen.profile, provider, role, turns, seconds, MappingProxyType(phase),
+                           MappingProxyType(task), tuple(notes))
