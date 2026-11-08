@@ -8,7 +8,7 @@ import tempfile
 import time
 from datetime import datetime, timezone
 
-from . import procinfo
+from . import procinfo, runfiles
 
 
 def now() -> str:
@@ -117,12 +117,12 @@ class TaskLock:
             # If the Python runner was SIGKILLed, an agent subprocess may
             # still be editing the worktree. Fail closed until it exits.
             runs = self.path.parent / "runs"
-            # A request for tests runs its agent from a folder of its own inside the iteration's.
-            for entry in [*runs.glob("iteration-*/*.active-process.json"),
-                          *runs.glob("iteration-*/test-draft-*/*.active-process.json")]:
+            # Flat files, a request for tests and an attempt folder each put the agent's process file at another
+            # depth; any process file at any of them counts, whatever its folder is called (`runfiles.process_files`).
+            for entry in runfiles.process_files(runs):
                 try:
                     child_pid = int(read_json(entry)["pid"])
-                except (ValueError, KeyError, OSError, json.JSONDecodeError):
+                except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError):
                     raise RuntimeError(f"Unreadable process file: {entry}. Check manually")
                 if _alive(child_pid):
                     raise RuntimeError(f"Agent/test process is still active (PID {child_pid}); do not unlock the task")

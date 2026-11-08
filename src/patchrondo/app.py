@@ -25,7 +25,7 @@ import time
 from typing import NamedTuple
 
 from . import __version__, acceptance as criteria, activity, agents, bundle, doctor, environment, evidence, provenance, providers, rag
-from . import firstcommit, picker, recovery, repair, runinfo, streams, verification
+from . import firstcommit, picker, recovery, repair, runfiles, runinfo, streams, verification
 from .commands import join_command, split_command
 from .core import (DRAFT_FOLDER, TASK_OVERRIDES, VALID_AGENTS, WORKFLOW_LIMITS, AcceptanceRefused, attach_evidence, config,
                    create_task, decide_authorization, effective_config, gate_currency, preflight, recheck_acceptance,
@@ -48,6 +48,7 @@ SUMMARY_FIELDS = ("id", "title", "status", "phase", "iteration", "developer", "r
                   "created_at", "updated_at")
 DOCUMENTS = {"task": "task.md", "handoff": "handoff.md", "feedback": "feedback.md", "report": "report.md"}
 LOG_SUFFIXES = (".log", ".md", ".txt")
+ATTEMPT_LABELS = {"develop": "development", "review": "review"}
 CONFIG_SECTIONS = ("workflow", "tests", "rag", "recovery", "agents")
 WORKFLOW_FIELDS = ("max_iterations", "agent_timeout_seconds", "test_timeout_seconds", "claude_max_turns",
                    "allow_no_changes")
@@ -1185,6 +1186,16 @@ class App:
                         continue
                     files.append({"id": f"{folder.name}/{draft.name}/{file.name}", "label": file.name, "group": label,
                                   "size": file.stat().st_size, "file": file})
+            # One folder per attempt of a step (`runfiles`), beside the flat files of earlier runs of the same iteration.
+            # Folders and files are taken only as themselves: never a link, a junction or another reparse point.
+            for phase, ordinal, attempt in runfiles.attempts(folder):
+                label = f"{group} · {ATTEMPT_LABELS[phase]} attempt {ordinal}"
+                for file in sorted(attempt.iterdir()):
+                    if file.suffix not in LOG_SUFFIXES or not runfiles.LOG_NAME.fullmatch(
+                            f"{folder.name}/{phase}/{attempt.name}/{file.name}") or not runfiles.plain_file(file):
+                        continue
+                    files.append({"id": f"{folder.name}/{phase}/{attempt.name}/{file.name}", "label": file.name,
+                                  "group": label, "size": file.stat().st_size, "file": file})
         return files
 
     def task_detail(self, project: Project, task_id) -> dict:

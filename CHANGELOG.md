@@ -1182,6 +1182,39 @@ Phase 2.5, Adaptive Agent Execution (the user's Steps 01 and 02; audit in
   Codex accounting, unknown usage, whole runs with execution enabled
   compared with runs without it). Eight new mutation protections.
 
+### Adaptive Execution: attempt folders and their readers — November 8, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 03). Readers know the
+folders; no run writes them yet.
+
+- `src/patchrondo/runfiles.py`: the layout of a task's `runs/` folder. Beside
+  the flat `iteration-NNN/` files and the `test-draft-KK/` folders, one
+  folder per attempt of a step, `iteration-NNN/develop/attempt-NNN/` or
+  `iteration-NNN/review/attempt-NNN/`, created exclusively by `allocate`
+  (never an existing folder, numbered past every attempt folder of the
+  step, 1-999, never through a link, a junction or a file).
+- Readers: the forced unlock reads every process file at the depths writers
+  use, whatever its folders are called, and treats a file whose content is
+  not an object with a PID as unreadable (it kept the lock before too, with
+  another error); the Logs tab lists attempt folders as their own groups
+  with IDs from `runs`; the evidence bundle exports a log a record names
+  inside an attempt folder, checking every folder from `runs`; a review
+  record names its reply's path from `runs` (unchanged for the flat folder);
+  `tools/reliability_e2e.py` checks for leftover process files at every
+  depth. The verification runner keeps its flat files.
+- Compatibility: `run_task`, its commands, events, checkpoints, pauses and
+  the gate are unchanged; it still writes flat. Nothing is migrated or
+  moved; flat logs, requests for tests and earlier bundles read as before,
+  and mixed layouts are listed side by side. See section 20 of
+  `docs/ARCHITECTURE.md`.
+- Tests: `tests/test_runfiles.py` (30 tests: allocation and its refusals,
+  names, the lock with live, exited, unreadable and Windows-unverifiable
+  process files, the real adapter writing two attempts and a review into
+  their own folders and a live agent in one keeping the lock, the Logs API,
+  bundles and the Verification Center with nested logs, links and junctions,
+  the real loop with attempt folders beside it). One mutation protection
+  moved to `runfiles.py`, fifteen new.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

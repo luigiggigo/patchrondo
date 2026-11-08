@@ -20,7 +20,7 @@ from .process import KILL_REFUSED, execute, short_log, stop_refused, with_refusa
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
 from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery
-from . import execution, gate, provenance, verification, winacl
+from . import execution, gate, provenance, runfiles, verification, winacl
 
 DEFAULT_CONFIG = {
     "version": 1,
@@ -409,7 +409,7 @@ def _record_review(path: Path, state: dict, review: dict, current: str, run_dir:
                            verdict=review["verdict"], reported_verdict=review.get("reported_verdict"),
                            criteria=[entry["id"] for entry in listed], outcomes={entry["id"]: entry["outcome"] for entry in listed},
                            issues=len(review["issues"]), findings=named or None, iteration=state["iteration"], fingerprint=current,
-                           base=state.get("base_sha"), scope="code", log=f"{run_dir.name}/reviewer.reply.md",
+                           base=state.get("base_sha"), scope="code", log=runfiles.log_name(path, run_dir / "reviewer.reply.md"),
                            references=review.get("references") or None)
 
 
@@ -1350,7 +1350,7 @@ DRAFT_NOTES = 4000
 
 
 DRAFT_STEP = "test_draft"  # the journal's name for these calls
-DRAFT_FOLDER = re.compile(r"test-draft-(\d{2,6})")
+DRAFT_FOLDER = runfiles.DRAFT_FOLDER
 
 
 class DraftRefused(ValueError):

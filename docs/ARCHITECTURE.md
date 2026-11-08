@@ -24,7 +24,8 @@ completion, and section [19](#19-verification-center-and-evidence-bundles)
 the page and the export that show them, of the separate 0.35 proposal.
 Progress & Stagnation Detection remains planned. Section
 [20](#20-adaptive-execution-records-and-limits) describes the records and
-limits of Phase 2.5, which no run applies yet.
+limits of Phase 2.5 and the per-attempt folders its readers know, which no
+run applies or writes yet.
 
 ## 1. Components
 
@@ -168,9 +169,11 @@ the history recorded since the last saved checkpoint are lost with it and are
 not written afterwards (section 15).
 
 If the runner dies with `SIGKILL`, child processes may continue working. `TaskLock`
-and `*.active-process.json` (in `runs/iteration-NNN/` and in its
-`test-draft-KK/` folders) prevent forced unlocking while recorded PIDs are
-active. This does not replace OS supervision or prevent malicious processes from
+and `*.active-process.json` (in `runs/iteration-NNN/`, in its
+`test-draft-KK/` folders and in its attempt folders
+`<phase>/attempt-NNN/`; `runfiles.process_files` takes any process file at
+those depths, whatever its folders are called) prevent forced unlocking
+while recorded PIDs are active. This does not replace OS supervision or prevent malicious processes from
 creating additional children.
 
 Configurable parameters include the maximum number of iterations, agent and test
@@ -2587,8 +2590,9 @@ manifest alone.
 
 **Summary and detailed.** A summary bundle holds no logs or report copies
 and says how many it left out. A detailed one adds each log and report copy
-a trusted record names, only under `runs/iteration-NNN/` of the task (a name
-pattern; every folder and the file checked with `lstat` and
+a trusted record names, only under `runs/iteration-NNN/` of the task, flat
+or in one attempt folder `<phase>/attempt-NNN/` (`runfiles.LOG_NAME`, a name
+pattern; every folder from `runs` on and the file checked with `lstat` and
 `winacl.is_reparse_point`; opened with `O_NOFOLLOW` where the system has
 it; the file opened compared with the file checked; size and time compared
 after reading, and the name checked again to still lead to that same file,
@@ -2759,3 +2763,44 @@ Boundaries:
 - A later step that applies the limits must freeze the resolution with the
   step (audit decision D2), so that a resume or a continuation does not run
   with a policy edited meanwhile.
+
+### Attempt folders (Step 03)
+
+`runfiles.py` describes where a task's runs write and what readers accept:
+
+    runs/iteration-NNN/<file>                       flat: every call and check of an iteration
+    runs/iteration-NNN/test-draft-KK/<file>         one request for tests (`core._draft_folder`)
+    runs/iteration-NNN/<phase>/attempt-NNN/<file>   one attempt of a step; phase `develop` or `review`
+
+- **Allocation.** `allocate(task, iteration, phase, ordinal=None)` creates
+  the folder of a new attempt exclusively (`mkdir` without `exist_ok`): a
+  folder that exists, also one left by a crash, is never reused, and
+  without an `ordinal` the number is past every attempt folder of the step.
+  Iterations and ordinals are 1-999 (`execution.ITERATION_LIMIT`,
+  `ORDINAL_LIMIT`), phases the values of `execution.Phase`; anything else,
+  `True` included, is refused before a folder is made. `runs`, the
+  iteration and the phase folder must be folders themselves, never a link,
+  a junction or a file (`UnsafeFolder`). The adapter writes each attempt's
+  `<role>.prompt.md`, `.stdout.log`, `.stderr.log`, `.reply.md` and
+  `.active-process.json` there through `atomic_text` and `process.execute`,
+  unchanged.
+- **Readers.** The forced unlock (`TaskLock(force=True)`) reads every
+  `*.active-process.json` at the depths writers use, whatever the folders
+  are called (`process_files`): a malformed attempt name still counts, an
+  unreadable or non-object file keeps the lock, and on native Windows any
+  PID keeps it (`storage._alive`). The Logs tab (`app._logs`) lists each
+  attempt folder as its own group after the flat files and the requests
+  for tests of its iteration, by IDs `iteration-NNN/<phase>/attempt-NNN/<file>`
+  matching `runfiles.LOG_NAME`, never through a link, a junction or another
+  reparse point (`runfiles.attempts`, `plain_file`). The evidence bundle
+  accepts the same names (`bundle.LOG_NAME` is `runfiles.LOG_NAME`) and
+  checks every folder from `runs` to the file. A review record names its
+  reply with `runfiles.log_name`, which for the flat folder is the name it
+  always gave (`iteration-NNN/reviewer.reply.md`). The verification runner
+  and the test stage keep their flat files.
+- **Inactive.** `run_task` still gives the adapter the flat iteration
+  folder; nothing calls `allocate`. Step 04 allocates one folder per
+  attempt together with its `AttemptRecord`, saved before the CLI starts.
+  Tasks are never migrated: a task written flat stays flat, and a task that
+  holds flat files, requests for tests and attempt folders is read whole.
+- Tests: `tests/test_runfiles.py`.

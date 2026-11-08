@@ -27,7 +27,7 @@ from unittest.mock import patch
 SOURCE = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SOURCE))
 
-from patchrondo import recovery  # noqa: E402
+from patchrondo import recovery, runfiles  # noqa: E402
 from patchrondo.core import create_task, initialize  # noqa: E402
 from patchrondo.gitops import fingerprint, git  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
@@ -284,7 +284,7 @@ def run_scenario(root: Path, scenario: str, developer: str, reviewer: str) -> di
             check("paused at the failed phase", code == 2 and first["status"] == "paused"
                   and first["phase"] == phase and first["last_error"]["kind"] == kind)
             check("lock and process markers removed", not (path / ".run.lock").exists()
-                  and not list(path.glob("runs/iteration-*/*.active-process.json")))
+                  and not runfiles.process_files(path / "runs"))
             if scenario == "interrupt":
                 try:
                     os.kill(ready["pid"], 0)
@@ -353,7 +353,7 @@ def run_scenario(root: Path, scenario: str, developer: str, reviewer: str) -> di
             (workspace / "names.py").read_text(encoding="utf-8")).body[0])))
         check("review left tested worktree unchanged", state["test_context"]["fingerprint"] == fingerprint(workspace))
         check("no remaining locks or process markers", not (path / ".run.lock").exists()
-              and not list(path.glob("runs/iteration-*/*.active-process.json")))
+              and not runfiles.process_files(path / "runs"))
         timings = [json.loads(line) for line in (root / "timings.jsonl").read_text(encoding="utf-8").splitlines()]
         result.update(iterations=state["iteration"], provider_calls=len(calls),
                       test_runs=events.count("tests_completed"), changed_files=len(changed),
@@ -367,7 +367,7 @@ def run_scenario(root: Path, scenario: str, developer: str, reviewer: str) -> di
                 proc.communicate()
         # A failing interruption check must not leave its synthetic child alive.
         if os.name == "posix":
-            for marker in path.glob("runs/iteration-*/*.active-process.json"):
+            for marker in runfiles.process_files(path / "runs"):
                 try:
                     os.killpg(read_json(marker)["pid"], signal.SIGKILL)
                 except ProcessLookupError:

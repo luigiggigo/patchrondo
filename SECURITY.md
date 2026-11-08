@@ -390,8 +390,9 @@ ledger), configuration files, and anything a request names: the page and
 the API choose a task and a mode, never a path.
 
 **How files are read.** A log or report is read only when its name matches
-`iteration-NNN/<name>` under the task's own `runs` folder; every folder of
-the way and the file are checked not to be a link or a junction and the
+`iteration-NNN/<name>` or `iteration-NNN/<phase>/attempt-NNN/<name>`
+(`runfiles.LOG_NAME`) under the task's own `runs` folder; every folder of
+the way, from `runs` on, and the file are checked not to be a link or a junction and the
 file to be a regular file, the file opened is compared with the file
 checked, and its size and time after reading with those before. Anything
 else is left out and named in the manifest (`unsafe_name`, `link_refused`,

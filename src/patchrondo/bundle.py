@@ -62,7 +62,7 @@ import stat
 import time
 import zipfile
 
-from . import __version__, acceptance as criteria, evidence, provenance, verification, winacl
+from . import __version__, acceptance as criteria, evidence, provenance, runfiles, verification, winacl
 from .storage import _unshared, now
 
 FORMAT = "patchrondo-evidence-bundle"
@@ -84,7 +84,7 @@ MAX_ENTRY_BYTES = 64 * 1024 ** 2
 MAX_TOTAL_BYTES = 192 * 1024 ** 2
 MAX_RATIO = 250                   # uncompressed / compressed, for an entry over RATIO_FLOOR
 RATIO_FLOOR = 1024 * 1024
-LOG_NAME = re.compile(r"iteration-\d{3}/[A-Za-z0-9][A-Za-z0-9._-]{0,120}")
+LOG_NAME = runfiles.LOG_NAME      # flat, or inside one attempt folder of a step
 SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}(/[A-Za-z0-9][A-Za-z0-9._-]{0,120}){0,4}")
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 INTEGRITY = ("Each file is listed with its SHA-256 and size, and content_sha256 is the SHA-256 of this manifest without "
@@ -198,8 +198,9 @@ def _masked(value, secrets):
 def _part(task_path: Path, folder: str, name: str, limit: int) -> tuple[bytes | None, dict]:
     """The last `limit` bytes of one file of the task's runs, what is known about it, or why it was left out.
 
-    Only `runs/iteration-NNN/<name>`: every part of the way is checked not to
-    be a link or a junction, the file must be a regular file, and the file
+    Only `runs/iteration-NNN/<name>`, or `runs/iteration-NNN/<phase>/attempt-NNN/<name>`
+    (`runfiles.LOG_NAME`): every folder of the way, `runs` included, is
+    checked not to be a link or a junction, the file must be a regular file, and the file
     opened must be the one checked (no swap in between; a link is never
     followed where the system can refuse it). After the reading the name must
     still lead to that same file, unchanged: a file replaced, grown or turned
@@ -210,8 +211,11 @@ def _part(task_path: Path, folder: str, name: str, limit: int) -> tuple[bytes | 
         return None, {"reason": "unsafe_name"}
     runs = task_path / "runs"
     target = runs / name
+    folders = [runs]
+    for piece in name.split("/")[:-1]:  # the iteration folder, and a phase and an attempt folder when named
+        folders.append(folders[-1] / piece)
     try:
-        for part in (runs, target.parent):
+        for part in folders:
             info = os.lstat(part)
             if stat.S_ISLNK(info.st_mode) or winacl.is_reparse_point(part) or not stat.S_ISDIR(info.st_mode):
                 return None, {"reason": "not_a_folder_of_the_task"}
