@@ -286,14 +286,20 @@ class MalformedTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_a_newer_schema_is_refused_as_newer(self):
-        for raw, loader in ((ended_attempt().to_dict(), AttemptRecord.from_dict),
-                            (finished(opened()).to_dict(), ExecutionRecord.from_dict),
-                            (BudgetState.open(Scope.TASK, {}).to_dict(), BudgetState.from_dict)):
+        # Attempts and task records also have a schema 2 since Step 05.1 (a request for tests, a bound policy).
+        for raw, loader, newer in ((ended_attempt().to_dict(), AttemptRecord.from_dict, 3),
+                                   (finished(opened()).to_dict(), ExecutionRecord.from_dict, 3),
+                                   (BudgetState.open(Scope.TASK, {}).to_dict(), BudgetState.from_dict, 2)):
             with self.subTest(loader=loader):
                 with self.assertRaises(InvalidRecord) as caught:
-                    loader({**raw, "version": 2, "something_new": [1]})
+                    loader({**raw, "version": newer, "something_new": [1]})
                 self.assertTrue(caught.exception.newer)
                 self.assertIn("newer", str(caught.exception))
+        for raw, loader in ((ended_attempt().to_dict(), AttemptRecord.from_dict),
+                            (finished(opened()).to_dict(), ExecutionRecord.from_dict)):
+            with self.subTest(loader=loader, version=2), self.assertRaises(InvalidRecord) as caught:
+                loader({**raw, "version": 2})  # schema 2 without its field: refused, not newer
+            self.assertFalse(caught.exception.newer)
 
     def test_older_missing_and_odd_versions_are_refused(self):
         raw = ended_attempt().to_dict()
@@ -307,7 +313,7 @@ class VersionTests(unittest.TestCase):
 
     def test_a_newer_nested_record_is_refused_too(self):
         raw = finished(opened()).to_dict()
-        raw["step"]["attempts"][0]["version"] = 2
+        raw["step"]["attempts"][0]["version"] = 3
         with self.assertRaises(InvalidRecord) as caught:
             ExecutionRecord.from_dict(raw)
         self.assertTrue(caught.exception.newer)
@@ -390,7 +396,8 @@ class LegacyTests(unittest.TestCase):
                          {"validate_config", "_execution", "_execution_unreadable", "_uncertain_attempt", "_unused",
                           "_ended_event", "_settle_attempts", "_step_settings", "_termination", "_attempt",
                           "close", "running", "release_attempt", "_folder_of", "_refusal", "_budget_message", "__init__",
-                          "draft_tests"})
+                          "draft_tests", "_attempt_of_draft", "_policy_of_project", "_make_draft", "_policy_missing",
+                          "_record_missing"})
         self.assertIn(("validate_config", "settings_of"), users["core.py"])
 
 
@@ -896,6 +903,55 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual((released.budget, released.step.budget), (record.budget, record.step.budget))
         self.assertEqual(released.admission(), record.admission())
         self.assertEqual(ExecutionRecord.from_dict(released.to_dict()).admission(), released.admission())
+
+
+class SchemaTwoTests(unittest.TestCase):
+    """Step 05.1: a task's bound policy and a request for tests, saved as schema 2; schema 1 stays schema 1."""
+
+    POLICY = {"enabled": True, "profile": "standard", "limits": {"task": {"provider_calls": 10}}}
+
+    def test_a_record_without_them_is_still_saved_as_schema_1(self):
+        record = finished(opened())
+        raw = record.to_dict()
+        self.assertEqual((raw["version"], raw["step"]["attempts"][0]["version"]), (1, 1))
+        self.assertNotIn("policy", raw)
+        self.assertNotIn("draft", raw["step"]["attempts"][0])
+        self.assertEqual(ExecutionRecord.from_dict(raw).to_dict(), raw)
+
+    def test_a_bound_policy_round_trips_and_is_validated(self):
+        record = ExecutionRecord.open(TASK, {Unit.PROVIDER_CALLS: 10}, policy=self.POLICY)
+        raw = record.to_dict()
+        self.assertEqual((raw["version"], raw["policy"]), (2, self.POLICY))
+        self.assertEqual(ExecutionRecord.from_dict(raw), record)
+        raw["policy"]["profile"] = "fast"
+        self.assertEqual(record.policy["profile"], "standard")  # the record keeps its own copy
+        for policy in ({"enabled": False, "profile": "standard"}, {"enabled": True}, {"enabled": True, "profile": "turbo"},
+                       {"enabled": True, "profile": "standard", "extra": 1}, {"enabled": True, "profile": float("nan")},
+                       {"enabled": True, "profile": "standard", "limits": {"task": {"provider_calls": "x" * 30000}}}, []):
+            with self.subTest(policy=policy), self.assertRaises(InvalidRecord):
+                ExecutionRecord.open(TASK, {}, policy=policy)
+        with self.assertRaises(InvalidRecord):
+            ExecutionRecord.from_dict({**ExecutionRecord.open(TASK, {}).to_dict(), "version": 2, "policy": None})
+        self.assertEqual(execution.governed({"workflow": {}, "execution": {"enabled": False}}, self.POLICY),
+                         {"workflow": {}, "execution": self.POLICY})
+
+    def test_a_request_for_tests_round_trips_and_belongs_to_a_developer_step(self):
+        record, item = started(opened(), draft="test-draft-03")
+        raw = item.to_dict()
+        self.assertEqual((raw["version"], raw["draft"]), (2, "test-draft-03"))
+        self.assertEqual(AttemptRecord.from_dict(raw), item)
+        self.assertEqual(ExecutionRecord.from_dict(record.to_dict()), record)
+        with self.assertRaises(InvalidRecord):  # an update keeps what it is
+            record.update(dataclasses.replace(item.running(), draft="test-draft-04"))
+        for name in ("test-draft-1", "attempt-001", "../test-draft-01", "test-draft-01/x", ""):
+            with self.subTest(name=name), self.assertRaises(InvalidRecord):
+                started(opened(), draft=name)
+        with self.assertRaises(InvalidRecord):
+            started(opened("codex", Phase.REVIEW), draft="test-draft-01")
+        with self.assertRaises(InvalidRecord):
+            AttemptRecord.from_dict({**ended_attempt().to_dict(), "version": 2, "draft": None})
+        # Admitted and charged like any call of its step.
+        self.assertEqual(record.step.budget.line(Unit.PROVIDER_CALLS).used, 1)
 
 
 if __name__ == "__main__":

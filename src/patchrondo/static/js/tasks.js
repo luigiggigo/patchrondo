@@ -75,6 +75,8 @@ export const ERRORS = {
   acceptance_unreadable: { title: "The saved criteria cannot be read", help: "They were saved by another version of PatchRondo, or changed by hand. Nothing replaced them and no agent was called. Open the task with the version that saved them, or put back its state.json, then resume." },
   attempt_uncertain: { title: "An agent call may still be running", help: "A run stopped before it could record how an agent call ended, or the call was stopped while what it started may still run. No other call starts meanwhile. Check that no process of it is left; then run the command the message gives (patchrondo release-attempt … --confirm-stopped) and resume. Releasing says nothing about what the call did." },
   budget_exhausted: { title: "A budget allows no further agent call", help: "The budget of this step or of the task, frozen when it started, cannot take the next call; the message names the limit and its unit. Nothing was started, nothing raised the budget, and the calls and evidence so far are kept. This version cannot amend a budget: create a follow-up task to go on." },
+  execution_record_missing: { title: "The record of agent calls is missing", help: "This task made recorded agent calls, but its saved state no longer has their record, so it is not run as if it never had one: that would lift its budget. Nothing was started. Put back the task's state.json, or create a follow-up task." },
+  execution_policy_missing: { title: "The execution policy of this task is not known", help: "This task is governed by Adaptive Execution until it ends, and it was recorded before tasks kept their own policy. The project's execution section is now off, so its next step has no limits to run with. Nothing was started. Turn the section back on for this project, or create a follow-up task." },
   attempt_folder_exists: { title: "The folder of an agent call already exists", help: "No record of this task names that folder, so nothing was written into it and no agent was called. Check what made it and move it away, then resume: the next call gets a folder of its own." },
   attempt_limit_reached: { title: "No more agent calls can be recorded", help: "This task reached the most agent calls PatchRondo records for one step or one task. Create a follow-up task." },
   execution_unreadable: { title: "The saved record of agent calls cannot be read", help: "It was saved by another version of PatchRondo, or changed by hand. Nothing replaced it and no agent was called. Open the task with the version that saved it, or put back its state.json, then resume." },
@@ -181,6 +183,7 @@ const PAUSE_REASONS = {
   attempt_uncertain: "an agent call may still be running", attempt_folder_exists: "the folder of an agent call already exists",
   attempt_limit_reached: "no more agent calls can be recorded", execution_unreadable: "the record of agent calls cannot be read",
   budget_exhausted: "a budget allows no further agent call",
+  execution_record_missing: "the record of agent calls is missing", execution_policy_missing: "the execution policy of the task is not known",
 };
 // How a recorded agent call ended (`execution.AttemptOutcome`), and whether what it started is known to have stopped.
 const CALL_OUTCOMES = {
@@ -257,7 +260,7 @@ export function describeEvent(event, task) {
     case "validation_failed":
       return { text: `A check by you did not pass (${(event.criteria || []).join(", ")}): sent to ${dev} as a change request`, tone: "warn", icon: "repeat" };
     case "attempt_started":
-      return { text: `${event.phase === "review" ? rev : dev}: call ${event.attempt || ""} started`, tone: "accent", icon: "play",
+      return { text: `${event.phase === "review" ? rev : dev}: ${event.purpose === "test_draft" ? "request for tests" : "call"} ${event.attempt || ""} started`, tone: "accent", icon: "play",
                detail: [event.turn_limit ? `up to ${event.turn_limit} turns` : null, event.timeout_seconds ? `timeout ${event.timeout_seconds} s` : null].filter(Boolean).join(" · ") || null };
     case "attempt_ended": {
       const [word, tone] = CALL_OUTCOMES[event.outcome] || [humanize(event.outcome || "ended"), "neutral"];

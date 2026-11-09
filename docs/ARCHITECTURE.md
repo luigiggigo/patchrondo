@@ -2954,9 +2954,9 @@ call). A budget cannot be amended in this version; a later mechanism may
 resume such a task after an authorized adjustment.
 
 A request for tests (`draft_tests`) of a task whose developer step is
-recorded is admitted by the task's budget with that step's call request and
-runs with the step's turn limit and timeout. It is not an attempt and is not
-charged: a limit of this step.
+recorded was, in Step 05, admitted by the task's budget and run with the
+step's limits without being charged; since Step 05.1 it is an attempt of
+that step (below).
 
 **Quota recovery.** `recovery.py` stays the only owner of quota retries.
 `run_task` passes it the refusal of the step's next call (`refused`): a
@@ -2988,15 +2988,77 @@ known before (`no_end` or `unverified`), the process files found, the
 outcome and `effects: "unknown"`. Nothing releases an attempt
 automatically, and process trees stay unsupervised on native Windows.
 
-- Compatibility: without the section, with it off for a step that starts
-  without a record, and for a step started before execution was enabled,
-  nothing of this applies; a task without the `execution` key has no budget.
-  Disabling execution applies to steps that start afterwards: their calls
-  are not recorded, not charged and not refused. Saved records, IDs, folders
-  and checkpoints are read as they are; nothing is migrated.
+- Compatibility: for a task never recorded (no `execution` key, no attempt
+  folder) and for a step started before execution was enabled, nothing of
+  this applies. In Step 05 disabling execution let the steps that started
+  afterwards run unrecorded; Step 05.1 binds the task's policy (below). Saved
+  records, IDs, folders and checkpoints are read as they are; nothing is
+  migrated.
 - Tests: `tests/test_budgets.py` (each budget at its limit, unknown turns,
   idempotent Resume, frozen budgets across configuration changes and
   disabling, refreshed agent settings, adapters, requests for tests, quota
   recovery at and within the boundary, saved plans, uncertain attempts,
   releases), `tests/test_execution.py` (`OutcomeTableTests`,
   `AdmissionTests`), `tests/test_attempts.py` (an unreadable review).
+
+### Budget integrity (Step 05.1)
+
+**A task is bound to its execution policy.** The first recorded step of a
+task opens its record with the project's `execution` section as it was then
+(`ExecutionRecord.policy`, validated by `execution.bound_policy`, enabled,
+at most 20,000 characters of JSON; the record is then saved as schema 2).
+Every later step of that task is recorded and resolved from that policy
+(`execution.governed`: the project's configuration with the task's own
+`execution` section), whatever the project says now: turning the section off,
+removing it or choosing another profile applies to tasks recorded
+afterwards. Workflow values and agent settings still come from the
+configuration in effect and can only narrow a limit. The task's budget is the
+one in its record, never opened again, so a Resume never resets what was
+consumed. A step whose agent settings were frozen without a step record (a
+pause between the two) is recorded when it starts: in a recorded task every
+call is an attempt, so such a step never made a call.
+
+A record saved before the binding (schema 1, no policy) is not rewritten. Its
+next step uses the project's section while it is enabled, without writing it
+into the record; with the section off or missing, the run pauses with
+`execution_policy_missing` (`core.ExecutionUnbound`) before anything of the
+step is frozen, and a Resume returns the saved state until the section is
+on again.
+
+**A lost record is never taken for a task without one.** A state without the
+`execution` key whose `runs` folder holds an attempt folder
+(`runfiles.attempts`, the folders only a recorded call makes) pauses with
+`execution_record_missing` (`core._require_record`), in a run and in a
+request for tests, and a Resume returns the saved state while it lasts. A
+`runs` folder that cannot be read counts as such a sign. A record that
+cannot be read pauses with `execution_unreadable` as before; neither is ever
+replaced or followed by a run without a record. A task created and run
+without a record, with flat files only, runs as before.
+
+**A request for tests is an attempt.** In a recorded task, `draft_tests`
+makes its call through `core._attempt(..., draft=True)` as an attempt of the
+developer's step of the iteration (`AttemptRecord.draft`, the folder
+`test-draft-KK`; the attempt is saved as schema 2). It is admitted by that
+step's budget and the task's before anything starts, saved `STARTING` before
+its folder is made (exclusively, past every `test-draft-*` folder of the
+iteration: `core._draft_name`, `_make_draft`), charged once, ended with its
+outcome and usage, and held while uncertain like any attempt; its journal
+events keep `step: "test_draft"` and its `attempt_started` event says
+`purpose: "test_draft"`. It is not a new iteration or step, writes no test
+result or evidence, and leaves the `tests_disabled` pause, its `last_error`
+and the review as they were. With the standard profile a developer step's
+two calls are the development and one request. A recorded task whose record
+has no developer step of the iteration gets no request (`configuration`),
+and a task never recorded asks as before, in a new `test-draft-KK`, without a
+record.
+
+**Releases** stay the operator's assertion (`--confirm-stopped`): they prove
+no termination, never release a call whose process file names a process
+that may be alive, keep an unknown outcome unknown and a timeout a timeout
+(the step's status stays `stopped`, never an answer received), keep every
+charge, and are recorded in the history. A request for tests lost in a crash
+is released the same way.
+
+- Tests: `tests/test_budgets.py` (`BindingTests`, `RequestForTestsTests`,
+  `ReleaseMeaningTests`), `tests/test_execution.py` (`SchemaTwoTests`, the
+  schema versions in `VersionTests`).

@@ -579,18 +579,21 @@ class CrashTests(AttemptCase):
 
 class FolderTests(AttemptCase):
     def test_an_existing_attempt_folder_is_never_reused_and_stops_one_run_only(self):
+        self.configure(execution={"enabled": True, "profile": "deep_autonomous"})  # three developer calls per step
         task_id, path = self.task()
-        stranger = runfiles.allocate(path, 1, "develop", 1)
+        self.cli.plan({"max_turns": True, "turns": 10})
+        run_task(self.home, task_id)  # the task has its record and attempt-001
+        stranger = runfiles.allocate(path, 1, "develop", 2)
         (stranger / "note.txt").write_text("not ours", encoding="utf-8")
         state = run_task(self.home, task_id)
         self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "attempt_folder_exists"))
         self.assertEqual(sorted(entry.name for entry in stranger.iterdir()), ["note.txt"])
-        self.assertEqual(self.cli.calls, [])
+        self.assertEqual(len(self.cli.calls), 1)
         item = execution.load(state).step.last
         self.assertEqual((item.outcome, item.termination), (AttemptOutcome.ENVIRONMENT_BLOCKED, Termination.NOT_STARTED))
         done = run_task(self.home, task_id)  # the next attempt gets a folder of its own
         self.assertEqual(done["status"], "done", done.get("last_error"))
-        self.assertTrue((self.folder(path, "develop", 2) / "developer.reply.md").exists())
+        self.assertTrue((self.folder(path, "develop", 3) / "developer.reply.md").exists())
 
     def test_a_phase_folder_that_is_not_a_folder_stops_the_run_before_anything_starts(self):
         task_id, path = self.task()

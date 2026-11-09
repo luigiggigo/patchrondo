@@ -60,7 +60,11 @@ later run finds it without an end, or when it ended with its termination
 `UNVERIFIED`. No call starts beside an uncertain attempt until the user
 releases it (`ExecutionRecord.release`).
 
-Records are versioned (schema 1). Loading is strict: an unknown or missing
+Records are versioned (schema 1). Since Step 05.1 two records also have a
+schema 2: a task's record that names the execution policy the task is bound
+to (`ExecutionRecord.policy`), and an attempt that is a request for tests
+(`AttemptRecord.draft`). A record without them is still saved as schema 1,
+so nothing saved earlier is rewritten. Loading is strict: an unknown or missing
 field, a value of another type (`True` is not a number), an unknown enum
 value, a newer or older schema version and a record that contradicts itself
 raise `InvalidRecord`. The caller keeps the saved value as it is; nothing
@@ -93,6 +97,8 @@ DIGEST = re.compile(r"[0-9a-f]{16}")         # `agents.digest` of a frozen step 
 FINGERPRINT = re.compile(r"[0-9a-f]{64}")    # `gitops.fingerprint`
 SESSION_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 FAILURE_KIND = re.compile(r"[a-z][a-z0-9_]{0,63}")
+DRAFT_NAME = re.compile(r"test-draft-\d{2,6}")  # `runfiles.DRAFT_FOLDER`
+POLICY_CHARS = 20_000  # the most a bound execution section may take as JSON
 ITERATION_LIMIT = 999  # `runs/iteration-NNN`, `agents.step_key`
 ORDINAL_LIMIT = 999
 CALL_LIMIT = 86_400    # the bounds of a call's turns and timeout (`agents.py`, `core.WORKFLOW_LIMITS`)
@@ -228,7 +234,9 @@ ENGINE_KINDS = frozenset({"tests_disabled", "verification_error", "verification_
                           "attempt_uncertain", "attempt_folder_exists", "attempt_limit_reached",
                           "execution_unreadable",
                           # Step 05: a budget refused the next call before anything was started.
-                          "budget_exhausted"})
+                          "budget_exhausted",
+                          # Step 05.1: a recorded task whose record is missing, or whose policy is not known.
+                          "execution_record_missing", "execution_policy_missing"})
 
 
 def outcome_for_failure(kind) -> AttemptOutcome | None:
@@ -376,6 +384,34 @@ def _fields(raw, name: str, fields: tuple[str, ...], versioned: bool = True) -> 
                            if part)
         raise InvalidRecord(f"{name} does not have the fields of schema {VERSION} ({detail})")
     return raw
+
+
+def _versioned(raw, name: str, shapes: Mapping[int, tuple[str, ...]]) -> tuple[dict, int]:
+    """The fields of a record that one of several schema versions may have written: (raw, its version).
+
+    A version above every one in `shapes` is newer (`InvalidRecord(newer=True)`);
+    one that is not in `shapes` is refused; the fields must be exactly those of
+    its version. A version-1 record is never rewritten as another version.
+    """
+    if not isinstance(raw, dict):
+        raise InvalidRecord(f"{name} is not a record")
+    version = raw.get("version")
+    if type(version) is not int:
+        raise InvalidRecord(f"{name} has no schema version")
+    if version > max(shapes):
+        raise InvalidRecord(f"{name} was written by a newer version (schema {version}); this version reads "
+                            f"{', '.join(map(str, sorted(shapes)))}", newer=True)
+    if version not in shapes:
+        raise InvalidRecord(f"{name} is of schema version {version}; this version reads "
+                            f"{', '.join(map(str, sorted(shapes)))}")
+    expected = set(shapes[version]) | {"version"}
+    missing, unexpected = sorted(expected - set(raw)), sorted(set(raw) - expected)
+    if missing or unexpected:
+        detail = "; ".join(part for part in (f"missing: {', '.join(missing)}" if missing else "",
+                                             f"unexpected: {', '.join(map(str, unexpected))[:200]}" if unexpected else "")
+                           if part)
+        raise InvalidRecord(f"{name} does not have the fields of schema {version} ({detail})")
+    return raw, version
 
 
 def _list(value, name: str, limit: int) -> list:
@@ -552,14 +588,22 @@ class AttemptRecord:
     elapsed_seconds: int | None = None  # measured; for an end nobody saw, its timeout (the most it was allowed)
     workspace_after: str | None = None
     termination: Termination | None = None  # once ended: whether its processes are known to have stopped
+    # Step 05.1: a request for tests made to the developer of this step (`core.draft_tests`), in the folder
+    # `runs/iteration-NNN/<draft>` (`test-draft-KK`). None: a call of the step itself. Saved as schema 2.
+    draft: str | None = None
 
     FIELDS = ("attempt_id", "task_id", "iteration", "phase", "role", "ordinal", "provider", "settings_digest",
               "turn_limit", "timeout_seconds", "continuation", "session", "status", "started_at", "workspace_before",
               "turns", "tokens", "outcome", "failure_kind", "ended_at", "elapsed_seconds", "workspace_after",
               "termination")
+    SHAPES = {1: FIELDS, 2: FIELDS + ("draft",)}  # schema 1 never names a request for tests
 
     def __post_init__(self):
         attempt_number(self.attempt_id)
+        if self.draft is not None:
+            _match(self.draft, DRAFT_NAME, "folder of a request for tests")
+            if _enum(Phase, self.phase, "phase") is not Phase.DEVELOP:
+                raise InvalidRecord("a request for tests is made to the developer")
         _match(self.task_id, TASK_ID, "task ID")
         _int(self.iteration, "iteration", 1, ITERATION_LIMIT)
         _set(self, "phase", _enum(Phase, self.phase, "phase"))
@@ -694,7 +738,8 @@ class AttemptRecord:
                         termination=Termination.RELEASED)
 
     def to_dict(self) -> dict:
-        return {"version": VERSION, "attempt_id": self.attempt_id, "task_id": self.task_id, "iteration": self.iteration,
+        return {"version": 1 if self.draft is None else 2, "attempt_id": self.attempt_id, "task_id": self.task_id,
+                "iteration": self.iteration,
                 "phase": str(self.phase), "role": self.role, "ordinal": self.ordinal, "provider": self.provider,
                 "settings_digest": self.settings_digest, "turn_limit": self.turn_limit,
                 "timeout_seconds": self.timeout_seconds, "continuation": str(self.continuation), "session": self.session,
@@ -703,12 +748,15 @@ class AttemptRecord:
                 "outcome": None if self.outcome is None else str(self.outcome), "failure_kind": self.failure_kind,
                 "ended_at": self.ended_at, "elapsed_seconds": self.elapsed_seconds,
                 "workspace_after": self.workspace_after,
-                "termination": None if self.termination is None else str(self.termination)}
+                "termination": None if self.termination is None else str(self.termination),
+                **({} if self.draft is None else {"draft": self.draft})}
 
     @classmethod
     def from_dict(cls, raw, name: str = "attempt") -> "AttemptRecord":
-        raw = _fields(raw, name, cls.FIELDS)
-        values = {key: raw[key] for key in cls.FIELDS if key not in ("role", "turns", "tokens")}
+        raw, version = _versioned(raw, name, cls.SHAPES)
+        if version == 2 and raw["draft"] is None:
+            raise InvalidRecord(f"{name} of schema 2 names the folder of its request for tests")
+        values = {key: raw[key] for key in cls.SHAPES[version] if key not in ("role", "turns", "tokens")}
         record = cls(**values, turns=Usage.from_dict(raw["turns"], f"{name} turns"),
                      tokens=Usage.from_dict(raw["tokens"], f"{name} tokens"))
         if raw["role"] != record.role:
@@ -925,14 +973,21 @@ class ExecutionRecord:
     next_attempt: int
     budget: BudgetState
     step: StepExecution | None = None
+    # Step 05.1: the project's `execution` section as it was when the task was first recorded, validated, with
+    # `enabled: true`. Every later step of the task resolves its limits from it, whatever the project says now
+    # (`governed`). None in a record saved before the binding existed (schema 1). Saved as schema 2.
+    policy: dict | None = None
 
     FIELDS = ("task_id", "next_attempt", "budget", "step")
+    SHAPES = {1: FIELDS, 2: FIELDS + ("policy",)}
 
     def __post_init__(self):
         _match(self.task_id, TASK_ID, "task ID")
         _int(self.next_attempt, "next attempt number", 1, ATTEMPT_LIMIT + 1)
         if not isinstance(self.budget, BudgetState) or self.budget.scope is not Scope.TASK:
             raise InvalidRecord("a task has a budget of scope task")
+        if self.policy is not None:
+            _set(self, "policy", bound_policy(self.policy))
         if self.step is None:
             return
         if not isinstance(self.step, StepExecution):
@@ -948,8 +1003,9 @@ class ExecutionRecord:
                 raise InvalidRecord(f"the task's budget was charged less {line.unit} than its current step")
 
     @classmethod
-    def open(cls, task_id: str, limits: Mapping[Unit, int | None]) -> "ExecutionRecord":
-        return cls(task_id, 1, BudgetState.open(Scope.TASK, limits))
+    def open(cls, task_id: str, limits: Mapping[Unit, int | None], policy: dict | None = None) -> "ExecutionRecord":
+        """A task's first record: its budget with nothing charged, and the execution policy it is bound to."""
+        return cls(task_id, 1, BudgetState.open(Scope.TASK, limits), policy=policy)
 
     def begin_step(self, iteration: int, phase: Phase, provider: str, limits: Mapping[Unit, int | None],
                    call: CallLimits, profile: "ExecutionProfile") -> "ExecutionRecord":
@@ -962,12 +1018,14 @@ class ExecutionRecord:
 
     def new_attempt(self, *, started_at: str, settings_digest: str | None = None,
                     continuation: ContinuationMode = ContinuationMode.NONE, session: str | None = None,
-                    workspace_before: str | None = None) -> tuple["ExecutionRecord", AttemptRecord]:
+                    workspace_before: str | None = None, draft: str | None = None) -> tuple["ExecutionRecord", AttemptRecord]:
         """The record with a new `STARTING` attempt of the current step, charged in advance, and that attempt.
 
         The attempt is started with the step's frozen call limits. None is
         added while an attempt of the step may still run, nor one that the
         step's budget or the task's cannot take (`Inadmissible`, `admission`).
+        `draft` names the folder of a request for tests made to this step's
+        developer: it is admitted and charged like any call of the step.
         """
         step = self.step
         if step is None:
@@ -983,7 +1041,7 @@ class ExecutionRecord:
             step.provider, settings_digest, step.call.turn_limit, step.call.timeout_seconds, continuation, session,
             AttemptStatus.STARTING, started_at, workspace_before,
             Usage.unknown(Unit.CLAUDE_TURNS) if claude else Usage(Unit.CLAUDE_TURNS, Availability.NOT_APPLICABLE),
-            Usage.unknown(Unit.TOKENS))
+            Usage.unknown(Unit.TOKENS), draft=draft)
         record = replace(self, next_attempt=self.next_attempt + 1, budget=self.budget.charged(item.charges()),
                          step=replace(step, budget=step.budget.charged(item.charges()), attempts=step.attempts + (item,)))
         return record, item
@@ -1022,7 +1080,7 @@ class ExecutionRecord:
             raise InvalidRecord("an attempt that has ended is not changed")
         # A call keeps what it started with: its limits and settings are never changed afterwards.
         kept = ("task_id", "ordinal", "started_at", "settings_digest", "turn_limit", "timeout_seconds", "continuation",
-                "workspace_before")
+                "workspace_before", "draft")
         if any(getattr(item, name) != getattr(last, name) for name in kept):
             raise InvalidRecord("an update keeps the identity, limits and settings of its attempt")
         before, after = last.charges(), item.charges()
@@ -1047,14 +1105,19 @@ class ExecutionRecord:
                                     attempts=step.attempts[:-1] + (item,)))
 
     def to_dict(self) -> dict:
-        return {"version": VERSION, "task_id": self.task_id, "next_attempt": self.next_attempt,
-                "budget": self.budget.to_dict(), "step": None if self.step is None else self.step.to_dict()}
+        # A record without a bound policy stays schema 1, as it was saved: nothing is rewritten in a newer shape.
+        return {"version": 1 if self.policy is None else 2, "task_id": self.task_id, "next_attempt": self.next_attempt,
+                "budget": self.budget.to_dict(), "step": None if self.step is None else self.step.to_dict(),
+                **({} if self.policy is None else {"policy": json.loads(json.dumps(self.policy))})}
 
     @classmethod
     def from_dict(cls, raw, name: str = "execution record") -> "ExecutionRecord":
-        raw = _fields(raw, name, cls.FIELDS)
+        raw, version = _versioned(raw, name, cls.SHAPES)
+        if version == 2 and raw["policy"] is None:
+            raise InvalidRecord(f"{name} of schema 2 names the execution policy its task is bound to")
         step = None if raw["step"] is None else StepExecution.from_dict(raw["step"], f"{name} step")
-        return cls(raw["task_id"], raw["next_attempt"], BudgetState.from_dict(raw["budget"], f"{name} budget"), step)
+        return cls(raw["task_id"], raw["next_attempt"], BudgetState.from_dict(raw["budget"], f"{name} budget"), step,
+                   policy=raw.get("policy"))
 
 
 # --- reading and writing --------------------------------------------------------------------------------------
@@ -1356,6 +1419,40 @@ def settings_of(cfg) -> ExecutionSettings | None:
     if not isinstance(cfg, dict):
         raise InvalidSettings("a configuration is a JSON object")
     return ExecutionSettings.parse(cfg[KEY]) if KEY in cfg else None
+
+
+def bound_policy(raw) -> dict:
+    """A copy of the `execution` section a task is bound to: JSON only, bounded, valid and enabled. Raises InvalidRecord.
+
+    Kept in the task's record from its first recorded step (Step 05.1): the
+    policy and the task's budget govern every later step of that task, so
+    turning execution off or choosing another profile in the project applies
+    to tasks recorded afterwards, never to this one.
+    """
+    try:
+        text = json.dumps(raw, sort_keys=True, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        raise InvalidRecord("the execution policy of the task is not plain JSON") from None
+    if len(text) > POLICY_CHARS:
+        raise InvalidRecord(f"the execution policy of the task is longer than {POLICY_CHARS} characters")
+    policy = json.loads(text)
+    try:
+        settings = ExecutionSettings.parse(policy)
+    except InvalidSettings as exc:
+        raise InvalidRecord(f"the execution policy of the task cannot be used: {exc}") from None
+    if not settings.enabled:
+        raise InvalidRecord("the execution policy a task is bound to is enabled")
+    return policy
+
+
+def governed(cfg: Mapping, policy: dict) -> dict:
+    """The configuration the steps of a bound task are resolved with: the project's, with the task's own policy.
+
+    Only the `execution` section is the task's: workflow values and agent
+    settings still come from the configuration in effect, and `resolve` only
+    ever lets them narrow a limit.
+    """
+    return {**cfg, KEY: bound_policy(policy)}
 
 
 # --- effective limits -----------------------------------------------------------------------------------------

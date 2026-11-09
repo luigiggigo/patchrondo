@@ -20,7 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_attempts import AttemptCase, Crash  # noqa: E402
 
-from patchrondo import cli, core, environment, execution, recovery, runfiles  # noqa: E402
+from patchrondo import agents, cli, core, environment, execution, recovery, runfiles  # noqa: E402
 from patchrondo.core import create_task, draft_tests, refresh_agent_settings, release_attempt, run_task  # noqa: E402
 from patchrondo.execution import AttemptOutcome, Termination, Unit  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
@@ -250,26 +250,282 @@ class AdmissionTests(BudgetCase):
 
 
 class RequestForTestsTests(BudgetCase):
+    """Step 05.1: a request for tests of a recorded task is an attempt of the developer's step, charged once."""
+
     def setUp(self):
         super().setUp()
         self.configure(tests=False, execution=narrowed(task={"seconds": 6000}))
         self.task_id, self.path = self.task()
         self.assertEqual(self.go(self.task_id)["last_error"]["kind"], "tests_disabled")
 
-    def test_it_runs_with_the_frozen_limits_of_the_developer_step(self):
-        budget = self.record(self.path).budget
-        state = draft_tests(self.home, self.task_id, environment=self.spy)
-        self.assertEqual(state["test_draft"]["status"], "completed", state["test_draft"])
-        call = self.cli.calls[-1]
-        self.assertEqual((call["argv"][call["argv"].index("--max-turns") + 1], call["timeout"]), ("40", 2700))
-        self.assertEqual(execution.load(state).budget, budget)  # not an attempt: not charged (a documented limit)
+    def draft(self) -> dict:
+        return draft_tests(self.home, self.task_id, environment=self.spy)
 
-    def test_it_is_refused_when_the_task_budget_cannot_take_it(self):
+    def test_a_request_is_an_attempt_of_the_developer_step_charged_once(self):
+        state = self.draft()
+        self.assertEqual(state["test_draft"]["status"], "completed", state["test_draft"])
+        self.assertEqual(state["test_draft"]["transcripts"], "iteration-001/test-draft-01")
+        call = self.cli.calls[-1]
+        self.assertEqual((call["role"], call["argv"][call["argv"].index("--max-turns") + 1], call["timeout"]),
+                         ("developer", "40", 2700))
+        self.assertEqual(call["pid_file"].parent, self.path / "runs" / "iteration-001" / "test-draft-01")
+        record = execution.load(state)
+        item = record.step.last
+        self.assertEqual((item.attempt_id, item.ordinal, item.draft, item.outcome, item.phase),
+                         ("CX-0002", 2, "test-draft-01", AttemptOutcome.COMPLETED, "develop"))
+        self.assertEqual(item.to_dict()["version"], 2)
+        self.assertEqual(record.budget.line(Unit.PROVIDER_CALLS).used, 2)
+        self.assertEqual(record.step.budget.line(Unit.PROVIDER_CALLS).used, 2)
+        started = [entry for entry in state["history"] if entry["event"] == "attempt_started"][-1]
+        self.assertEqual((started["purpose"], started["folder"]), ("test_draft", "iteration-001/test-draft-01"))
+        # Still waiting for the consent: no test ran, no review was asked for, no iteration began.
+        self.assertEqual((state["status"], state["phase"], state["iteration"], state["last_error"]["kind"]),
+                         ("paused", "test", 1, "tests_disabled"))
+        self.assertNotIn("review_started", self.events(state))
+        self.assertFalse((self.path / "runs" / "iteration-001" / "develop" / "attempt-002").exists())
+        # With the consent the loop goes on as before; the request was not a review, a test result or an iteration.
+        self.configure(tests=True)
+        done = self.go(self.task_id)
+        self.assertEqual((done["status"], done["iteration"]), ("done", 1), done.get("last_error"))
+        self.assertEqual(execution.load(done).budget.line(Unit.PROVIDER_CALLS).used, 3)
+        self.assertEqual([call["role"] for call in self.cli.calls], ["developer", "developer", "reviewer"])
+
+    def test_a_request_beyond_the_step_budget_starts_no_cli(self):
+        self.assertEqual(self.draft()["test_draft"]["status"], "completed")
+        budget = self.record(self.path).budget
+        state = self.draft()  # the standard developer step allows two calls: the development and one request
+        self.assertEqual((state["test_draft"]["status"], state["test_draft"]["kind"]), ("failed", "budget_exhausted"))
+        self.assertEqual(len(self.cli.calls), 2)
+        self.assertEqual(execution.load(state).budget, budget)
+        self.assertFalse((self.path / "runs" / "iteration-001" / "test-draft-02").exists())
+        self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "tests_disabled"))
+
+    def test_the_task_budget_refuses_a_request(self):
         self.charge_seconds(self.path, 4000)  # 4000 + 2700 is above the task's 6000 seconds
-        state = draft_tests(self.home, self.task_id, environment=self.spy)
+        state = self.draft()
         self.assertEqual((state["test_draft"]["status"], state["test_draft"]["kind"]), ("failed", "budget_exhausted"))
         self.assertEqual((state["status"], state["last_error"]["kind"]), ("paused", "tests_disabled"))
         self.assertEqual(len(self.cli.calls), 1)
+
+    def test_a_failed_or_timed_out_request_keeps_its_charge(self):
+        for plan, kind, outcome, termination in (({"error": True}, "agent_error", AttemptOutcome.PROVIDER_ERROR,
+                                                  Termination.EXITED),
+                                                 ({"timeout": True}, "timeout", AttemptOutcome.TIMEOUT,
+                                                  Termination.STOPPED)):
+            with self.subTest(kind=kind):
+                self.cli.plans.clear()
+                self.cli.plan({}, plan)
+                self.task_id, self.path = self.task()
+                self.go(self.task_id)
+                state = self.draft()
+                self.assertEqual((state["test_draft"]["status"], state["test_draft"]["kind"]), ("failed", kind))
+                item = execution.load(state).step.last
+                self.assertEqual((item.draft, item.outcome, item.termination), ("test-draft-01", outcome, termination))
+                self.assertEqual(execution.load(state).budget.line(Unit.PROVIDER_CALLS).used, 2)
+                self.assertEqual(state["test_draft"]["transcripts"], "iteration-001/test-draft-01")
+                self.assertEqual(self.saved(self.path), state)  # its end was saved with the failure
+
+    def test_a_request_lost_in_a_crash_is_held_charged_and_never_charged_twice(self):
+        self.cli.plan({"crash": "running"})
+        with self.assertRaises(Crash):
+            self.draft()
+        lost = self.saved(self.path)
+        item = execution.load(lost).step.last
+        self.assertEqual((item.draft, item.status), ("test-draft-01", execution.AttemptStatus.RUNNING))
+        charged = execution.load(lost).budget
+        state = self.draft()  # held: nothing starts beside a call that may still run
+        self.assertEqual((state["test_draft"]["status"], state["test_draft"]["kind"]), ("failed", "attempt_uncertain"))
+        self.assertEqual(len(self.cli.calls), 2)
+        self.assertEqual(execution.load(state).budget, charged)
+        marker = self.path / "runs" / "iteration-001" / "test-draft-01" / "developer.active-process.json"
+        self.assertTrue(marker.exists())
+        marker.unlink()  # checked by the operator
+        released = release_attempt(self.home, self.task_id, item.attempt_id, confirm=True)
+        last = execution.load(released).step.last
+        self.assertEqual((last.outcome, last.termination), (AttemptOutcome.UNKNOWN, Termination.RELEASED))
+        self.assertEqual(execution.load(released).budget, charged)  # the lost call keeps its most-allowed charge
+        state = self.draft()  # the step's two calls are used: the development and the lost request
+        self.assertEqual(state["test_draft"]["kind"], "budget_exhausted")
+        self.assertEqual(len(self.cli.calls), 2)
+
+    def test_a_request_saved_but_never_started_costs_nothing(self):
+        with patch("patchrondo.core._make_draft", side_effect=Crash()):
+            with self.assertRaises(Crash):
+                self.draft()
+        self.assertEqual(self.record(self.path).step.last.status, execution.AttemptStatus.STARTING)
+        state = self.draft()  # the next request closes it as never started: its folder was never made
+        self.assertEqual(state["test_draft"]["status"], "completed", state["test_draft"])
+        first, second = execution.load(state).step.attempts[1:]
+        self.assertEqual((first.termination, second.outcome), (Termination.NOT_STARTED, AttemptOutcome.COMPLETED))
+        self.assertEqual(execution.load(state).budget.line(Unit.PROVIDER_CALLS).used, 2)
+
+    def test_a_task_that_lost_its_record_gets_no_request(self):
+        state = self.saved(self.path)
+        del state[execution.KEY]
+        save_json(self.path / "state.json", state)
+        drafted = self.draft()
+        self.assertEqual((drafted["test_draft"]["status"], drafted["test_draft"]["kind"]),
+                         ("failed", "execution_record_missing"))
+        self.assertEqual(len(self.cli.calls), 1)
+        self.assertNotIn(execution.KEY, drafted)
+
+    def test_a_task_never_recorded_asks_as_before(self):
+        self.configure(execution=None)
+        self.task_id, self.path = self.task()
+        self.go(self.task_id)
+        state = self.draft()
+        self.assertEqual(state["test_draft"]["status"], "completed", state["test_draft"])
+        self.assertNotIn(execution.KEY, state)
+        call = self.cli.calls[-1]
+        self.assertEqual((call["launch"], call["timeout"]), (False, 900))
+        self.assertEqual(call["pid_file"].parent.name, "test-draft-01")
+
+
+class BindingTests(BudgetCase):
+    """Step 05.1: a recorded task stays governed by its policy and its budget, whatever the project says later."""
+
+    def test_turning_execution_off_does_not_release_a_task_from_its_policy(self):
+        for section in ({"enabled": False, "profile": "standard"}, None):
+            with self.subTest(section=section):
+                self.configure(tests=False, execution=STANDARD)
+                self.cli.calls.clear()
+                task_id, path = self.task()
+                self.assertEqual(self.go(task_id)["last_error"]["kind"], "tests_disabled")
+                self.configure(tests=True, execution=section)
+                state = self.go(task_id)  # a new phase, the review, after the project turned execution off
+                self.assertEqual(state["status"], "done", state.get("last_error"))
+                record = execution.load(state)
+                self.assertEqual(record.policy, STANDARD)
+                self.assertEqual((record.step.phase, record.step.last.attempt_id), ("review", "CX-0002"))
+                self.assertEqual(record.budget.line(Unit.PROVIDER_CALLS).used, 2)
+                review = self.cli.calls[-1]
+                self.assertTrue(review["launch"])
+                self.assertEqual(review["pid_file"].parent, self.folder(path, "review", 1))
+                self.assertEqual(review["timeout"], 2700)  # the standard profile's call, not the workflow's 900
+
+    def test_the_task_budget_still_refuses_after_the_project_turned_execution_off(self):
+        self.configure(tests=False, execution=narrowed(task={"provider_calls": 2}))
+        task_id, path = self.task()
+        self.cli.plan({"max_turns": True, "turns": 10})
+        self.go(task_id)
+        self.assertEqual(self.go(task_id)["last_error"]["kind"], "tests_disabled")
+        self.configure(tests=True, execution={"enabled": False, "profile": "deep_autonomous"})
+        state = self.go(task_id)
+        self.assert_exhausted(state, path, {"scope": "task", "unit": "provider_calls", "limit": 2, "used": 2,
+                                            "unknown": 0, "requested": 1}, calls=2)
+        self.assertEqual(execution.load(state).budget.line(Unit.PROVIDER_CALLS).limit, 2)  # never raised
+        self.configure(execution=None)
+        self.assert_idempotent(task_id, path, state)
+
+    def test_a_wider_project_profile_never_widens_a_bound_task(self):
+        self.configure(tests=False)
+        task_id, path = self.task(developer="codex", reviewer="claude")
+        self.go(task_id)
+        self.configure(tests=True, execution={"enabled": True, "profile": "deep_autonomous"})
+        state = self.go(task_id)
+        self.assertEqual(state["status"], "done", state.get("last_error"))
+        review = self.cli.calls[-1]["argv"]
+        self.assertEqual(review[review.index("--max-turns") + 1], "15")  # standard's reviewer call, not deep's 25
+        self.assertEqual(execution.load(state).budget.line(Unit.PROVIDER_CALLS).limit, 60)
+        self.assertEqual(review[review.index("--tools") + 1], "Read,Glob,Grep")  # the reviewer stays read-only
+
+    def test_a_record_saved_before_policies_were_bound(self):
+        self.configure(tests=False)
+        task_id, path = self.task()
+        self.go(task_id)
+        state = self.saved(path)
+        old = dict(state[execution.KEY], version=1)
+        del old["policy"]
+        state[execution.KEY] = old
+        save_json(path / "state.json", state)  # as Step 04 saved it
+        self.configure(tests=True, execution={"enabled": False, "profile": "standard"})
+        paused = self.go(task_id)
+        self.assertEqual((paused["status"], paused["last_error"]["kind"]), ("paused", "execution_policy_missing"))
+        self.assertEqual(len(self.cli.calls), 1)
+        self.assertEqual(paused[execution.KEY], old)  # kept as it was saved
+        self.assert_idempotent(task_id, path, paused)
+        self.configure(execution=STANDARD)  # the project's policy, while it is on; not written into the record
+        done = self.go(task_id)
+        self.assertEqual(done["status"], "done", done.get("last_error"))
+        self.assertEqual(done[execution.KEY]["version"], 1)
+        self.assertNotIn("policy", done[execution.KEY])
+
+    def test_a_missing_or_corrupt_record_never_falls_back_to_running_without_one(self):
+        task_id, path = self.task()
+        self.cli.plan({"max_turns": True, "turns": 10})
+        self.go(task_id)
+        state = self.saved(path)
+        del state[execution.KEY]
+        save_json(path / "state.json", state)
+        for section in (STANDARD, None):
+            self.configure(execution=section)
+            paused = self.go(task_id)
+            self.assertEqual((paused["status"], paused["last_error"]["kind"]), ("paused", "execution_record_missing"))
+            self.assertEqual(len(self.cli.calls), 1)
+            self.assertNotIn(execution.KEY, paused)
+            self.assert_idempotent(task_id, path, paused)
+        for corrupt in ({"version": 1}, None, {"version": 2, "task_id": task_id}):
+            with self.subTest(corrupt=corrupt):
+                state = self.saved(path)
+                state[execution.KEY] = corrupt
+                save_json(path / "state.json", state)
+                paused = self.go(task_id)
+                self.assertEqual(paused["last_error"]["kind"], "execution_unreadable")
+                self.assertEqual((paused[execution.KEY], len(self.cli.calls)), (corrupt, 1))
+
+    def test_a_step_frozen_without_its_record_is_recorded_not_run_without_one(self):
+        self.configure(tests=False)
+        task_id, path = self.task()
+        self.go(task_id)
+        state = self.saved(path)
+        cfg = core.task_config(self.home, task_id)
+        layers = agents.layers(agents.workspace_root(self.home), cfg, state)
+        state["agent_runs"][agents.step_key(state, "reviewer")] = agents.freeze("codex", "reviewer", layers)
+        save_json(path / "state.json", state)  # as a pause between freezing and recording the step leaves it
+        self.configure(tests=True, execution=None)
+        done = self.go(task_id)
+        self.assertEqual(done["status"], "done", done.get("last_error"))
+        record = execution.load(done)
+        self.assertEqual((record.step.phase, record.step.last.attempt_id), ("review", "CX-0002"))
+        self.assertTrue(self.cli.calls[-1]["launch"])
+
+    def test_a_task_never_recorded_stays_as_it_was(self):
+        self.configure(execution=None)
+        task_id, path = self.task()
+        state = self.go(task_id)
+        self.assertEqual(state["status"], "done", state.get("last_error"))
+        self.configure(execution=STANDARD)  # a task created before stays without a record
+        self.assertNotIn(execution.KEY, self.saved(path))
+        self.assertFalse(core._record_missing(path, self.saved(path)))
+        self.assertTrue(all(not call["launch"] for call in self.cli.calls))
+
+
+class ReleaseMeaningTests(BudgetCase):
+    """Step 05.1: `--confirm-stopped` is the operator's assertion; it proves and decides nothing else."""
+
+    def test_a_released_timeout_stays_a_timeout_and_keeps_its_charge(self):
+        task_id, path = self.task()
+        self.cli.plan({"timeout": True, "tree": "child_only"})
+        held = self.go(task_id)
+        held = self.go(task_id)
+        self.assertEqual(held["last_error"]["kind"], "attempt_uncertain")
+        before = execution.load(held)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.main(["--home", str(self.home), "release-attempt", task_id, "CX-0001", "--confirm-stopped"])
+        self.assertEqual(code, 0)
+        self.assertIn("you stated that its processes stopped", out.getvalue())
+        self.assertIn("what it did is not known", out.getvalue())
+        released = self.saved(path)
+        record = execution.load(released)
+        item = record.step.last
+        self.assertEqual((item.outcome, item.termination), (AttemptOutcome.TIMEOUT, Termination.RELEASED))
+        self.assertIs(record.step.status, execution.StepStatus.STOPPED)  # never an answer received
+        self.assertEqual((record.budget, record.step.budget), (before.budget, before.step.budget))
+        entry = released["history"][-1]
+        self.assertEqual((entry["previously"], entry["effects"], entry["outcome"]), ("unverified", "unknown", "TIMEOUT"))
+        self.assertNotIn("task_completed", self.events(released))
+        self.assertEqual(released["status"], "paused")
 
 
 class RecoveryTests(BudgetCase):

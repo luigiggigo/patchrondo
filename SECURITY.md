@@ -338,8 +338,11 @@ timeout starts the next call as before.
 
 **Budgets of agent calls.** With Adaptive Execution enabled, no agent call
 starts that the frozen budget of its step or of the task cannot take,
-automatic quota retries included; the task pauses with `budget_exhausted`
-and nothing raises a budget by itself.
+automatic quota retries and requests for tests included; the task pauses
+with `budget_exhausted` and nothing raises a budget by itself. A task stays
+bound to the execution policy and budget it was recorded with: turning
+execution off in the project, or losing the task's record, never lets it run
+unrecorded.
 
 **What a result is worth.** Code under test can print anything and can write a report that says what it
 likes. The runner refuses a report that was there before the run, a report

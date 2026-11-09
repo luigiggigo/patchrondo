@@ -429,9 +429,16 @@ class WorkflowTests(Case):
         old = runfiles.allocate(path, 1, "develop")
         write(old / "developer.stdout.log", "an attempt folder written before this run")
         save_json(old / "developer.active-process.json", {"pid": finished_pid()})  # left by a crash
+        # Since Step 05.1 only a recorded call makes such a folder: a state without a record beside it has lost its
+        # record, and the task is not run as if it never had one. Nothing is called and the folder is left as it is.
+        held = run_task(self.home, task_id, adapter=Agents())
+        self.assertEqual((held["status"], held["last_error"]["kind"]), ("paused", "execution_record_missing"))
+        self.assertEqual((old / "developer.stdout.log").read_text(encoding="utf-8"), "an attempt folder written before this run")
+        moved = path / "attempt-moved-away"
+        os.replace(old, moved)  # the user moves it out of `runs`: the task was never recorded
         state = run_task(self.home, task_id, adapter=Agents())
         self.assertEqual((state["status"], state["phase"], state["gate"]["decision"]), ("paused", "validate", "BLOCKED"))
-        self.assertEqual((old / "developer.stdout.log").read_text(encoding="utf-8"), "an attempt folder written before this run")
+        self.assertEqual((moved / "developer.stdout.log").read_text(encoding="utf-8"), "an attempt folder written before this run")
         commands = [record for record in evidence.read(path).records if record["kind"] == "command"]
         self.assertTrue(commands)
         # The checks keep their flat files: no record names a file of an attempt folder.

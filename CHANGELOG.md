@@ -1328,6 +1328,43 @@ Phase 2.5, Adaptive Agent Execution (the user's Step 05). With
   second 40-turn call, and where releases now need the acknowledgement.
   Twenty-three new mutation protections; four patterns moved with the code.
 
+### Adaptive Execution: budget integrity — November 9, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 05.1). Two ways around a
+task's budget are closed.
+
+- A recorded task is bound to its execution policy: its first record keeps
+  the project's `execution` section as it was (`ExecutionRecord.policy`,
+  schema 2), and every later step is recorded and resolved from it
+  (`execution.governed`), whatever the project says afterwards. Turning the
+  section off, removing it or choosing another profile applies to tasks
+  recorded later; the task's budget keeps counting and a Resume never resets
+  it. A step frozen without its step record is recorded when it starts.
+- A record saved before the binding (schema 1) is not rewritten: it follows
+  the project's section while that is on, and pauses with
+  `execution_policy_missing` while it is off. A state that lost its record
+  while its `runs` hold attempt folders pauses with
+  `execution_record_missing` instead of running without one; both pauses are
+  idempotent and call nothing.
+- A request for tests of a recorded task is an attempt of the developer's
+  step (`AttemptRecord.draft`, schema 2) in its own `test-draft-KK` folder:
+  admitted by the step's and the task's budgets before anything starts,
+  saved before its folder is made, charged once, held while uncertain and
+  released like any call. The test-consent pause, the review and the gate are
+  unchanged; a task never recorded asks as before.
+- `release-attempt --confirm-stopped` stays the operator's assertion: a
+  released timeout stays a timeout, an unknown outcome stays unknown, every
+  charge is kept.
+- Compatibility: tasks never recorded, flat files and saved schema-1
+  records are read and run as before; nothing is migrated. The task page
+  words the two new pauses and a request for tests.
+- Tests: `tests/test_budgets.py` (now 37 tests: `BindingTests`,
+  `RequestForTestsTests` rewritten for charged requests,
+  `ReleaseMeaningTests`), `tests/test_execution.py` (`SchemaTwoTests`, schema
+  versions), the stray-folder test of `tests/test_attempts.py` restaged in a
+  recorded task. Twelve new mutation protections; two Step 05 protections of
+  the uncharged request replaced; three patterns moved with the code.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

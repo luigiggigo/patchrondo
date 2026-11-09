@@ -916,8 +916,25 @@ recorded (since November 8, 2026):
   provider calls used" or "41 of 80 Claude turns used, and the next call may
   use 40". Budgets are frozen when the
   step and the task first start: a Resume, a retry after a usage limit, an
-  edited configuration or turning execution off do not raise them for a
-  step that already started. The calls recorded so far and the evidence are
+  edited configuration or turning execution off do not raise them.
+- **A task keeps the policy it started with.** The `execution` section a
+  task's first recorded call ran under is kept in that task's record. Every
+  later step of the task is recorded and limited by it, and its task budget
+  keeps counting, even if you turn the section off, remove it or choose
+  another profile: those changes apply to tasks recorded afterwards. A task
+  that never had a recorded call keeps running without a record. If a
+  task's state has lost its record while its `runs` folder still holds
+  recorded calls, the task pauses with `execution_record_missing` instead of
+  running without one: put back its `state.json`. A task recorded before
+  November 9, 2026 does not hold a policy of its own: it follows the
+  project's section while that is on, and pauses with
+  `execution_policy_missing` while it is off.
+- **Requests for tests count.** In a recorded task, asking the developer to
+  write tests is a recorded call of the developer's step, in its own
+  `test-draft-KK` folder: it must fit that step's budget and the task's, it
+  is charged once, and a lost one holds the task like any call. With the
+  `standard` profile a developer step allows the development and one
+  request. The calls recorded so far and the evidence are
   kept, and a Resume changes nothing while the budget still refuses the
   call. This version has no way to amend a budget: create a follow-up task
   to go on. With the `standard` profile a step allows two calls, so a turn
