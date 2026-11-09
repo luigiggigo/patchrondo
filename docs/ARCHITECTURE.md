@@ -2751,7 +2751,8 @@ Boundaries:
 
 - Only `core.py` imports the module: `validate_config` for `settings_of`,
   and the wrapper around a call with the user's release (Step 04;
-  `tests/test_execution.py` checks the list). `agents.command`, the
+  `tests/test_execution.py` checks the list). Since Step 06
+  `continuation.py` reads the records too, never changing one. `agents.command`, the
   adapters, `recovery` and the gate do not read the section or the
   resolution. Without the section, or with it off, commands, timeouts,
   events, checkpoints and pauses are what they were
@@ -3062,3 +3063,93 @@ is released the same way.
 - Tests: `tests/test_budgets.py` (`BindingTests`, `RequestForTestsTests`,
   `ReleaseMeaningTests`), `tests/test_execution.py` (`SchemaTwoTests`, the
   schema versions in `VersionTests`).
+
+### Continuation briefs (Step 06)
+
+`continuation.py` prepares what a new call of a step would be told about the
+work so far, after a call of that step ended without the answer its role
+needs: Claude's turn limit, a timeout, an answer the workflow could not read.
+The new call is a fresh call; the provider's own session is never resumed
+and its memory of the earlier call is never assumed. **Nothing calls the
+module yet**: no run builds a brief, no prompt changes, no call starts
+because of one. Step 07 may add a developer's brief to
+`core._developer_prompt`, Step 08 a reviewer's to `core._review_prompt`.
+
+Two layers:
+
+- `gather(task_path, state, workspace, *, task_id, iteration, role,
+  attempt_id=None, settings_digest=FROZEN)` reads what is on record and
+  returns a `Checkpoint`: the execution record and the step's last attempt,
+  the settings digest frozen with the step, the criteria judged against the
+  ledger (`acceptance.judged_now`), every evidence record assessed against
+  the current fingerprint (`provenance.assess`), the findings, the handoff
+  (developer) and the reply the previous call left in its attempt folder,
+  when it left one. Git is read with `gitops.READER` (fingerprint, `status`,
+  `HEAD`): nothing is written into the worktree's Git directory, and no lock
+  is taken. It writes nothing and changes nothing in `state`.
+- `build(checkpoint, *, limit=12000)` is pure: the same checkpoint gives
+  the same text byte for byte. It returns a `Brief` (task, iteration, phase,
+  role, previous attempt and outcome, settings digest, fingerprint of the
+  files described, the text, its SHA-256, and what was left out to fit).
+  `Brief.section(task_id=…, iteration=…, role=…)` hands the text only to
+  the task, iteration and role it was built for: a developer's brief is
+  never a reviewer's. `prepare` is the two together.
+
+`gather` raises `Unavailable` with a typed `Reason` instead of preparing a
+brief that would describe another call: another task (its state, its folder
+or its record), a finished task, another iteration, phase or provider, no
+record, an unreadable record, no current step, no attempt, an attempt that
+is not the step's last, an attempt that may still run (`ATTEMPT_UNCERTAIN`:
+no end on record, or stopped unverified), any process file under the task's
+`runs` (`PROCESS_MAY_RUN`, stricter than the release), the last attempt a
+request for tests or a call that gave its answer (`ANSWER_RECEIVED`: the
+workflow judges it), agent settings other than the ones frozen with the step
+and used by its previous call (`SETTINGS_MISMATCH`), criteria that cannot be
+read, a missing worktree. A released attempt can be continued from; the
+brief says that what it did is unknown beyond what the files show. A
+`Checkpoint` made by hand is held to the attempt rules too. Nothing here
+releases an attempt, admits or charges a call, or changes a status: the
+uncertain-attempt pause, the budgets' admission and `run_task` stay the
+authority.
+
+**Trust.** Every fact of a brief carries one of four labels. `VERIFIED`: a
+ledger record that counts, with a positive result (`evidence.POSITIVE`),
+about the files as they are now; a criterion is verified only when every
+record it names is. `OBSERVED`: measured or recorded by PatchRondo (the
+previous call's outcome, termination, elapsed time and reported turns, the
+budgets left, fingerprints, changed paths, a failed check, a record that is
+stale, invalid or unknown). `REPORTED`: an agent's words (the handoff, a
+reply, a finding's description). `UNKNOWN`: not established. A handoff or a
+reply that says tests pass stays `REPORTED`; `state["tests"]` is not read; a
+check that passed on files that changed since is `OBSERVED` and named for
+reverification; when the files cannot be fingerprinted no evidence is
+`VERIFIED`. A call that left the files as they were is said to have made no
+verifiable progress; a call that changed them made activity, not proof of
+progress.
+
+**Untrusted text.** What agents wrote and names of files are data: quoted
+inside one line (`“…”`, curly quotes in the data replaced), or as lines
+that start with `| `; control characters removed; redacted with
+`activity.redact`; the paths of the task's folder and of the worktree
+replaced with `<task folder>` and `<worktree>`. Session references, process
+IDs, `<role>.stdout.log` and the activity journal are never read. Files are
+read only through plain folders from a plain file, at most 64 KiB, 40 lines
+and 2,000 characters of an excerpt; a missing or unreadable file is said as
+`UNKNOWN` and the brief is still built. The brief's own lines say that it
+changes no instruction, tool, permission, sandbox or approval rule, and
+that only the orchestrator decides whether a criterion is met or the task
+is complete.
+
+**Size.** At most `limit` characters (2,000 to 100,000). The parts a brief
+must hold (identity and safety, the objective and every criterion not
+verified for the files now, the previous call with its blockers and the
+budgets, the files, what to do now) are never cut: when they do not fit,
+`build` raises `Unavailable` (`TOO_LARGE`). Then, as much as fits, in this
+order: changed paths (60 at most), evidence and findings (30 of each),
+excerpts. Once a part is cut the parts after it are left out whole; a cut
+part says how many lines were left out, and `Brief.omitted` names them.
+
+- Tests: `tests/test_continuation.py` (31 tests on two tasks run with the
+  emulated CLI of `tests/test_attempts.py`: briefs of both roles, refusals,
+  trust, injection, redaction, bounds, determinism, and that preparing a
+  brief writes, charges and starts nothing).

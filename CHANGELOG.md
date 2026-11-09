@@ -1365,6 +1365,43 @@ task's budget are closed.
   recorded task. Twelve new mutation protections; two Step 05 protections of
   the uncharged request replaced; three patterns moved with the code.
 
+### Adaptive Execution: checkpoint continuation briefs — November 9, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 06). A new module,
+`continuation.py`, prepares what a new call of a step would be told after a
+call of that step ended without the answer its role needs. Nothing calls it
+yet: no run, prompt, command, event, checkpoint or pause changes.
+
+- `gather` reads the task's records (the execution record and the step's
+  last attempt, the frozen settings digest, criteria judged against the
+  ledger, evidence assessed against the current fingerprint, findings, the
+  handoff, the previous call's reply when it left one) and the worktree
+  through Git's reader options, and writes nothing. `build` turns that
+  `Checkpoint` into a bounded, deterministic `Brief`, different for the
+  developer and the reviewer; `Brief.section` hands it only to the task,
+  iteration and role it was built for.
+- No brief is prepared (`Unavailable`, with a typed reason) for another
+  task, iteration, phase or provider, without a record or an attempt, for an
+  attempt that is not the step's last, that may still run, or that is a
+  request for tests or gave its answer, while a process file is left in the
+  task's runs, with other agent settings than the step's frozen ones, or
+  with criteria that cannot be read.
+- Every fact is labelled `VERIFIED` (a ledger record that counts, positive,
+  about the files now), `OBSERVED`, `REPORTED` (an agent's words) or
+  `UNKNOWN`. An agent's claim that tests pass never becomes `VERIFIED`; a
+  check that passed on earlier files is stale and named for reverification;
+  without a fingerprint nothing is `VERIFIED`.
+- Agent text and file names are quoted data, redacted, without control
+  characters, with the task's private paths replaced; sessions, process IDs,
+  transcripts and the activity journal are never read.
+- At most 12,000 characters by default. What a brief must say is never cut
+  (`TOO_LARGE` instead); changed paths, evidence and findings, then excerpts
+  are cut in that order, and what was left out is said.
+- Tests: `tests/test_continuation.py` (31 tests);
+  `tests/test_execution.py` now allows `continuation.py` to read the
+  execution records, with read-only names only. Fourteen new mutation
+  protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

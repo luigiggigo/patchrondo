@@ -377,7 +377,9 @@ class LegacyTests(unittest.TestCase):
     def test_only_the_attempt_wrapper_of_core_uses_the_records(self):
         """Since Step 04 the records are read and written by the wrapper around a call in `core.py` and by the user's
         release, nowhere else: not the command of a step, the adapters, recovery or the gate. Since Step 05 the
-        budget's refusal is read there too (and by the request for tests), and passed to recovery as plain details."""
+        budget's refusal is read there too (and by the request for tests), and passed to recovery as plain details.
+        Since Step 06 `continuation.py` reads them to prepare a brief: loading, enums and the admission, nothing that
+        makes, changes or releases an attempt (`test_continuation.StructureTests`)."""
         users = {}
         for source in sorted(SOURCES.glob("*.py")):
             if source.name == "execution.py":
@@ -391,7 +393,10 @@ class LegacyTests(unittest.TestCase):
                         (function.name, node.attr) for function in ast.walk(tree) if isinstance(function, ast.FunctionDef)
                         for node in ast.walk(function) if isinstance(node, ast.Attribute)
                         and isinstance(node.value, ast.Name) and node.value.id == "execution")
-        self.assertEqual(set(users), {"core.py"})
+        self.assertEqual(set(users), {"core.py", "continuation.py"})
+        self.assertLessEqual({name for _, name in users["continuation.py"]},
+                             {"load", "InvalidRecord", "ExecutionRecord", "AttemptRecord", "Phase", "AttemptOutcome",
+                              "Termination", "Availability", "Unit", "DIGEST"})
         self.assertEqual({function for function, _ in users["core.py"]},
                          {"validate_config", "_execution", "_execution_unreadable", "_uncertain_attempt", "_unused",
                           "_ended_event", "_settle_attempts", "_step_settings", "_termination", "_attempt",
