@@ -1,4 +1,4 @@
-"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-05).
+"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-07).
 
 It defines what `core.run_task` saves and reads under `state["execution"]`,
 the optional `execution` section of a project's configuration and the limits
@@ -11,7 +11,11 @@ one table here (`outcome_of`, `termination_of`), and no attempt can be added
 that its step's budget or the task's cannot take (`ExecutionRecord.admission`,
 enforced by `new_attempt`). The command of a step (`agents.command`), quota
 recovery and the gate do not know this module, and nothing here starts a
-call: a budget only ever refuses one (automatic continuation is a later step).
+call: a budget only ever refuses one. Since Step 07 `next_call` decides,
+from the record alone, whether a developer call that reached Claude's turn
+limit may be followed at once by one continuation of the same step, with
+limits no larger than the step's and no larger than the budgets have left
+(`ExecutionRecord.sized_call`); `core._develop` starts it, or not.
 
 Units of work, from the largest:
 
@@ -621,6 +625,8 @@ class AttemptRecord:
         _match(self.session, SESSION_REF, "session reference", optional=True)
         if self.continuation is ContinuationMode.NATIVE_RESUME and self.session is None:
             raise InvalidRecord("a native resume names the session it resumed")
+        if self.draft is not None and self.continuation is not ContinuationMode.NONE:
+            raise InvalidRecord("a request for tests is never a continuation of its step")
         _set(self, "status", _enum(AttemptStatus, self.status, "attempt status"))
         started = _instant(self.started_at, "start time")
         _match(self.workspace_before, FINGERPRINT, "fingerprint before the call", optional=True)
@@ -844,7 +850,13 @@ class StepExecution:
         for index, item in enumerate(attempts, 1):
             if (item.iteration, item.phase, item.provider) != (self.iteration, self.phase, self.provider):
                 raise InvalidRecord(f"attempt {item.attempt_id} belongs to another step")
-            if (item.turn_limit, item.timeout_seconds) != (self.call.turn_limit, self.call.timeout_seconds):
+            # A call never has more than its step's frozen limits. Only a continuation may have less (Step 07): what
+            # the budgets had left when it was admitted (`ExecutionRecord.sized_call`).
+            if item.timeout_seconds > self.call.timeout_seconds or (
+                    item.turn_limit is not None and item.turn_limit > self.call.turn_limit):
+                raise InvalidRecord(f"attempt {item.attempt_id} was started with more than the limits of its step")
+            if (item.turn_limit, item.timeout_seconds) != (self.call.turn_limit, self.call.timeout_seconds) \
+                    and item.continuation is ContinuationMode.NONE:
                 raise InvalidRecord(f"attempt {item.attempt_id} was not started with the limits of its step")
             if item.ordinal != index:
                 raise InvalidRecord("the attempts of a step are numbered 1, 2, … in order")
@@ -1018,7 +1030,8 @@ class ExecutionRecord:
 
     def new_attempt(self, *, started_at: str, settings_digest: str | None = None,
                     continuation: ContinuationMode = ContinuationMode.NONE, session: str | None = None,
-                    workspace_before: str | None = None, draft: str | None = None) -> tuple["ExecutionRecord", AttemptRecord]:
+                    workspace_before: str | None = None, draft: str | None = None,
+                    call: CallLimits | None = None) -> tuple["ExecutionRecord", AttemptRecord]:
         """The record with a new `STARTING` attempt of the current step, charged in advance, and that attempt.
 
         The attempt is started with the step's frozen call limits. None is
@@ -1026,19 +1039,24 @@ class ExecutionRecord:
         step's budget or the task's cannot take (`Inadmissible`, `admission`).
         `draft` names the folder of a request for tests made to this step's
         developer: it is admitted and charged like any call of the step.
+        `call` (Step 07) gives a continuation smaller limits than the step's,
+        never larger (`sized_call`); it is admitted with those limits.
         """
         step = self.step
         if step is None:
             raise InvalidRecord("there is no current step")
         if step.uncertain is not None:
             raise InvalidRecord("the current step has an attempt that may still run")
-        refusal = self.admission()
+        if call is not None and continuation is ContinuationMode.NONE:
+            raise InvalidRecord("only a continuation is started with other limits than its step's")
+        refusal = self.admission(call)
         if refusal is not None:
             raise Inadmissible(refusal)
+        limits = call or step.call
         claude = step.provider == "claude"
         item = AttemptRecord(
             attempt_id(self.next_attempt), self.task_id, step.iteration, step.phase, len(step.attempts) + 1,
-            step.provider, settings_digest, step.call.turn_limit, step.call.timeout_seconds, continuation, session,
+            step.provider, settings_digest, limits.turn_limit, limits.timeout_seconds, continuation, session,
             AttemptStatus.STARTING, started_at, workspace_before,
             Usage.unknown(Unit.CLAUDE_TURNS) if claude else Usage(Unit.CLAUDE_TURNS, Availability.NOT_APPLICABLE),
             Usage.unknown(Unit.TOKENS), draft=draft)
@@ -1046,7 +1064,7 @@ class ExecutionRecord:
                          step=replace(step, budget=step.budget.charged(item.charges()), attempts=step.attempts + (item,)))
         return record, item
 
-    def admission(self) -> Refusal | None:
+    def admission(self, call: CallLimits | None = None) -> Refusal | None:
         """Whether one more call of the current step fits its budget and the task's. Reads only; None: it does.
 
         The call is asked for what it may use with the step's frozen limits
@@ -1055,12 +1073,55 @@ class ExecutionRecord:
         limited line is asked, in `ADMISSION_ORDER`; a line with an unknown
         charge in it admits nothing (`BudgetLine.allows`). The limits are the
         ones frozen in the record, whatever the configuration says now: a
-        budget is never raised, lowered or resolved again here.
+        budget is never raised, lowered or resolved again here. `call`, a
+        continuation's smaller limits (`sized_call`), is asked instead; it
+        may never be above the step's.
         """
         step = self.step
         if step is None:
             raise InvalidRecord("there is no current step")
-        return _refused({Scope.PHASE: step.budget, Scope.TASK: self.budget}, call_request(step.call))
+        if call is not None and (call.timeout_seconds > step.call.timeout_seconds
+                                 or (call.turn_limit is None) != (step.call.turn_limit is None)
+                                 or (call.turn_limit is not None and call.turn_limit > step.call.turn_limit)):
+            raise InvalidRecord("a call is never given more than the limits frozen with its step")
+        return _refused({Scope.PHASE: step.budget, Scope.TASK: self.budget}, call_request(call or step.call))
+
+    def sized_call(self) -> tuple[CallLimits | None, Refusal | None]:
+        """The largest call of the current step its budgets admit now: (its limits, None) or (None, why none fits).
+
+        Step 07. Each limit is the step's frozen one, lowered to what every
+        limited line of the step's budget and the task's has left in its unit
+        (`BudgetLine.remaining`: nothing while an unknown charge is in it):
+        Claude turns to the turns left, the timeout to the seconds left. A
+        limit is never raised, a budget never changed, and what was charged
+        stays as it was (a call that used 41 turns of 40 keeps its 41). No
+        call fits when a line has no provider call left, no Claude turn left,
+        or fewer seconds than `CONTINUATION_SECONDS` (or the step's timeout,
+        when lower): such a call could do nothing useful, so none is made.
+        Reads only.
+        """
+        step = self.step
+        if step is None:
+            raise InvalidRecord("there is no current step")
+        budgets = {Scope.PHASE: step.budget, Scope.TASK: self.budget}
+        least = {Unit.PROVIDER_CALLS: 1, Unit.SECONDS: min(CONTINUATION_SECONDS, step.call.timeout_seconds)}
+        if step.call.turn_limit is not None:
+            least[Unit.CLAUDE_TURNS] = 1
+        refusal = _refused(budgets, least)
+        if refusal is not None:
+            return None, refusal
+        turns, seconds = step.call.turn_limit, step.call.timeout_seconds
+        for scope, unit in ADMISSION_ORDER:
+            line = budgets[scope].line(unit)
+            if line is None or line.limit is None:
+                continue
+            if unit is Unit.CLAUDE_TURNS and turns is not None:
+                turns = min(turns, line.remaining)
+            elif unit is Unit.SECONDS:
+                seconds = min(seconds, line.remaining)
+        call = replace(step.call, turn_limit=turns, timeout_seconds=seconds)
+        refusal = self.admission(call)  # the lines above admit it: asked again, by the one rule that admits calls
+        return (None, refusal) if refusal is not None else (call, None)
 
     def task_admission(self, request: Mapping[Unit, int]) -> Refusal | None:
         """Whether the task's budget alone could take a call asking for `request`. Reads only; None: it could.
@@ -1118,6 +1179,120 @@ class ExecutionRecord:
         step = None if raw["step"] is None else StepExecution.from_dict(raw["step"], f"{name} step")
         return cls(raw["task_id"], raw["next_attempt"], BudgetState.from_dict(raw["budget"], f"{name} budget"), step,
                    policy=raw.get("policy"))
+
+
+# --- automatic continuation of the developer (Step 07) --------------------------------------------------------
+#
+# After a call of a recorded developer step ends with Claude's own turn limit, one more call of the same step may be
+# started at once, with a checkpoint brief (`continuation.py`), smaller limits when the budgets have less left
+# (`ExecutionRecord.sized_call`) and a folder of its own. `next_call` decides from the record alone; `core._develop`
+# adds what only the run can see (how the previous call's processes were held, the brief, the environment check).
+
+# The temporary bound of Step 07: automatic continuations of one step, whatever its budgets allow. Without a measure of
+# progress (Steps 11-12), a provider that keeps reaching its turn limit must not use up a step's calls one after the
+# other. Step 12 replaces this constant with its policy; the budgets still apply below it.
+AUTOMATIC_CONTINUATIONS = 1
+# The fewest seconds a continuation is started with (or the step's timeout, when lower): with less it could do nothing.
+CONTINUATION_SECONDS = 60
+
+
+class Declined(StrEnum):
+    """Why no automatic continuation follows a call. Fixed codes; the first that applies is given."""
+    # The task did not opt in, or the call is not one that may be continued: nothing is said in the history.
+    NOT_A_TURN_LIMIT = "not_a_turn_limit"            # the last call did not end with Claude's own turn limit
+    POLICY_UNBOUND = "policy_unbound"                # a record of schema 1: no policy of the task to read it from
+    ADAPTIVE_OFF = "adaptive_off"                    # `execution.adaptive` of the task's policy is false
+    CHECKPOINT_RESUME_OFF = "checkpoint_resume_off"  # `execution.continuation.checkpoint_resume` is false
+    # The task opted in, and this continuation is refused: the history says why.
+    NOT_THE_DEVELOPER = "not_the_developer"          # only the developer is continued in this version (Step 08: reviewer)
+    TEST_REQUEST = "test_request"                    # a request for tests is not a call of the step
+    NOT_SETTLED = "not_settled"                      # the call did not end by itself (`Termination.EXITED`)
+    RELEASED_ATTEMPT = "released_attempt"            # a call of the step was released by the user: its effects are unknown
+    LIMIT_REACHED = "limit_reached"                  # `AUTOMATIC_CONTINUATIONS` of the step were made
+    BUDGET = "budget"                                # no call fits what the budgets have left (`sized_call`)
+    # Decided by `core._develop` from what the run observed.
+    PROCESS_TREE_UNVERIFIED = "process_tree_unverified"  # neither a process group nor a job object held the call
+    BRIEF_UNAVAILABLE = "brief_unavailable"          # `continuation.prepare` refused: the brief would not hold
+
+
+NOT_OPTED_IN = frozenset({Declined.NOT_A_TURN_LIMIT, Declined.POLICY_UNBOUND, Declined.ADAPTIVE_OFF,
+                          Declined.CHECKPOINT_RESUME_OFF})
+
+
+@dataclass(frozen=True)
+class NextCall:
+    """Whether the current step's last call is followed at once by a continuation, and with which limits.
+
+    Not a status and not a decision of the gate (`gate.Action.CONTINUE` is
+    the workflow going on): only whether one more call of this step may be
+    started now. `call` is set when it may; `declined` when it may not, with
+    `refusal` when a budget is why. `trigger` is the call it would follow.
+    """
+    trigger: str | None
+    call: CallLimits | None = None
+    declined: Declined | None = None
+    refusal: Refusal | None = None
+    made: int = 0  # automatic continuations the step already made
+
+    @property
+    def allowed(self) -> bool:
+        return self.call is not None and self.declined is None
+
+    @property
+    def considered(self) -> bool:
+        """Whether the task opted in and the call could have been continued: then the history records the decision."""
+        return self.declined not in NOT_OPTED_IN
+
+    def remaining(self, record: "ExecutionRecord") -> list[dict]:
+        """What each limited line of `record`'s two budgets has left, before the next call is charged: plain details."""
+        step = record.step
+        return [{"scope": str(scope), "unit": str(line.unit), "limit": line.limit, "used": line.used,
+                 "unknown": line.unknown, "remaining": line.remaining}
+                for scope, budget in ((Scope.PHASE, step.budget), (Scope.TASK, record.budget))
+                for line in budget.lines if line.limit is not None]
+
+
+def next_call(record: ExecutionRecord) -> NextCall:
+    """Whether the current step's last call may be followed at once by a continuation. Pure: reads `record` only.
+
+    In this order: the last call ended with Claude's own turn limit
+    (`TURN_LIMIT_REACHED`, read from the CLI's final result, never from what
+    the agent wrote); the task is bound to a policy (schema 2) whose
+    `adaptive` and `continuation.checkpoint_resume` are both true, as the
+    task was bound to them, whatever the project says now; the step is the
+    developer's; the call was not a request for tests and ended by itself
+    (`Termination.EXITED`); no call of the step was released by the user;
+    fewer than `AUTOMATIC_CONTINUATIONS` continuations were made in the
+    step; and a call fits what the budgets have left (`sized_call`). The
+    first condition that does not hold is the reason.
+    """
+    step = record.step
+    last = step.last if step is not None else None
+    if last is None or not last.ended or last.outcome is not AttemptOutcome.TURN_LIMIT_REACHED:
+        return NextCall(None if last is None else last.attempt_id, declined=Declined.NOT_A_TURN_LIMIT)
+    trigger = last.attempt_id
+    if record.policy is None:
+        return NextCall(trigger, declined=Declined.POLICY_UNBOUND)
+    settings = ExecutionSettings.parse(record.policy)  # valid: `bound_policy` checked it when the record was made
+    if not settings.adaptive:
+        return NextCall(trigger, declined=Declined.ADAPTIVE_OFF)
+    if not settings.checkpoint_resume:
+        return NextCall(trigger, declined=Declined.CHECKPOINT_RESUME_OFF)
+    made = sum(1 for item in step.attempts if item.continuation is ContinuationMode.CHECKPOINT_RESUME)
+    if step.phase is not Phase.DEVELOP or step.provider != "claude":
+        return NextCall(trigger, declined=Declined.NOT_THE_DEVELOPER, made=made)
+    if last.draft is not None:
+        return NextCall(trigger, declined=Declined.TEST_REQUEST, made=made)
+    if last.termination is not Termination.EXITED:
+        return NextCall(trigger, declined=Declined.NOT_SETTLED, made=made)
+    if any(item.termination is Termination.RELEASED for item in step.attempts):
+        return NextCall(trigger, declined=Declined.RELEASED_ATTEMPT, made=made)
+    if made >= AUTOMATIC_CONTINUATIONS:
+        return NextCall(trigger, declined=Declined.LIMIT_REACHED, made=made)
+    call, refusal = record.sized_call()
+    if call is None:
+        return NextCall(trigger, declined=Declined.BUDGET, refusal=refusal, made=made)
+    return NextCall(trigger, call=call, made=made)
 
 
 # --- reading and writing --------------------------------------------------------------------------------------
@@ -1186,8 +1361,10 @@ def dumps(record) -> str:
 #
 # The section is validated whatever `enabled` says, so a configuration never becomes unusable when it is switched
 # on. Its call limits and budgets apply to each step that first starts while it is enabled, frozen with that step
-# (Steps 04-05); `adaptive`, `continuation` and `no_progress_windows` are not applied by this version. It is read
-# from the project's configuration only: a task cannot override it, and there is no global level.
+# (Steps 04-05). Since Step 07 `adaptive: true` with `continuation.checkpoint_resume: true`, as bound to a task, lets
+# a developer call that reached Claude's turn limit be followed at once by one continuation (`next_call`);
+# `no_progress_windows` is not applied by this version. It is read from the project's configuration only: a task
+# cannot override it, and there is no global level.
 
 class InvalidSettings(ValueError):
     """An `execution` section this version cannot use. The configuration is refused; nothing is repaired or defaulted."""

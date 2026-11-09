@@ -905,9 +905,41 @@ recorded (since November 8, 2026):
   result, Codex's tokens from its completed turns; a value the CLI did not
   report stays unknown and is charged as the most the call was allowed. The
   step and task budgets of the profile are charged, once per call, and are
-  never reset by a failure or a Resume. **Nothing continues a step by
-  itself**: a turn limit still pauses after one call; a Resume is one more
-  call.
+  never reset by a failure or a Resume. **Unless the task opted in to
+  automatic continuation (below), nothing continues a step by itself**: a
+  turn limit pauses after one call; a Resume is one more call.
+- **Automatic continuation of the developer (opt-in, since November 9,
+  2026).** With `"adaptive": true` and `continuation.checkpoint_resume`
+  left `true`, as bound to the task, a developer call that ends with
+  Claude's own turn limit (`error_max_turns` in the CLI's final result) is
+  followed at once by **one** new call of the same step: same iteration,
+  same `develop` phase, same provider, model, tools, sandbox and frozen
+  settings, a new attempt ID and folder, and a prompt that ends with a
+  checkpoint brief of the work so far (what is verified, observed,
+  reported by an agent, or unknown; the criteria still open; the previous
+  call's outcome; the files as they are now). The provider's own session is
+  not resumed. The new call never has more than the step's frozen limits,
+  and less when the budgets have less left: after a call that used 41 of a
+  step's 80 turns, the next is started with `--max-turns 39`; its timeout is
+  lowered the same way to the seconds the step and the task have left. What
+  was charged stays as it was. No continuation follows, and the task pauses
+  with `max_turns` as before, its message saying why, when: the step already
+  made its one automatic continuation (a temporary bound until progress can
+  be measured); the budgets have no call, no turn or fewer than 60 seconds
+  left; a call of the step was released (what it did is unknown); the call
+  did not end by itself; nothing showed that every process it started was
+  held by a process group (POSIX, WSL2) or a job object, which is always
+  the case **on native Windows, where no automatic continuation starts**; a
+  process file is left in the task's runs; or no brief can be prepared. A
+  quota limit, a timeout, an interruption, an error and an unusable answer
+  are never continued; quota retries stay with automatic recovery. The
+  environment is checked again before the new call. The tests and the
+  review run once, after the developer's final answer; the reviewer is never
+  continued. The history gets `continuation_started` (which call, after
+  which, with which limits, and what each budget had left) or
+  `continuation_declined` (why not), and `attempt_started`/`attempt_ended`
+  name the continuation. A Resume after such a pause is an ordinary call
+  with the step's full limits, admitted by the budgets as before.
 - **Budgets are hard limits** (since November 8, 2026). A call starts only
   if the budget of its step and the task's budget can both take the most it
   may use: one provider call, its timeout and, for Claude, its turn limit.
@@ -996,7 +1028,9 @@ recorded (since November 8, 2026):
   enabling chooses a profile's limits explicitly. `adaptive`,
   `continuation` and `no_progress_windows` (1-10) are optional, with the
   defaults above; `native_resume` accepts only `"off"`, since no provider's
-  own session resume has been validated.
+  own session resume has been validated. `adaptive: true` with
+  `checkpoint_resume: true` turns on the automatic continuation of the
+  developer described above; `no_progress_windows` is not applied yet.
 - The section is project-level only: a task cannot override it, and there
   is no global level. It is validated even while `enabled` is `false`, so
   switching it on never makes a configuration unusable. A configuration

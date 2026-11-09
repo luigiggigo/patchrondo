@@ -379,7 +379,9 @@ class LegacyTests(unittest.TestCase):
         release, nowhere else: not the command of a step, the adapters, recovery or the gate. Since Step 05 the
         budget's refusal is read there too (and by the request for tests), and passed to recovery as plain details.
         Since Step 06 `continuation.py` reads them to prepare a brief: loading, enums and the admission, nothing that
-        makes, changes or releases an attempt (`test_continuation.StructureTests`)."""
+        makes, changes or releases an attempt (`test_continuation.StructureTests`). Since Step 07 the developer's
+        automatic continuation reads its decision in `core._next_call` and `core._develop`, and starts it through
+        `_attempt` only."""
         users = {}
         for source in sorted(SOURCES.glob("*.py")):
             if source.name == "execution.py":
@@ -402,7 +404,7 @@ class LegacyTests(unittest.TestCase):
                           "_ended_event", "_settle_attempts", "_step_settings", "_termination", "_attempt",
                           "close", "running", "release_attempt", "_folder_of", "_refusal", "_budget_message", "__init__",
                           "draft_tests", "_attempt_of_draft", "_policy_of_project", "_make_draft", "_policy_missing",
-                          "_record_missing"})
+                          "_record_missing", "_next_call", "_develop"})
         self.assertIn(("validate_config", "settings_of"), users["core.py"])
 
 

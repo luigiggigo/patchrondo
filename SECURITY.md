@@ -344,6 +344,21 @@ bound to the execution policy and budget it was recorded with: turning
 execution off in the project, or losing the task's record, never lets it run
 unrecorded.
 
+**Automatic continuation.** Only a task bound to `"adaptive": true` (with
+checkpoint resume) continues a developer call that reached Claude's turn
+limit, once per step, by itself. The new call is built by the same command
+builder from the same frozen agent settings: the same model, tools,
+permissions, sandbox and approval rules; only its turn limit and timeout may
+be lower, never higher, than the step's. Its prompt adds a checkpoint brief
+in which an agent's words stay labelled as reported and quoted as data; the
+provider's own session is never resumed. No continuation starts after a
+quota limit, a timeout, an interruption or an error, after a call of the step
+was released, while a process file is left in the task's runs, or when
+nothing showed that a process group or a job object held what the call
+started: on native Windows, where agents run without a job object, none
+starts. The environment is checked again before the new call. The reviewer
+is never continued.
+
 **What a result is worth.** Code under test can print anything and can write a report that says what it
 likes. The runner refuses a report that was there before the run, a report
 that contradicts the exit code or its own counts, and a run that changed the

@@ -21,10 +21,10 @@ released by the user), and whose step, settings and task are the ones
 asked for; even then, whether a call starts stays with the budgets
 (`execution.ExecutionRecord.admission`), the uncertain-attempt pause and the
 rest of `core.run_task`. Nothing here starts a process, calls a provider,
-charges a budget, releases an attempt or changes a status. Nothing calls
-`gather` or `build` yet: Step 07 may add a developer's brief to
-`core._developer_prompt`, Step 08 a reviewer's to `core._review_prompt`
-(`Brief.section`).
+charges a budget, releases an attempt or changes a status. Since Step 07
+`core._develop` prepares a developer's brief for an automatic continuation
+and hands its text to `core._developer_prompt` (`Brief.section`); Step 08
+may add a reviewer's to `core._review_prompt`.
 
 Every fact of a brief has one of four labels:
 
@@ -606,9 +606,15 @@ def _previous(cp: Checkpoint) -> list[str]:
                             + (f", {line.unknown} calls of unknown usage" if line.unknown else ""))
     if left:
         lines.append("[OBSERVED] Budgets on record: " + "; ".join(left) + ".")
-    if cp.record.admission() is not None:
+    # The same sizing the orchestrator admits a continuation with (`ExecutionRecord.sized_call`): read, never decided here.
+    call, _ = cp.record.sized_call()
+    if call is None:
         lines.append("[OBSERVED] These budgets would not admit another call of this step now. Whether a call starts is "
                      "decided by the orchestrator when it starts one.")
+    elif (call.turn_limit, call.timeout_seconds) != (step.call.turn_limit, step.call.timeout_seconds):
+        lines.append("[OBSERVED] What the budgets have left allows a smaller next call: at most "
+                     + (f"{call.turn_limit} Claude turns and " if call.turn_limit is not None else "")
+                     + f"{call.timeout_seconds} seconds.")
     return lines
 
 
@@ -641,6 +647,9 @@ def _next(cp: Checkpoint) -> list[str]:
     if cp.role == "developer":
         lines += ["- Continue this step from the files as they are now. Do not start over, and do not revert changes "
                   "you cannot account for: read them first.",
+                  "- The previous call left no final answer. Do not assume that anything it began finished or "
+                  "succeeded: check the files. Never repeat an action outside the worktree whose outcome is not known; "
+                  "say in your handoff that it needs checking.",
                   "- Work on the criteria marked yours that are not verified. Leave the others to whoever is named.",
                   "- Do not repeat a claim or a result: whatever is [REPORTED], [UNKNOWN] or verified on earlier files "
                   "is verified again by the orchestrator's checks after you finish.",

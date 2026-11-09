@@ -196,6 +196,14 @@ const TERMINATIONS = {
   exited: null, stopped: "Stopped with everything it started", not_started: "No process was started",
   unverified: "Stopped; what it started may still be running", released: "You stated that its processes stopped",
 };
+// Why no automatic continuation followed a call (`execution.Declined`), as the engine recorded it.
+const NOT_CONTINUED = {
+  not_the_developer: "only the developer's calls are continued", test_request: "a request for tests is not continued",
+  not_settled: "the call did not end by itself", released_attempt: "a call of this step was released; what it did is unknown",
+  limit_reached: "the step already made its automatic continuation", budget: "the budgets have too little left for another call",
+  process_tree_unverified: "nothing showed that everything the call started has stopped",
+  brief_unavailable: "no checkpoint brief could be prepared",
+};
 const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git trust for this project folder" };
 const REPAIR_OUTCOMES = { applied: ["Fixed", "ok"], unchanged: ["Already in place", "neutral"], rolled_back: ["Could not fix; put back as it was", "warn"],
   failed: ["Could not fix", "warn"] };
@@ -259,8 +267,15 @@ export function describeEvent(event, task) {
                detail: "The old file is kept beside it; what it verified has to be verified again" };
     case "validation_failed":
       return { text: `A check by you did not pass (${(event.criteria || []).join(", ")}): sent to ${dev} as a change request`, tone: "warn", icon: "repeat" };
+    case "continuation_started":
+      return { text: `${dev} continues the step automatically: call ${event.attempt || ""} after ${event.after || "the previous call"}`, tone: "accent", icon: "repeat",
+               detail: [event.turn_limit ? `up to ${event.turn_limit} turns` : null, event.timeout_seconds ? `timeout ${event.timeout_seconds} s` : null,
+                        "with a brief of the work so far; not a new iteration"].filter(Boolean).join(" · ") };
+    case "continuation_declined":
+      return { text: `Not continued automatically after call ${event.after || ""}`, tone: "neutral", icon: "pause",
+               detail: NOT_CONTINUED[event.reason] || humanize(event.reason || "") || null };
     case "attempt_started":
-      return { text: `${event.phase === "review" ? rev : dev}: ${event.purpose === "test_draft" ? "request for tests" : "call"} ${event.attempt || ""} started`, tone: "accent", icon: "play",
+      return { text: `${event.phase === "review" ? rev : dev}: ${event.purpose === "test_draft" ? "request for tests" : event.continuation ? "continuation call" : "call"} ${event.attempt || ""} started`, tone: "accent", icon: "play",
                detail: [event.turn_limit ? `up to ${event.turn_limit} turns` : null, event.timeout_seconds ? `timeout ${event.timeout_seconds} s` : null].filter(Boolean).join(" · ") || null };
     case "attempt_ended": {
       const [word, tone] = CALL_OUTCOMES[event.outcome] || [humanize(event.outcome || "ended"), "neutral"];

@@ -2752,7 +2752,9 @@ Boundaries:
 - Only `core.py` imports the module: `validate_config` for `settings_of`,
   and the wrapper around a call with the user's release (Step 04;
   `tests/test_execution.py` checks the list). Since Step 06
-  `continuation.py` reads the records too, never changing one. `agents.command`, the
+  `continuation.py` reads the records too, never changing one; since Step 07
+  `core._next_call` and `core._develop` read the continuation decision.
+  `agents.command`, the
   adapters, `recovery` and the gate do not read the section or the
   resolution. Without the section, or with it off, commands, timeouts,
   events, checkpoints and pauses are what they were
@@ -3070,10 +3072,11 @@ is released the same way.
 work so far, after a call of that step ended without the answer its role
 needs: Claude's turn limit, a timeout, an answer the workflow could not read.
 The new call is a fresh call; the provider's own session is never resumed
-and its memory of the earlier call is never assumed. **Nothing calls the
-module yet**: no run builds a brief, no prompt changes, no call starts
-because of one. Step 07 may add a developer's brief to
-`core._developer_prompt`, Step 08 a reviewer's to `core._review_prompt`.
+and its memory of the earlier call is never assumed. Since Step 07
+`core._develop` prepares a developer's brief for an automatic continuation
+(see "Automatic continuation of the developer (Step 07)" below); a brief
+still starts no call by itself. Step 08 may add a reviewer's to
+`core._review_prompt`.
 
 Two layers:
 
@@ -3153,3 +3156,109 @@ part says how many lines were left out, and `Brief.omitted` names them.
   emulated CLI of `tests/test_attempts.py`: briefs of both roles, refusals,
   trust, injection, redaction, bounds, determinism, and that preparing a
   brief writes, charges and starts nothing).
+
+### Automatic continuation of the developer (Step 07)
+
+The first step that starts a call by itself (November 9, 2026). Opt-in per
+task: only a task whose bound policy (`ExecutionRecord.policy`, schema 2)
+has `adaptive: true` and `continuation.checkpoint_resume: true`. A task
+recorded before policies were bound (schema 1) is never continued, whatever
+the project says now. Without that, every run, command, prompt, event and
+pause is what it was.
+
+**Decision.** `execution.next_call(record)` is pure and reads the record
+only. In this order, the first condition that fails is the reason
+(`execution.Declined`): the step's last call ended `TURN_LIMIT_REACHED`
+(Claude's own `error_max_turns` result, failure kind `max_turns`); the task
+is bound to a policy (`POLICY_UNBOUND`) with `adaptive` (`ADAPTIVE_OFF`) and
+checkpoint resume (`CHECKPOINT_RESUME_OFF`); the step is the developer's,
+with Claude (`NOT_THE_DEVELOPER`); the call was not a request for tests
+(`TEST_REQUEST`) and ended by itself, `Termination.EXITED` (`NOT_SETTLED`);
+no call of the step was released by the user (`RELEASED_ATTEMPT`: its
+effects are unknown, so nothing that could repeat them starts automatically);
+fewer than `AUTOMATIC_CONTINUATIONS` (1) continuations were made in the step
+(`LIMIT_REACHED`, a temporary bound that Step 12's stagnation policy is to
+replace); and a call fits what the budgets have left (`BUDGET`). The first
+four reasons are `NOT_OPTED_IN`: nothing is recorded for them.
+`core._next_call` then adds what only the run saw: the call that failed is
+the one just started (`held["attempt"]`), a process group or a job object
+held it and no last signal was refused (`PROCESS_TREE_UNVERIFIED`; agents
+have neither on native Windows, so no continuation starts there, decision
+D4), and `continuation.prepare` gives a brief of this task, iteration,
+role, previous call and frozen settings digest (`BRIEF_UNAVAILABLE`, with
+the brief's own `Reason`, among them `PROCESS_MAY_RUN` for any process file
+in the task's runs).
+
+**Sizing.** `ExecutionRecord.sized_call()` starts from the step's frozen
+`CallLimits` and lowers the Claude turn limit to the turns, and the timeout
+to the seconds, that every limited line of the step's budget and the
+task's has left (`BudgetLine.remaining`, 0 while an unknown charge is in
+it). It never raises a limit and never changes a charge: a call that
+reported 41 turns of 40 keeps its 41, and the next is sized from 80 − 41 =
+39. No call is sized when a line has no provider call or no Claude turn
+left, or fewer seconds than `CONTINUATION_SECONDS` (60, or the step's
+timeout when lower). The result is admitted by `ExecutionRecord.admission`,
+the one rule that admits calls, with the smaller limits (`call_request`).
+An attempt saved with limits below its step's must be a continuation, and
+no saved attempt may have more than its step's (`StepExecution`); a request
+for tests is never a continuation (`AttemptRecord`). An older version reads
+a record with a smaller continuation as invalid (`execution_unreadable`):
+it fails closed.
+
+**The call.** `core._develop` wraps the developer's `_attempt`. A call that
+answers returns as before. An `AgentFailure` of kind `max_turns` from a
+recorded step goes to `_next_call`; anything else (an interruption, an
+error of the system, any other failure) goes to the run's pause unchanged.
+When a continuation is allowed: the environment is checked again
+(`_environment`, as before every provider call), then `_attempt` starts the
+new call with `continuing`: a new `CX-` ID, `ContinuationMode.CHECKPOINT_RESUME`,
+the next ordinal of the step and its own `develop/attempt-NNN/` folder, the
+same frozen agent settings and command builder, the smaller limits passed
+as `max_turns`/`timeout_seconds` only. The `continuation_started` event and
+the new call as `STARTING` are saved in one write, before its folder exists,
+with the previous call's end (unless the environment check saved that end
+just before). Its prompt is `_developer_prompt` built
+again (the modified files as they are now) with the brief's text appended
+after every instruction (`Brief.section` for this task, iteration and
+role); the brief tells the developer to read the files first, not to assume
+that what the previous call began finished, and not to repeat an action
+outside the worktree whose outcome is unknown. When the continuation also
+ends with the turn limit, `_next_call` decides again (`LIMIT_REACHED`).
+`iteration` and `max_iterations` are not touched; the tests, the review and
+the gate follow the developer's final answer exactly once, as before.
+
+**When none follows.** For an opted-in task, `continuation_declined` records
+the trigger, the reason, the continuations made and, for `BUDGET`, the
+refusal, and the call's failure is raised again with its kind (`max_turns`)
+and provider, its message ending with the reason in fixed words: the pause
+and the recovery decisions are those of before. A Resume is an ordinary
+call (`ContinuationMode.NONE`, the step's full limits), admitted by the
+budgets as in Step 05.
+
+**Crash safety.** A crash before the combined write leaves the previous call
+saved as `RUNNING` (or, when the environment check saved it, ended):
+the next run pauses with `attempt_uncertain`, or makes an ordinary call
+that the budgets admit or refuse; the continuation is never started from a
+half-saved decision. A crash after it leaves the continuation `STARTING`
+without a folder (closed as `NOT_STARTED`) or `RUNNING` (`attempt_uncertain`).
+No provider call is started twice.
+
+**Events.** `continuation_started` (`attempt`, `after`, `mode`,
+`continuation` and `of`, the applied `turn_limit` and `timeout_seconds`, the
+step's frozen `step_turn_limit` and `step_timeout_seconds`, and `remaining`:
+scope, unit, limit, used, unknown and remaining of every limited budget line
+before the call was charged); `continuation_declined` (`after`, `reason`,
+`made`, and `budget`, `process_tree` or `brief`); `attempt_started` and
+`attempt_ended` gain `continuation` (and `after`) for a continuation only.
+No event of a task that did not opt in changes (`DECIDED` holds).
+
+**Not in this step.** The reviewer is never continued (Step 08), no
+provider session is resumed (Step 10), progress is not measured (Steps
+11-12), and a released call blocks automatic continuation of its step
+rather than being reconciled (Step 09).
+
+- Tests: `tests/test_auto_continuation.py` (28 tests: the continued step
+  end to end with the emulated CLI of `tests/test_attempts.py`, the sizing
+  examples, every declined reason, crash and interruption, the bound
+  policy, the controller on edited states, and `next_call` on records made
+  by hand). Eighteen new mutation protections, named `continuation:`.

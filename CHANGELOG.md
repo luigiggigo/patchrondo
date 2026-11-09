@@ -1402,6 +1402,50 @@ yet: no run, prompt, command, event, checkpoint or pause changes.
   execution records, with read-only names only. Fourteen new mutation
   protections.
 
+### Adaptive Execution: automatic continuation of the developer — November 9, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 07): the first step in
+which PatchRondo starts an agent call by itself. Opt-in per task: only a
+task bound to an execution policy with `"adaptive": true` and
+`continuation.checkpoint_resume` true. Without it nothing changes.
+
+- After a recorded developer call ends with Claude's own turn limit
+  (`TURN_LIMIT_REACHED`), one new call of the same step starts at once: the
+  same iteration, `develop` phase, provider and frozen agent settings, a new
+  attempt (`ContinuationMode.CHECKPOINT_RESUME`) in its own folder, and the
+  developer's prompt with the Step 06 checkpoint brief at its end. The tests,
+  the review and the gate then run once, as before; `max_iterations` is not
+  touched.
+- Smaller calls from what is left: `ExecutionRecord.sized_call` lowers the
+  turn limit and the timeout to what every line of the step's and the task's
+  budgets has left, never above the step's frozen limits, never changing a
+  charge (41 of 80 turns used: the next call gets `--max-turns 39`). No call
+  with no provider call, no turn or under 60 seconds left.
+- `execution.next_call` decides from the record; `core._next_call` adds what
+  the run observed. No continuation after a quota limit, a timeout, an
+  interruption, an error or an unusable answer; after a call of the step was
+  released; for a call no process group or job object held (so none on
+  native Windows, decision D4); while a process file is left in the task's
+  runs; when no brief can be prepared; or once the step made its one
+  automatic continuation (`AUTOMATIC_CONTINUATIONS`, temporary until progress
+  can be measured). The task then pauses with `max_turns` as before, the
+  message saying why.
+- The environment is checked again before the new call. The continuation's
+  event and its `STARTING` record are saved in one write; a crash never
+  starts a call twice.
+- New events `continuation_started` and `continuation_declined` (opted-in
+  tasks only); `attempt_started` and `attempt_ended` name a continuation.
+  The task page words them; no new control.
+- An attempt may be saved with limits below its step's only as a
+  continuation, never above; a request for tests is never a continuation.
+  The brief now says when the budgets allow only a smaller next call, and
+  tells the developer not to assume that the previous call's unfinished
+  actions succeeded nor to repeat an action outside the worktree whose
+  outcome is unknown.
+- Tests: `tests/test_auto_continuation.py` (28 tests); the importer list of
+  `tests/test_execution.py` names `core._next_call` and `core._develop`.
+  Eighteen new mutation protections.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,
