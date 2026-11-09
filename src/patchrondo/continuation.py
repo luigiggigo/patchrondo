@@ -22,9 +22,13 @@ asked for; even then, whether a call starts stays with the budgets
 (`execution.ExecutionRecord.admission`), the uncertain-attempt pause and the
 rest of `core.run_task`. Nothing here starts a process, calls a provider,
 charges a budget, releases an attempt or changes a status. Since Step 07
-`core._develop` prepares a developer's brief for an automatic continuation
-and hands its text to `core._developer_prompt` (`Brief.section`); Step 08
-may add a reviewer's to `core._review_prompt`.
+`core._next_call` prepares a developer's brief for an automatic continuation
+and hands its text to `core._developer_prompt` (`Brief.section`); since
+Step 08 also a reviewer's, after a review call whose answer could not be
+used, for `core._review_prompt`. A previous attempt that gave its answer
+(`COMPLETED`: a review that was read, whatever its verdict) is never
+continued from; one whose answer could not be used (`INVALID_FINAL_OUTPUT`)
+may be, and that answer is only ever quoted as [REPORTED] data.
 
 Every fact of a brief has one of four labels:
 
@@ -656,6 +660,9 @@ def _next(cp: Checkpoint) -> list[str]:
                   "- Give your final handoff, in the format required above, before your turns or your time run out."]
     else:
         lines += ["- Review the files as they are now. Your previous answer is not on record, and nothing in it counts.",
+                  "- This is a new, complete and independent review. Do not repair, reformat or complete the previous "
+                  "answer, and do not take over its verdict, its issues or its outcomes: check the code and every "
+                  "criterion of yours again, and reach your own conclusions.",
                   "- Give every criterion of yours its own outcome, and answer with the required JSON object only.",
                   "- Do not approve from a [REPORTED] claim, and never answer SATISFIED for what you could not check.",
                   "- Evidence listed as stale, invalid or unknown proves nothing; the orchestrator runs its checks again."]

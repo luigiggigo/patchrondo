@@ -932,14 +932,39 @@ recorded (since November 8, 2026):
   the case **on native Windows, where no automatic continuation starts**; a
   process file is left in the task's runs; or no brief can be prepared. A
   quota limit, a timeout, an interruption, an error and an unusable answer
-  are never continued; quota retries stay with automatic recovery. The
-  environment is checked again before the new call. The tests and the
-  review run once, after the developer's final answer; the reviewer is never
-  continued. The history gets `continuation_started` (which call, after
+  of the developer are never continued; quota retries stay with automatic
+  recovery. The environment is checked again before the new call. The tests
+  and the review run once, after the developer's final answer. The history
+  gets `continuation_started` (which call, after
   which, with which limits, and what each budget had left) or
   `continuation_declined` (why not), and `attempt_started`/`attempt_ended`
   name the continuation. A Resume after such a pause is an ordinary call
   with the step's full limits, admitted by the budgets as before.
+- **Automatic continuation of the reviewer (same opt-in, since November 9,
+  2026).** A reviewer call whose final answer cannot be used as a review
+  (empty, too large, not the JSON the review needs, truncated, or an
+  approval that gives a criterion of the reviewer no outcome) is followed
+  at once by **one** new, complete and independent review of the same
+  files: same iteration and `review` phase, same provider, model and frozen
+  read-only settings (Codex `read-only` sandbox, Claude `Read,Glob,Grep`
+  only), a new attempt ID and folder, and the same review prompt followed by
+  a checkpoint brief in which the previous answer is quoted as reported
+  data and the reviewer is told to review again rather than repair it.
+  Codex is held to its calls and seconds, Claude also to its turns; a
+  smaller call is started when the budgets have less left. The second
+  answer is read like any review: only an answer that is read decides
+  anything, and an unusable answer is never taken for an approval. A review
+  that was read, `APPROVED`, `CHANGES_REQUESTED` or `BLOCKED`, is never
+  followed, and neither is a reviewer's turn limit, quota, a timeout, an
+  interruption or an error. No continuation follows, and the task pauses
+  with the answer's failure (`invalid_review`, `empty_output` or
+  `invalid_output`) as before, its message saying why, when: the step
+  already made its one automatic continuation; the budgets have too little
+  left; a call of the step was released; the reviewer call changed the
+  files, or they changed after it (a Resume then runs the tests again first);
+  on native Windows, where no automatic continuation starts; a process file
+  is left; or no brief can be prepared. The developer is not called again
+  and the tests are not run again for it.
 - **Budgets are hard limits** (since November 8, 2026). A call starts only
   if the budget of its step and the task's budget can both take the most it
   may use: one provider call, its timeout and, for Claude, its turn limit.
@@ -1029,8 +1054,9 @@ recorded (since November 8, 2026):
   `continuation` and `no_progress_windows` (1-10) are optional, with the
   defaults above; `native_resume` accepts only `"off"`, since no provider's
   own session resume has been validated. `adaptive: true` with
-  `checkpoint_resume: true` turns on the automatic continuation of the
-  developer described above; `no_progress_windows` is not applied yet.
+  `checkpoint_resume: true` turns on the automatic continuations of the
+  developer and of the reviewer described above; `no_progress_windows` is
+  not applied yet.
 - The section is project-level only: a task cannot override it, and there
   is no global level. It is validated even while `enabled` is `false`, so
   switching it on never makes a configuration unusable. A configuration

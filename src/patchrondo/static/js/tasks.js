@@ -203,6 +203,7 @@ const NOT_CONTINUED = {
   limit_reached: "the step already made its automatic continuation", budget: "the budgets have too little left for another call",
   process_tree_unverified: "nothing showed that everything the call started has stopped",
   brief_unavailable: "no checkpoint brief could be prepared",
+  workspace_changed: "the files changed during or after the review call, or could not be compared",
 };
 const REPAIRS = { acl: "access to the project for the reviewer", git_trust: "Git trust for this project folder" };
 const REPAIR_OUTCOMES = { applied: ["Fixed", "ok"], unchanged: ["Already in place", "neutral"], rolled_back: ["Could not fix; put back as it was", "warn"],
@@ -268,9 +269,12 @@ export function describeEvent(event, task) {
     case "validation_failed":
       return { text: `A check by you did not pass (${(event.criteria || []).join(", ")}): sent to ${dev} as a change request`, tone: "warn", icon: "repeat" };
     case "continuation_started":
-      return { text: `${dev} continues the step automatically: call ${event.attempt || ""} after ${event.after || "the previous call"}`, tone: "accent", icon: "repeat",
+      return { text: event.phase === "review"
+                 ? `${rev} reviews again automatically: call ${event.attempt || ""} after ${event.after || "the previous call"}, whose answer could not be used`
+                 : `${dev} continues the step automatically: call ${event.attempt || ""} after ${event.after || "the previous call"}`, tone: "accent", icon: "repeat",
                detail: [event.turn_limit ? `up to ${event.turn_limit} turns` : null, event.timeout_seconds ? `timeout ${event.timeout_seconds} s` : null,
-                        "with a brief of the work so far; not a new iteration"].filter(Boolean).join(" · ") };
+                        event.phase === "review" ? "a new, independent and read-only review; not a new iteration"
+                          : "with a brief of the work so far; not a new iteration"].filter(Boolean).join(" · ") };
     case "continuation_declined":
       return { text: `Not continued automatically after call ${event.after || ""}`, tone: "neutral", icon: "pause",
                detail: NOT_CONTINUED[event.reason] || humanize(event.reason || "") || null };

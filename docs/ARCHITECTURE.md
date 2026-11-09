@@ -3073,10 +3073,10 @@ work so far, after a call of that step ended without the answer its role
 needs: Claude's turn limit, a timeout, an answer the workflow could not read.
 The new call is a fresh call; the provider's own session is never resumed
 and its memory of the earlier call is never assumed. Since Step 07
-`core._develop` prepares a developer's brief for an automatic continuation
-(see "Automatic continuation of the developer (Step 07)" below); a brief
-still starts no call by itself. Step 08 may add a reviewer's to
-`core._review_prompt`.
+`core._next_call` prepares a developer's brief for an automatic continuation
+(see "Automatic continuation of the developer (Step 07)" below), and since
+Step 08 a reviewer's for `core._review_prompt` after a review call whose
+answer could not be used; a brief still starts no call by itself.
 
 Two layers:
 
@@ -3172,7 +3172,9 @@ only. In this order, the first condition that fails is the reason
 (Claude's own `error_max_turns` result, failure kind `max_turns`); the task
 is bound to a policy (`POLICY_UNBOUND`) with `adaptive` (`ADAPTIVE_OFF`) and
 checkpoint resume (`CHECKPOINT_RESUME_OFF`); the step is the developer's,
-with Claude (`NOT_THE_DEVELOPER`); the call was not a request for tests
+with Claude (`NOT_THE_DEVELOPER`; since Step 08 the ending each phase may be
+followed after is `execution.FOLLOWED`, and that code is no longer given);
+the call was not a request for tests
 (`TEST_REQUEST`) and ended by itself, `Termination.EXITED` (`NOT_SETTLED`);
 no call of the step was released by the user (`RELEASED_ATTEMPT`: its
 effects are unknown, so nothing that could repeat them starts automatically);
@@ -3205,7 +3207,8 @@ for tests is never a continuation (`AttemptRecord`). An older version reads
 a record with a smaller continuation as invalid (`execution_unreadable`):
 it fails closed.
 
-**The call.** `core._develop` wraps the developer's `_attempt`. A call that
+**The call.** `core._develop` (since Step 08 `core._continued`, for both
+roles) wraps the developer's `_attempt`. A call that
 answers returns as before. An `AgentFailure` of kind `max_turns` from a
 recorded step goes to `_next_call`; anything else (an interruption, an
 error of the system, any other failure) goes to the run's pause unchanged.
@@ -3252,8 +3255,8 @@ before the call was charged); `continuation_declined` (`after`, `reason`,
 `attempt_ended` gain `continuation` (and `after`) for a continuation only.
 No event of a task that did not opt in changes (`DECIDED` holds).
 
-**Not in this step.** The reviewer is never continued (Step 08), no
-provider session is resumed (Step 10), progress is not measured (Steps
+**Not in this step.** The reviewer was not continued (see Step 08 below),
+no provider session is resumed (Step 10), progress is not measured (Steps
 11-12), and a released call blocks automatic continuation of its step
 rather than being reconciled (Step 09).
 
@@ -3262,3 +3265,112 @@ rather than being reconciled (Step 09).
   examples, every declined reason, crash and interruption, the bound
   policy, the controller on edited states, and `next_call` on records made
   by hand). Eighteen new mutation protections, named `continuation:`.
+
+### Automatic continuation of the reviewer (Step 08)
+
+November 9, 2026. The same opt-in as Step 07 (a bound policy, schema 2, with
+`adaptive` and `continuation.checkpoint_resume` true), the same decision,
+sizing, controller and events: no second budget manager and no second
+controller. A reviewer call whose final answer could not be used as a review
+is followed by **one** new, complete and independent review of the same
+files, in the same iteration and `review` phase.
+
+**What is followed.** `execution.FOLLOWED` names, by phase, the one ending a
+continuation may follow: for the developer `TURN_LIMIT_REACHED` (failure kind
+`max_turns`), for the reviewer `INVALID_FINAL_OUTPUT` with failure kind
+`empty_output` (no final answer, or an empty one), `invalid_output` (a final
+answer too large) or `invalid_review` (an answer `parse_review` cannot read,
+truncated JSON included, or an approval that leaves a criterion of the
+reviewer without an outcome, `IncompleteReview`). These come from the CLI's
+final result and the backend's reading of it (`execution.outcome_of`), never
+from what the agent wrote while it worked. A review that was read ends its
+attempt `COMPLETED` and is never followed, whatever its verdict: a valid
+`CHANGES_REQUESTED` or `BLOCKED` goes through settlement and the workflow
+as before, and criticism is never taken for a failure. A reviewer's turn
+limit, quota, a timeout, an interruption, a permission or environment error
+and a provider error are not followed (`NOT_AN_UNUSABLE_ANSWER`, opted-out:
+nothing is recorded), as for the developer.
+
+**Decision.** `execution.next_call` reads the phase's ending first, then the
+Step 07 conditions in their order, and for a review one more:
+`WORKSPACE_CHANGED` when the call's `workspace_before` is unknown or differs
+from its `workspace_after` (a reviewer is read only, and a second review
+must be of the files the first was asked about and the tests ran on).
+`NOT_THE_DEVELOPER` is no longer given (kept so a saved event stays
+readable). `core._next_call(…, role)` then adds, for both roles, the call
+that failed being the one just started, the process-tree rule of decision
+D4 (none on native Windows), the brief of this task, iteration, role,
+previous call and frozen settings, and for a review that the brief's
+fingerprint of the files now equals the call's `workspace_after`
+(`WORKSPACE_CHANGED`, `changed_after_call` or `unknown`); a different role's
+step raises the failure unchanged. `sized_call` sizes the call from what
+every budget line has left: calls and seconds for any provider, Claude
+turns only for Claude (a Codex step has no turn line and its continuation
+no turn limit).
+
+**The call.** `core._continued` (Step 07's `_develop`, now for both roles)
+wraps `_attempt`. For the reviewer it passes `accept`, the review's reading
+(`parse_review` then `settle_review`), to each call's attempt: an answer it
+refuses ends that attempt `INVALID_FINAL_OUTPUT` and nothing of it is kept,
+settled, recorded in the ledger or linked to a finding (`settle_review`
+raises `IncompleteReview` before it records anything). Only a failure of a
+kind its role may be continued after reaches `_next_call`; every other
+failure, and the continuation's own failure, go to the run's pause as before.
+The environment is checked again (`reviewer_ready`, reviewer only). The
+continuation is a new `CX-` attempt in its own `review/attempt-NNN/`
+folder, as `CHECKPOINT_RESUME`, with the same frozen agent settings and
+`agents.command`: the reviewer's read-only restrictions (Codex `read-only`
+sandbox and `--ephemeral`, Claude `--restricted` with `Read,Glob,Grep` only
+and no MCP), the same model, no custom arguments, no native session resume;
+only `max_turns` (Claude) and `timeout_seconds` may be lower. Its prompt is
+`_review_prompt` with the same instructions, the same criteria and evidence
+brief, the same test results and the same answer format, followed by the
+checkpoint brief (`continuation` parameter, empty otherwise). The answer
+that is read is settled exactly once, through findings, the evidence ledger
+(its record names the continuation's own reply file), the code approval and
+the gate. A continuation whose answer cannot be used either is not followed
+again (`LIMIT_REACHED`); the task pauses with that failure's kind, as before.
+Nothing before the review runs again: no developer call, no test run, no
+request for tests.
+
+**The brief.** `continuation.prepare(role="reviewer")` already accepted an
+attempt that ended `INVALID_FINAL_OUTPUT` (only `COMPLETED`, a request for
+tests and an uncertain attempt are refused), so its eligibility did not
+change. The previous reply is quoted as `[REPORTED]` data with `| ` before
+each line, cut with "(cut)" when longer than an excerpt, never `VERIFIED`;
+an empty answer leaves no reply file and is said as `[UNKNOWN]`. The
+reviewer's "what to do now" gained one line: a new, complete and independent
+review, never a repair, reformat or completion of the previous answer, and
+never its verdict, issues or outcomes taken over.
+
+**Files that changed.** A reviewer call that changed the files is not
+followed: the pause keeps `invalid_review`, the attempt record keeps both
+fingerprints, nothing is undone, and the next Resume finds the test results
+about other files (`stale_tests`) and runs the tests again before any review.
+
+**Events.** As in Step 07, with `phase: "review"`; `continuation_started`
+gains `brief`, the SHA-256 of the brief its prompt carries (both roles);
+`continuation_declined` gains `workspace` for `WORKSPACE_CHANGED`. A review
+that settles after a continuation is one `review_completed`; the first
+attempt's `attempt_ended` says `INVALID_FINAL_OUTPUT` with its failure kind.
+
+**Crash safety.** As in Step 07: the decision event and the continuation's
+`STARTING` record in one write, before its folder exists; an attempt
+without an end pauses with `attempt_uncertain` until the user releases it;
+a released call of the step blocks every automatic continuation of it; the
+count of continuations is read from the saved attempts, so a Resume never
+resets it.
+
+**Not in this step.** Crash reconciliation and process-tree supervision on
+native Windows (Step 09), native session resume (Step 10), progress and
+stagnation (Steps 11-12), the Execution Center (Steps 13-14).
+
+- Tests: `tests/test_reviewer_continuation.py` (28 tests with the emulated
+  CLI of `tests/test_attempts.py`: Codex and Claude reviewers, every kind of
+  unusable answer, valid verdicts never followed, settlement and the gate
+  after a continuation, two unusable answers, budgets, quota and timeouts,
+  D4, files changed during and after the call, a released call, crashes,
+  both steps continued in one task, the controller on edited states, the
+  brief bound to its role, and `next_call` on records made by hand). Four
+  new mutation protections, named `continuation:`; two Step 07 ones
+  follow the generalized code and two more also run the new tests.

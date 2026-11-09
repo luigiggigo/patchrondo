@@ -503,7 +503,8 @@ class NextCallTests(unittest.TestCase):
             (called(stepped(policy=plain)), Declined.ADAPTIVE_OFF),
             (called(stepped(policy={**ADAPTIVE, "continuation": {"checkpoint_resume": False}})),
              Declined.CHECKPOINT_RESUME_OFF),
-            (called(stepped(phase=Phase.REVIEW)), Declined.NOT_THE_DEVELOPER),
+            # A reviewer's turn limit is not an answer that could not be used (Step 08): never followed, nothing said.
+            (called(stepped(phase=Phase.REVIEW)), Declined.NOT_AN_UNUSABLE_ANSWER),
             (called(stepped(), draft="test-draft-01"), Declined.TEST_REQUEST),
             (called(stepped(), termination=Termination.UNVERIFIED), Declined.NOT_SETTLED),
             (called(called(stepped(step={**STEP, Unit.PROVIDER_CALLS: 3}), turns=10, continuation=ContinuationMode.CHECKPOINT_RESUME,

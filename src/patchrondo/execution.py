@@ -1,4 +1,4 @@
-"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-07).
+"""Records of agent execution: the data contracts of Phase 2.5, Adaptive Agent Execution (Steps 01-08).
 
 It defines what `core.run_task` saves and reads under `state["execution"]`,
 the optional `execution` section of a project's configuration and the limits
@@ -15,7 +15,9 @@ call: a budget only ever refuses one. Since Step 07 `next_call` decides,
 from the record alone, whether a developer call that reached Claude's turn
 limit may be followed at once by one continuation of the same step, with
 limits no larger than the step's and no larger than the budgets have left
-(`ExecutionRecord.sized_call`); `core._develop` starts it, or not.
+(`ExecutionRecord.sized_call`); since Step 08 also whether a reviewer call
+whose answer could not be used as a review may be followed by one new,
+independent review of the same files. `core._continued` starts it, or not.
 
 Units of work, from the largest:
 
@@ -1181,42 +1183,53 @@ class ExecutionRecord:
                    policy=raw.get("policy"))
 
 
-# --- automatic continuation of the developer (Step 07) --------------------------------------------------------
+# --- automatic continuation of a step (Steps 07-08) -----------------------------------------------------------
 #
-# After a call of a recorded developer step ends with Claude's own turn limit, one more call of the same step may be
+# After a call of a recorded step ends without the answer its role needs, one more call of the same step may be
 # started at once, with a checkpoint brief (`continuation.py`), smaller limits when the budgets have less left
-# (`ExecutionRecord.sized_call`) and a folder of its own. `next_call` decides from the record alone; `core._develop`
-# adds what only the run can see (how the previous call's processes were held, the brief, the environment check).
+# (`ExecutionRecord.sized_call`) and a folder of its own. Only two endings are followed (`FOLLOWED`): a developer call
+# that reached Claude's own turn limit (Step 07), and a reviewer call whose final answer could not be used as a review
+# (Step 08: empty, too large, not the JSON the review needs, or an approval that leaves a criterion without an outcome).
+# A review that was read is never followed, whatever its verdict: a request for changes is the workflow going on.
+# `next_call` decides from the record alone; `core._continued` adds what only the run can see (how the previous call's
+# processes were held, the brief, the files, the environment check).
 
-# The temporary bound of Step 07: automatic continuations of one step, whatever its budgets allow. Without a measure of
-# progress (Steps 11-12), a provider that keeps reaching its turn limit must not use up a step's calls one after the
-# other. Step 12 replaces this constant with its policy; the budgets still apply below it.
+# The temporary bound of Steps 07-08: automatic continuations of one step, whatever its budgets allow. Without a
+# measure of progress (Steps 11-12), a provider that keeps ending the same way must not use up a step's calls one after
+# the other. Step 12 replaces this constant with its policy; the budgets still apply below it.
 AUTOMATIC_CONTINUATIONS = 1
 # The fewest seconds a continuation is started with (or the step's timeout, when lower): with less it could do nothing.
 CONTINUATION_SECONDS = 60
+# The ending a continuation may follow, by phase: the outcome and the failure kinds the CLI's final result and the
+# backend's reading of it gave (`outcome_of`), never what an agent wrote while it worked. Turn limits are Claude's only.
+FOLLOWED = {Phase.DEVELOP: (AttemptOutcome.TURN_LIMIT_REACHED, frozenset({"max_turns"})),
+            Phase.REVIEW: (AttemptOutcome.INVALID_FINAL_OUTPUT, frozenset({"empty_output", "invalid_output",
+                                                                           "invalid_review"}))}
 
 
 class Declined(StrEnum):
     """Why no automatic continuation follows a call. Fixed codes; the first that applies is given."""
     # The task did not opt in, or the call is not one that may be continued: nothing is said in the history.
-    NOT_A_TURN_LIMIT = "not_a_turn_limit"            # the last call did not end with Claude's own turn limit
+    NOT_A_TURN_LIMIT = "not_a_turn_limit"            # a developer call that did not end with Claude's own turn limit
+    NOT_AN_UNUSABLE_ANSWER = "not_an_unusable_answer"  # a reviewer call that did not end with an answer it could not use
     POLICY_UNBOUND = "policy_unbound"                # a record of schema 1: no policy of the task to read it from
     ADAPTIVE_OFF = "adaptive_off"                    # `execution.adaptive` of the task's policy is false
     CHECKPOINT_RESUME_OFF = "checkpoint_resume_off"  # `execution.continuation.checkpoint_resume` is false
     # The task opted in, and this continuation is refused: the history says why.
-    NOT_THE_DEVELOPER = "not_the_developer"          # only the developer is continued in this version (Step 08: reviewer)
+    NOT_THE_DEVELOPER = "not_the_developer"          # Step 07's code for a reviewer's step; no longer given since Step 08
     TEST_REQUEST = "test_request"                    # a request for tests is not a call of the step
     NOT_SETTLED = "not_settled"                      # the call did not end by itself (`Termination.EXITED`)
     RELEASED_ATTEMPT = "released_attempt"            # a call of the step was released by the user: its effects are unknown
+    WORKSPACE_CHANGED = "workspace_changed"          # a review call changed the files, or they could not be compared
     LIMIT_REACHED = "limit_reached"                  # `AUTOMATIC_CONTINUATIONS` of the step were made
     BUDGET = "budget"                                # no call fits what the budgets have left (`sized_call`)
-    # Decided by `core._develop` from what the run observed.
+    # Decided by `core._next_call` from what the run observed.
     PROCESS_TREE_UNVERIFIED = "process_tree_unverified"  # neither a process group nor a job object held the call
     BRIEF_UNAVAILABLE = "brief_unavailable"          # `continuation.prepare` refused: the brief would not hold
 
 
-NOT_OPTED_IN = frozenset({Declined.NOT_A_TURN_LIMIT, Declined.POLICY_UNBOUND, Declined.ADAPTIVE_OFF,
-                          Declined.CHECKPOINT_RESUME_OFF})
+NOT_OPTED_IN = frozenset({Declined.NOT_A_TURN_LIMIT, Declined.NOT_AN_UNUSABLE_ANSWER, Declined.POLICY_UNBOUND,
+                          Declined.ADAPTIVE_OFF, Declined.CHECKPOINT_RESUME_OFF})
 
 
 @dataclass(frozen=True)
@@ -1255,21 +1268,29 @@ class NextCall:
 def next_call(record: ExecutionRecord) -> NextCall:
     """Whether the current step's last call may be followed at once by a continuation. Pure: reads `record` only.
 
-    In this order: the last call ended with Claude's own turn limit
-    (`TURN_LIMIT_REACHED`, read from the CLI's final result, never from what
-    the agent wrote); the task is bound to a policy (schema 2) whose
-    `adaptive` and `continuation.checkpoint_resume` are both true, as the
-    task was bound to them, whatever the project says now; the step is the
-    developer's; the call was not a request for tests and ended by itself
-    (`Termination.EXITED`); no call of the step was released by the user;
-    fewer than `AUTOMATIC_CONTINUATIONS` continuations were made in the
-    step; and a call fits what the budgets have left (`sized_call`). The
-    first condition that does not hold is the reason.
+    In this order: the last call ended as its phase allows (`FOLLOWED`): a
+    developer call with Claude's own turn limit (`TURN_LIMIT_REACHED`), a
+    reviewer call with an answer that could not be used as a review
+    (`INVALID_FINAL_OUTPUT` of an empty, too large or unreadable answer);
+    the task is bound to a policy (schema 2) whose `adaptive` and
+    `continuation.checkpoint_resume` are both true, as the task was bound to
+    them, whatever the project says now; the call was not a request for
+    tests and ended by itself (`Termination.EXITED`); no call of the step was
+    released by the user; for a review, the call left the files as it found
+    them, both fingerprints known (a reviewer is read only, and a second
+    review must be of the files the first was asked about); fewer than
+    `AUTOMATIC_CONTINUATIONS` continuations were made in the step; and a call
+    fits what the budgets have left (`sized_call`: Claude turns only for
+    Claude, calls and seconds for every provider). The first condition that
+    does not hold is the reason.
     """
     step = record.step
     last = step.last if step is not None else None
-    if last is None or not last.ended or last.outcome is not AttemptOutcome.TURN_LIMIT_REACHED:
-        return NextCall(None if last is None else last.attempt_id, declined=Declined.NOT_A_TURN_LIMIT)
+    outcome, kinds = FOLLOWED[step.phase] if step is not None else FOLLOWED[Phase.DEVELOP]
+    if last is None or not last.ended or last.outcome is not outcome or last.failure_kind not in kinds:
+        none = Declined.NOT_AN_UNUSABLE_ANSWER if step is not None and step.phase is Phase.REVIEW \
+            else Declined.NOT_A_TURN_LIMIT
+        return NextCall(None if last is None else last.attempt_id, declined=none)
     trigger = last.attempt_id
     if record.policy is None:
         return NextCall(trigger, declined=Declined.POLICY_UNBOUND)
@@ -1279,14 +1300,14 @@ def next_call(record: ExecutionRecord) -> NextCall:
     if not settings.checkpoint_resume:
         return NextCall(trigger, declined=Declined.CHECKPOINT_RESUME_OFF)
     made = sum(1 for item in step.attempts if item.continuation is ContinuationMode.CHECKPOINT_RESUME)
-    if step.phase is not Phase.DEVELOP or step.provider != "claude":
-        return NextCall(trigger, declined=Declined.NOT_THE_DEVELOPER, made=made)
     if last.draft is not None:
         return NextCall(trigger, declined=Declined.TEST_REQUEST, made=made)
     if last.termination is not Termination.EXITED:
         return NextCall(trigger, declined=Declined.NOT_SETTLED, made=made)
     if any(item.termination is Termination.RELEASED for item in step.attempts):
         return NextCall(trigger, declined=Declined.RELEASED_ATTEMPT, made=made)
+    if step.phase is Phase.REVIEW and (last.workspace_before is None or last.workspace_after != last.workspace_before):
+        return NextCall(trigger, declined=Declined.WORKSPACE_CHANGED, made=made)
     if made >= AUTOMATIC_CONTINUATIONS:
         return NextCall(trigger, declined=Declined.LIMIT_REACHED, made=made)
     call, refusal = record.sized_call()
@@ -1362,7 +1383,8 @@ def dumps(record) -> str:
 # The section is validated whatever `enabled` says, so a configuration never becomes unusable when it is switched
 # on. Its call limits and budgets apply to each step that first starts while it is enabled, frozen with that step
 # (Steps 04-05). Since Step 07 `adaptive: true` with `continuation.checkpoint_resume: true`, as bound to a task, lets
-# a developer call that reached Claude's turn limit be followed at once by one continuation (`next_call`);
+# a developer call that reached Claude's turn limit be followed at once by one continuation (`next_call`), and since
+# Step 08 a reviewer call whose answer could not be used as a review;
 # `no_progress_windows` is not applied by this version. It is read from the project's configuration only: a task
 # cannot override it, and there is no global level.
 

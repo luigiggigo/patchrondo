@@ -1446,6 +1446,51 @@ task bound to an execution policy with `"adaptive": true` and
   `tests/test_execution.py` names `core._next_call` and `core._develop`.
   Eighteen new mutation protections.
 
+### Adaptive Execution: automatic continuation of the reviewer — November 9, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 08). The same opt-in as
+the developer's continuation; without it nothing changes.
+
+- A recorded reviewer call whose final answer could not be used as a review
+  (`INVALID_FINAL_OUTPUT` with failure kind `empty_output`, `invalid_output`
+  or `invalid_review`: empty, too large, truncated or malformed JSON, or an
+  approval that leaves a criterion of the reviewer without an outcome) is
+  followed at once by one new, complete and independent review: the same
+  iteration, `review` phase, provider and frozen read-only settings, a new
+  attempt (`CHECKPOINT_RESUME`) in its own `review/attempt-NNN/` folder, and
+  the same review prompt with the checkpoint brief at its end
+  (`core._review_prompt(continuation=…)`).
+- A review that was read is never followed, whatever its verdict
+  (`APPROVED`, `CHANGES_REQUESTED`, `BLOCKED`); nor a reviewer's turn limit,
+  quota, a timeout, an interruption or an error. The second answer is read
+  inside its own attempt by `parse_review` and `settle_review` and then
+  settled once through findings, the ledger and the gate; an unusable answer
+  records nothing.
+- One decision and one controller for both roles: `execution.FOLLOWED` (the
+  ending each phase may be followed after), `execution.next_call` with the
+  new reasons `NOT_AN_UNUSABLE_ANSWER` (not opted in) and
+  `WORKSPACE_CHANGED`, `core._next_call(…, role)`, and `core._continued`
+  (Step 07's `core._develop`). Budgets as in Step 07: calls and seconds for
+  Codex, Claude turns only for Claude; one automatic continuation per step;
+  none on native Windows (D4).
+- A reviewer call that changed the files, or files that changed after it,
+  are never reviewed again automatically: the attempt keeps both
+  fingerprints, and the next Resume runs the tests again first.
+- `continuation_started` names the brief's SHA-256 (`brief`, both roles);
+  `continuation_declined` gains `workspace`. The task page words the
+  reviewer's continuation.
+- The reviewer's brief asks for a new, complete and independent review,
+  never a repair or reformat of the previous answer, whose text stays quoted
+  as `[REPORTED]`. Brief eligibility is unchanged: an `INVALID_FINAL_OUTPUT`
+  attempt was already accepted, a `COMPLETED` one is still refused.
+- Tests: `tests/test_reviewer_continuation.py` (28 tests); one row of
+  `test_auto_continuation.NextCallTests` (a reviewer's turn limit is now
+  `NOT_AN_UNUSABLE_ANSWER`) and the importer list of `tests/test_execution.py`
+  (`core._continued`) follow the change. Four new mutation protections; two
+  Step 07 ones follow the generalized code, two more also run the new tests,
+  and the one for the removed `NOT_THE_DEVELOPER` check is dropped (476 in
+  all).
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

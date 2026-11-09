@@ -356,8 +356,16 @@ quota limit, a timeout, an interruption or an error, after a call of the step
 was released, while a process file is left in the task's runs, or when
 nothing showed that a process group or a job object held what the call
 started: on native Windows, where agents run without a job object, none
-starts. The environment is checked again before the new call. The reviewer
-is never continued.
+starts. The environment is checked again before the new call. Since
+November 9, 2026 the same opt-in also follows a reviewer call whose answer
+could not be used as a review (empty, too large or unreadable) with one new,
+independent review: built by the same command builder from the reviewer's
+frozen read-only settings (no write access, no developer permission, no
+native session resume), with the previous answer quoted as untrusted data,
+and read by the same `parse_review` and settlement as every review, so an
+unusable answer is never taken for an approval and only a review that was
+read decides anything. A review that was read is never repeated whatever
+its verdict, and a reviewer call that changed the files is not followed.
 
 **What a result is worth.** Code under test can print anything and can write a report that says what it
 likes. The runner refuses a report that was there before the run, a report
