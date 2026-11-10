@@ -10,8 +10,8 @@ import sqlite3
 import sys
 
 from . import __version__, acceptance, agents, bundle, doctor, evidence, rag, recovery, runinfo
-from .core import (attach_evidence, config, create_task, decide_authorization, draft_tests, initialize, recheck_acceptance,
-                   release_attempt, task_config, task_dir)
+from .core import (attach_evidence, config, create_task, decide_authorization, diagnose_attempt, draft_tests, initialize,
+                   recheck_acceptance, release_attempt, task_config, task_dir)
 from .storage import read_json
 from .workspace import REGISTRY, Project, Workspace
 
@@ -77,7 +77,8 @@ def parser() -> argparse.ArgumentParser:
     choice.add_argument("--deny", action="store_true", help="The operation is not done; the criterion stays open")
     released = sub.add_parser("release-attempt",
                               help="After checking that no process of an agent call is left, let the task call again "
-                                   "(no model calls)")
+                                   "(no model calls). Without --confirm-stopped it only shows what is on record of "
+                                   "the call")
     released.add_argument("task_id", help="Task ID such as T-0123456789ab")
     released.add_argument("attempt", help="The attempt the pause names, such as CX-0003")
     released.add_argument("--confirm-stopped", action="store_true",
@@ -292,6 +293,10 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Left out: {entry['item']}: {entry['reason']}")
                 print("Hashes show changes after the export; nothing is signed. Check it with: patchrondo bundle verify FILE")
             elif command == "release-attempt":
+                if not opts.confirm_stopped:
+                    # What is on record of the call, read only: the user decides from it (Step 09).
+                    for line in diagnose_attempt(home, opts.task_id)["lines"]:
+                        print(line)
                 state = release_attempt(home, opts.task_id, opts.attempt, confirm=opts.confirm_stopped)
                 print(f"{state['id']} · {opts.attempt} released: you stated that its processes stopped. Nothing was run, "
                       "and its outcome stays as recorded (what it did is not known). "

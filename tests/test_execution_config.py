@@ -604,9 +604,11 @@ class EngineCompatibilityTests(EngineCase):
                 self.assertEqual(developer[developer.index("--max-turns") + 1], turns)  # the profile's, frozen
                 self.assertEqual([entry["attempt_id"] for entry in execution.load(state).step.to_dict()["attempts"]],
                                  ["CX-0002"])  # the review's; the developer's step left the record
-                # The same files, each call in a folder of its own (with the command it was started with).
-                self.assertEqual([name for name in self.files(other, recursive=True) if not name.endswith(".command.txt")],
-                                 flat)
+                # The same files, each call in a folder of its own (with the command it was started with and, since
+                # Step 09, its launch record: what a later run reads if this one is lost).
+                recorded = [name for name in self.files(other, recursive=True) if not name.endswith(".command.txt")]
+                self.assertEqual([name for name in recorded if name != "launch.json"], flat)
+                self.assertEqual(len([name for name in recorded if name == "launch.json"]), 2)
                 self.assertEqual(sorted(item.name for item in (other / "runs" / "iteration-001").iterdir() if item.is_dir()),
                                  ["develop", "review"])
 

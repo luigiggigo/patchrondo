@@ -599,8 +599,9 @@ reused by a program this user may not inspect), the task page and the refusal
 name the file to delete after checking, as for a stale lock on native Windows.
 
 These answers are for display and for refusing duplicate starts. They never
-remove a lock: *Release lock and resume* starts `patchrondo run --unlock`, and `TaskLock` then applies its own,
-unchanged rule to the runner and to every recorded agent and test process. On
+remove a lock: *Release lock and resume* starts `patchrondo run --unlock`, and `TaskLock` then applies its own
+rule to the runner and to every recorded agent and test process (since Phase 2.5 Step 09 by the identity of a
+process and what held its tree when its process file names them, section 20). On
 native Windows that rule cannot confirm that a process is gone, so the
 interface does not offer the action there. *Stop* sends SIGINT to the verified
 processes, which is what Ctrl+C does; a run started by the interface restores
@@ -3185,8 +3186,8 @@ four reasons are `NOT_OPTED_IN`: nothing is recorded for them.
 `core._next_call` then adds what only the run saw: the call that failed is
 the one just started (`held["attempt"]`), a process group or a job object
 held it and no last signal was refused (`PROCESS_TREE_UNVERIFIED`; agents
-have neither on native Windows, so no continuation starts there, decision
-D4), and `continuation.prepare` gives a brief of this task, iteration,
+had neither on native Windows, so no continuation started there, decision
+D4, which Step 09 narrows below), and `continuation.prepare` gives a brief of this task, iteration,
 role, previous call and frozen settings digest (`BRIEF_UNAVAILABLE`, with
 the brief's own `Reason`, among them `PROCESS_MAY_RUN` for any process file
 in the task's runs).
@@ -3299,7 +3300,7 @@ must be of the files the first was asked about and the tests ran on).
 `NOT_THE_DEVELOPER` is no longer given (kept so a saved event stays
 readable). `core._next_call(…, role)` then adds, for both roles, the call
 that failed being the one just started, the process-tree rule of decision
-D4 (none on native Windows), the brief of this task, iteration, role,
+D4 (none on native Windows until Step 09 narrowed it), the brief of this task, iteration, role,
 previous call and frozen settings, and for a review that the brief's
 fingerprint of the files now equals the call's `workspace_after`
 (`WORKSPACE_CHANGED`, `changed_after_call` or `unknown`); a different role's
@@ -3374,3 +3375,173 @@ stagnation (Steps 11-12), the Execution Center (Steps 13-14).
   brief bound to its role, and `next_call` on records made by hand). Four
   new mutation protections, named `continuation:`; two Step 07 ones
   follow the generalized code and two more also run the new tests.
+
+### Crash reconciliation and process supervision (Step 09)
+
+November 10, 2026. A run that finds a call of the task that may still be
+running no longer always waits for the user: it reads what is on record of
+that call and settles it when, and only when, that proves something. Agent
+calls of a recorded task are supervised as a whole process tree, on native
+Windows by a job object made before the CLI runs. Decision D4 is narrowed,
+not lifted: an automatic continuation follows only a call whose whole tree
+was held and confirmed ended, and on native Windows a real CLI is still not
+continued until the end-of-phase validation with real providers.
+
+**The launch record.** Each attempt of a step whose adapter reports its
+process (`OfficialCLI`, `metered`) has `launch.json` in its own folder,
+written atomically by `core._mark` at four moments: `prepared` once its
+folder exists and before the CLI is asked to start; `launching` from
+`process.Launch.on_launch`, right before the process is created (if it
+cannot be written, nothing is created); `started` from `on_start`, with the
+process's identity and what holds it (`Launch.recorded()`: `pid`, `start`
+from `procinfo.identity`, `tree`, `kill_on_close`, `owner_pid`,
+`owner_start`), before RUNNING is saved; `ended` from `on_end`, before the
+process file is removed, with `stopped`, `kill_refused`, `tree_ended` and
+`left_behind`. It is a private file of the run folder: not a log (the Logs
+tab and the bundle never take it), never in the history, the report or
+`last_error`, which name codes only. A supervised call's process file
+(`*.active-process.json`) carries the same metadata beside `pid` and
+`command`; files of other calls keep their two fields.
+
+**Reconciliation** (`reconciliation.assess`, read only). For the task's
+uncertain attempt (`StepExecution.uncertain`) it reads the attempt folder,
+its launch record and its process files, and asks the system about each
+named process through `procinfo.tree_state`. Its findings:
+
+| Finding | When | What `core._settle_attempts` does |
+|---|---|---|
+| `NEVER_STARTED` | STARTING and its folder missing, or its launch record still `prepared` with no process file | Ends it `NOT_STARTED` (outcome `INTERRUPTED`, no provider call charged); the run goes on |
+| `TERMINATED_UNRECORDED` | Its launch record says `ended` with the tree confirmed ended and no stop refused, or every process it names is shown gone by its identity | Reconciles it (`ExecutionRecord.reconcile`, `Termination.RECONCILED`; an attempt without an end gets the outcome `UNKNOWN` and keeps the most it was allowed as its charge, one stopped unverified keeps its outcome), writes `attempt_reconciled`, pauses once with `attempt_reconciled` |
+| `ACTIVE` | A process it names is shown running (its own, a member of its group, or the run that holds its job object) | Pauses with `attempt_uncertain`; no release is offered |
+| `UNCERTAIN` | No launch record (a version before Step 09, an adapter that reports no process, a run lost before writing it), `launching` with no process named, a process without identity, descendants nothing held, an answer the system did not give | Pauses with `attempt_uncertain` and the diagnosis |
+| `CORRUPT` | A launch record that cannot be read or names another attempt, a stage that contradicts the saved status, a folder that is missing after a start or is not a plain folder | Pauses with `attempt_uncertain` and the diagnosis |
+| `TERMINATED_RECORDED` | The attempt's end is saved and settled | Nothing (shown by the diagnosis) |
+
+A process named by its PID alone never settles anything, on any system. A
+missing process file is never proof, and a reply file is never an answer:
+the attempt's outcome is `UNKNOWN` and its files are not used. The pause of
+`attempt_uncertain` keeps `last_error.reconciliation` (attempt, finding,
+codes of what was shown and what is not known, the launch stage), and its
+message says them in words (`reconciliation.WORDS`). A Resume while the
+finding is still `ACTIVE`, `UNCERTAIN` or `CORRUPT` returns the saved state
+(`_still_uncertain`: no event, no environment check, no provider call); once
+it settles, the next Resume acts on it. After `attempt_reconciled` the user
+resumes to start a new call of the step, admitted by its budgets: nothing
+repeats a call with unknown effects by itself, and no automatic continuation
+follows in that step (`Declined.RECONCILED_ATTEMPT`, as for a released call).
+
+**The one rule for a process tree** (`procinfo.tree_state`, used by the
+reconciliation, `release_attempt` and `TaskLock(force=True)`). First the
+process itself, by its identity; without one, on POSIX whichever process
+has its PID counts as it, and on native Windows nothing is known
+(`no_identity`). Once it is gone, what it started: on POSIX its process
+group (the PID, since every call starts a new session), gone when the
+system knows no member (`killpg(pgid, 0)` answers ESRCH); on native Windows
+only a job object set to stop its processes when its last handle closes,
+once the owner that held that handle is shown gone too (`job_closed`).
+Anything else is `UNKNOWN`. `storage.may_run` applies it to a process file:
+a file without identity (every file before Step 09, every unsupervised
+call) keeps the earlier rule, its PID alone through `_alive` (always alive
+on native Windows), with its group on POSIX added; a file with identity
+goes through `tree_state`. The forced unlock refuses any process file not
+shown gone. The runner's own lock keeps its rule; on POSIX a lock whose PID
+now belongs to another process (the identity it saved, `start`, differs)
+no longer blocks `--unlock` (`storage._recycled`); on native Windows a stale
+lock still needs a person.
+
+**Release.** `release-attempt` without `--confirm-stopped` prints the
+diagnosis (`core.diagnose_attempt`: the finding with what was shown and what
+is not known, the recorded outcome and charges, whether the files changed
+since the call started, whether the lock is held, whether a release would
+be refused or a Resume settles it by itself) and refuses, as before. With
+it, the release is still the user's statement, refused while a process file
+or the launch record names a process shown running, or a process file's
+process is not shown gone (`storage.may_run(…, leader_only=True)`: what that
+process started is the user's statement). It never marks a call
+`COMPLETED`, never changes a charge, never runs anything and never allows a
+continuation in its step.
+
+**A continuation that was due.** A run lost after a call's end was saved
+(the environment check saves the state before a continuation) and before
+its continuation started, a continuation saved as STARTING and never given
+a process, or a pause that stopped one before its call, leave the step's
+last call one that `execution.next_call` allows to be followed.
+`StepExecution.last_call` is the last attempt past continuations that never
+started a process; `next_call` and `continuation.gather` follow it, and such
+continuations are not counted as made. At the next Resume `core._due`
+(read only: the record and the trigger's launch record) admits the smaller
+call it would be (`_refusal`), and `core._resumed` carries it out through
+`_next_call(…, resumed=True)` with every condition checked again, the brief
+included: `continuation_started` says `resumed: true`. When a condition no
+longer holds, nothing is recorded and the run makes the step's ordinary
+call, as before. The bound of one continuation per step and the sizing of
+`sized_call` are unchanged: a budget-sized continuation is never replaced
+by a full-size call.
+
+**Supervision** (`process.execute(supervise=True)`, passed by
+`OfficialCLI._step` with `launch` for every recorded call, unless
+`PATCHRONDO_SUPERVISION=0`). On native Windows: a job object is created
+with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, read back before it is used
+(breakaway is never allowed); the CLI is created with `CREATE_SUSPENDED`,
+put in the job, identified, its process file written and `on_start` (the
+`started` record and RUNNING) done, and only then resumed
+(`process._resume`, the first thread found with `CreateToolhelp32Snapshot`).
+Nothing it starts can be outside the job, and when the run ends however it
+ends (a crash, `TerminateProcess`, a power loss) its handle closes and the
+system stops every process of the job. A stop (timeout, interruption)
+counts only once the job reports no running process
+(`JobObjectBasicAccountingInformation`, within `GROUP_SECONDS`); otherwise
+`kill_refused`. If the job cannot be made first, the process is put in one
+after it starts, without kill-on-close; if it cannot be put in one, it is
+resumed and runs as `CHILD`, said in its result; if it cannot be resumed, it
+is stopped, its process file removed, and the call raises (`NOT_STARTED`).
+On both systems, once the CLI exits by itself, what it left running is
+stopped and the tree confirmed ended (`process._settle_tree`: the job's
+count given `SETTLE_SECONDS` to reach none, or the group probed and sent
+SIGKILL): `Result.tree_ended`, `left_behind`. The CLI still ended by itself
+(`EXITED`); a tree that cannot be confirmed ended makes the call stopped
+with its stop refused, and `OfficialCLI` raises `process_tree_unconfirmed`
+(outcome `UNKNOWN`, termination `UNVERIFIED`): its answer is not used and
+the next run holds the task until it is shown ended or released. Unrecorded
+calls, the verification runner and the test stage are started as before.
+
+**D4, narrowed.** `core._tree_declined` reads how the call was held (from
+`_attempt`'s `held`, or from the trigger's launch record at a Resume):
+`PROCESS_TREE_UNVERIFIED` unless a process group or a job object held it, no
+stop was refused and its whole tree was confirmed ended (`ended`);
+`DESCENDANTS_LEFT` when the CLI left processes running (they were
+stopped); `WINDOWS_NOT_VALIDATED` for a real CLI (`live`) on native Windows
+while `core.WINDOWS_REAL_CONTINUATION` is false, as decided by the project's
+owner until the end-of-phase validation with real providers. With simulated
+providers a supervised call on native Windows may be continued, which
+`tests/test_supervision.EngineTests` shows with real job objects. A legacy
+or unsupervised call is never continued.
+
+**What is not shown.** A POSIX process that leaves its group (`setsid`)
+escapes it, as before; POSIX has no equivalent of kill-on-close, so after a
+lost run a CLI goes on until it ends and the task stays held meanwhile
+(`ACTIVE`). On POSIX a crash between the process's creation and its process
+file leaves `launching` with nothing named (`UNCERTAIN`); on native Windows
+the process is suspended until both exist. A crash on native Windows before
+the process is put in its job leaves a suspended process that never ran. A
+handle to the job duplicated by another program would keep it open. Real
+Claude Code and Codex inside a job object that refuses breakaway have not
+been run (no authorized real call): their compatibility is unknown, which
+is why real CLIs on native Windows are not continued, and
+`PATCHRONDO_SUPERVISION=0` starts recorded calls as before Step 09 (with
+nothing then confirming a tree, no automatic continuation follows any
+call). The dashboard's Stop stays POSIX only; on native Windows an
+interruption of the run (Ctrl+C in its terminal) stops a supervised call's
+whole tree.
+
+- Tests: `tests/test_reconciliation.py` (engine runs with the emulated CLI,
+  crashes at every point of a call's start and end, every finding, release
+  and diagnosis, continuations after a crash, budgets, the D4 rule) and
+  `tests/test_supervision.py` (real local process trees with a heartbeat
+  grandchild: normal ends, children and grandchildren, timeouts,
+  interruptions, refused stops, refused or impossible jobs, a process that
+  cannot be resumed, PIDs without identity or recycled, a live descendant
+  blocking unlock, a lost run whose job the system closes on native Windows
+  and whose group goes on on POSIX, an unrelated process left alone, and
+  whole runs of a scripted CLI). Job objects are checked on native Windows
+  only, groups on POSIX only.

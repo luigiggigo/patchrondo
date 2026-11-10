@@ -380,12 +380,21 @@ class SafetyTests(ContinuationCase):
         saved = self.saved(path)
         self.assertNotIn("continuation_started", self.events(saved))
         first = execution.load(saved).step.last
+        self.assertEqual(len(self.cli.calls), 1)
         state = self.go(task_id)
-        self.assertEqual(len(self.cli.calls), 1)  # neither the continuation nor a duplicate of the first call started
-        if first.ended:  # saved by the environment check before the continuation: a full call no longer fits
-            self.assertEqual(state["last_error"]["kind"], "budget_exhausted")
-        else:
-            self.assertEqual(state["last_error"]["kind"], "attempt_uncertain")
+        if not first.ended:  # its end was not saved: reconciled or held, and nothing is started
+            self.assertIn(state["last_error"]["kind"], ("attempt_reconciled", "attempt_uncertain"))
+            self.assertEqual(len(self.cli.calls), 1)
+            return
+        # Step 09: saved by the environment check before the continuation, which a lost run never started. The Resume
+        # carries that continuation out, once, at the size the budgets admit (39 turns of the 80, 41 used): never the
+        # full call the budgets could no longer take, and never a second copy of the first call.
+        started = [entry for entry in state["history"] if entry["event"] == "continuation_started"]
+        self.assertEqual([(entry["after"], entry["turn_limit"], entry.get("resumed")) for entry in started],
+                         [("CX-0001", 39, True)])
+        self.assertEqual([call["role"] for call in self.cli.calls[:2]], ["developer", "developer"])
+        self.assertEqual(self.turns(self.cli.calls[1]), "39")
+        self.assertNotIn("budget_exhausted", [entry.get("reason") for entry in state["history"]])
 
 
 class ControllerTests(ContinuationCase):
@@ -398,7 +407,8 @@ class ControllerTests(ContinuationCase):
         self.paused = self.go(self.task_id)
         self.workspace = Path(self.paused["worktree"])
         self.failure = AgentFailure("Turn limit", "max_turns", provider="claude")
-        self.held = {"attempt": "CX-0001", "tree": process.GROUP, "refused": False}
+        # As `_attempt` records it from the call's `Launch` (Step 09: its whole tree confirmed ended, nothing left).
+        self.held = {"attempt": "CX-0001", "tree": process.GROUP, "refused": False, "ended": True, "left": False}
 
     def ask(self, state=None, held=None):
         state = copy.deepcopy(self.paused) if state is None else state

@@ -268,6 +268,15 @@ for index, text in enumerate(words):
         say({"type": "item.completed", "item": {"id": f"m{index}", "type": "agent_message", "text": text}})
     time.sleep(plan.get("pause", 0))
 hold("working")
+if once("leave_once"):  # a process it starts and does not wait for, still running when it exits
+    import subprocess
+    left = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    (root / f"{role}.left.pid").write_text(str(left.pid), encoding="utf-8")
+if provider == "claude" and once("max_turns_once"):  # Claude's own turn limit, read from its final result
+    say({"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 3, "duration_ms": 10})
+    if not live:
+        print(json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 3}))
+    sys.exit(1)
 if once("quota_once") or plan.get("quota"):
     message = "Usage limit reached. Retry after 3600 seconds."
     if live and provider == "claude":

@@ -194,8 +194,8 @@ class Checkpoint:
         if self.role not in ROLES:
             raise ValueError(f"A brief is for the developer or the reviewer, not {self.role!r:.40}")
         step = self.record.step
-        if step is None or step.phase is not ROLES[self.role] or step.last != self.previous:
-            raise ValueError("The previous attempt of a checkpoint is the last attempt of the role's current step")
+        if step is None or step.phase is not ROLES[self.role] or step.last_call != self.previous:
+            raise ValueError("The previous attempt of a checkpoint is the last call of the role's current step")
         if self.record.task_id != self.task_id or self.previous.task_id != self.task_id:
             raise ValueError("A checkpoint holds the records of one task")
         _settled(self.previous)  # a checkpoint made by hand is held to the rules `gather` applies
@@ -406,7 +406,9 @@ def gather(task_path: Path, state: dict, workspace: Path, *, task_id: str, itera
     """What is on record for a new call of `role`'s step at `iteration` of `task_id`, after the attempt `attempt_id`.
 
     `state` is the task's state as saved; `attempt_id` defaults to the
-    step's last attempt, and only that one can be continued from;
+    step's last call (`StepExecution.last_call`: its last attempt, past a
+    continuation that was saved and never started a process), and only that
+    one can be continued from;
     `settings_digest` is the digest of the agent settings the new call would
     start with, by default the one frozen with the step (`agent_runs`).
     Raises `Unavailable` when the brief would not describe the call asked
@@ -442,7 +444,7 @@ def gather(task_path: Path, state: dict, workspace: Path, *, task_id: str, itera
         _refuse(Reason.PHASE_MISMATCH, f"the current step is the {step.role}'s")
     if step.provider != state.get(role):
         _refuse(Reason.PROVIDER_MISMATCH, "the step was recorded for another provider")
-    previous = step.last
+    previous = step.last_call
     if previous is None:
         _refuse(Reason.NO_PREVIOUS_ATTEMPT, "the step has made no call")
     if attempt_id is not None and attempt_id != previous.attempt_id:

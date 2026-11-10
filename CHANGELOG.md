@@ -1491,6 +1491,86 @@ the developer's continuation; without it nothing changes.
   and the one for the removed `NOT_THE_DEVELOPER` check is dropped (476 in
   all).
 
+### Adaptive Execution: crash reconciliation and process supervision — November 10, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 09, parts 09A and 09B).
+Tasks without Adaptive Execution, and every call that is not recorded, run
+as before.
+
+- **One reconciliation of an uncertain attempt** (`reconciliation.py`,
+  `core._settle_attempts`). Each recorded call keeps a launch record,
+  `launch.json` in its own folder: `prepared` once the folder exists,
+  `launching` right before the process is created, `started` with the
+  process's identity and what holds it, `ended` with whether its whole tree
+  was confirmed ended, before its process file is removed. A run that finds
+  a call that may still run reads it and the identity of the processes it
+  names (`procinfo.tree_state`) and finds it `NEVER_STARTED`,
+  `TERMINATED_UNRECORDED`, `ACTIVE`, `UNCERTAIN`, `CORRUPT` or (for the
+  diagnosis) `TERMINATED_RECORDED`. Never started: closed as not started,
+  no call charged, the run goes on. Ended with everything it started:
+  recorded with the new termination `reconciled`, its outcome `UNKNOWN`
+  (or the one it had), its charges kept, its files never used as an answer,
+  the event `attempt_reconciled`, and one pause `attempt_reconciled` so that
+  the user decides on a new call. Anything else: `attempt_uncertain` as
+  before, with `last_error.reconciliation` (codes of what was shown and what
+  is not known, never a PID) and the same in words. A PID alone, a missing
+  process file or a reply file is never proof. Reading changes nothing, so a
+  Resume while nothing changed still does nothing.
+- **Release and diagnosis.** `patchrondo release-attempt TASK CX-NNNN`
+  without `--confirm-stopped` prints what is on record of the call
+  (`core.diagnose_attempt`) and still refuses. A release is refused while
+  the call's launch record or a process file names a process shown running;
+  a process file that names its process's identity is read by it
+  (`storage.may_run`), one that does not keeps the earlier rule. A release
+  still never marks a call answered, changes a charge or allows a
+  continuation.
+- **One rule for a process tree** (`procinfo.tree_state`, `group_state`),
+  used by the reconciliation, the release and `--unlock`: a process by its
+  identity, then on POSIX its group, on native Windows only a job object
+  that stops its processes when its last handle closes, once the run that
+  held it is gone. `--unlock` now also refuses a process file whose process
+  group still has a member (POSIX), and on POSIX no longer takes a lock
+  whose PID belongs to another program now for the runner. On native
+  Windows a stale lock still needs a person.
+- **A continuation that was due is carried out at the next Resume.** A run
+  lost after a call's end was saved and before its continuation started, or
+  a continuation saved and never given a process, no longer turns into a
+  full-size call at the next Resume (nor into `budget_exhausted` when only
+  the smaller call fits): `core._due` admits the continuation at its size,
+  `core._resumed` carries it out with every condition checked again
+  (`continuation_started` with `resumed: true`). A continuation that never
+  started is not counted against the one per step
+  (`StepExecution.last_call`).
+- **Supervised agent calls** (`process.execute(supervise=True)` for every
+  recorded call; `PATCHRONDO_SUPERVISION=0` starts them as before). On
+  native Windows the job object is made first with kill-on-close, the CLI is
+  created suspended, put in it, recorded, and only then resumed; a stop
+  counts once the job reports no running process. On both systems what the
+  CLI leaves running when it exits is stopped and the end of its tree
+  confirmed; one that cannot be confirmed makes the call
+  `process_tree_unconfirmed` (outcome `UNKNOWN`, `unverified`), whose answer
+  is not used. The verification runner, the test stage and unrecorded calls
+  are unchanged.
+- **Decision D4, narrowed.** An automatic continuation follows only a call
+  whose whole tree was held and confirmed ended, with nothing left running
+  (new reasons `descendants_left`, `reconciled_attempt`,
+  `windows_not_validated`). A real CLI on native Windows is still not
+  continued (`core.WINDOWS_REAL_CONTINUATION` is false until the end-of-phase
+  validation with real providers); with simulated providers a supervised
+  call there may be.
+- The task page words the new pauses, termination, reasons and event.
+- Tests: `tests/test_reconciliation.py` (26) and `tests/test_supervision.py`
+  (21, real local processes; job objects on native Windows, groups on
+  POSIX). Changed to the new behavior: a call whose CLI exited before its
+  end was saved is now reconciled (`test_attempts`, split in two), the Step
+  07 and 08 crash tests now see the continuation carried out, the
+  controllers' `held` gains `ended` and `left`, the emulated CLI calls the
+  new launch hooks, the importer list of `tests/test_execution.py` names the
+  new readers, and `test_execution_config` leaves `launch.json` out of the
+  files it compares. 21 new mutation protections (`reconcile:`,
+  `supervision:`), ten patterns follow the changed code (497 in all).
+  Real Claude Code and Codex were not run inside a job object.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

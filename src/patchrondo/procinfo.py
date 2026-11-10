@@ -5,8 +5,20 @@ time), so a recycled PID is not mistaken for the process that was recorded.
 `state(pid, token)` answers "alive", "dead" or "unknown"; "unknown" is the
 honest answer whenever the platform cannot confirm either.
 
-These answers describe what the dashboard shows. They never unlock a task:
-`storage.TaskLock` keeps its own, more conservative rule.
+These answers describe what the dashboard shows. They never unlock a task
+by themselves: `storage.TaskLock` keeps its own, more conservative rule for
+the process that holds the lock.
+
+`tree_state(entry)` (Phase 2.5, Step 09) is the one rule for whether the
+process tree of a recorded call may still run, read from what its process
+file or its attempt's launch record names (`process.Launch.recorded`). The
+forced unlock, the release of an attempt and the reconciliation of an
+uncertain attempt all use it. A process is never taken for gone from its PID
+alone on native Windows, nor from its absence alone anywhere: what it
+started is gone only when its group has no member (POSIX) or when the job
+object that held it stopped everything in it, which a job set to stop its
+processes when its last handle closes did once the process that held the
+handle (its owner) is gone (native Windows).
 """
 from __future__ import annotations
 
@@ -112,3 +124,72 @@ def state(pid, token: str | None) -> str:
     if not token or current is None:
         return UNKNOWN
     return ALIVE if current == token else DEAD
+
+
+def group_state(pgid) -> str:
+    """POSIX: whether the process group `pgid` still has a member: ALIVE, DEAD (the system knows none) or UNKNOWN.
+
+    A member this user may not signal, or a group of zombies not yet reaped
+    (macOS answers EPERM for those), is UNKNOWN, never DEAD.
+    """
+    if os.name != "posix" or type(pgid) is not int or pgid <= 1:
+        return UNKNOWN
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return DEAD
+    except OSError:
+        return UNKNOWN
+    return ALIVE
+
+
+# The codes `tree_state` gives with its answer: fixed words, for diagnostics and records (never a PID).
+LEADER_UNKNOWN = frozenset({"no_process_id", "no_identity", "process_unknown"})
+
+
+def tree_state(entry) -> tuple[str, str]:
+    """Whether the process tree a process file or a launch record names may still run: (ALIVE|DEAD|UNKNOWN, code).
+
+    `entry` holds `pid` and, for a supervised call, `start` (its identity),
+    `tree` (`process.GROUP`, `JOB` or `CHILD`), `kill_on_close`, `owner_pid`
+    and `owner_start`. In this order: the process itself (by its identity;
+    without one, on POSIX any process with its PID counts as it, and on
+    native Windows nothing is known); then, once it is gone, what it
+    started: on POSIX its group (its PID, since every call starts a new
+    session), on native Windows only a job object that stops its processes
+    when its last handle closes, once the owner that held that handle is gone
+    too. DEAD only when all of that is shown; ALIVE when a process is shown
+    running; UNKNOWN otherwise.
+    """
+    if not isinstance(entry, dict):
+        return UNKNOWN, "no_process_id"
+    pid = entry.get("pid")
+    if type(pid) is not int or pid <= 0:
+        return UNKNOWN, "no_process_id"
+    token = entry.get("start") if isinstance(entry.get("start"), str) and entry.get("start") else None
+    tree = entry.get("tree")
+    if token is not None:
+        leader = state(pid, token)
+    elif sys.platform == "win32":
+        return UNKNOWN, "no_identity"  # a PID alone is never enough here: it may already be another program's
+    else:
+        leader = _inspect(pid)[0]  # whichever process has that PID now counts as the one recorded
+    if leader == ALIVE:
+        return ALIVE, "process_running"
+    if leader != DEAD:
+        return UNKNOWN, "process_unknown"
+    if sys.platform != "win32":
+        if tree not in (None, "process_group"):
+            return UNKNOWN, "descendants_unknown"
+        return {ALIVE: (ALIVE, "group_running"), DEAD: (DEAD, "group_gone")}.get(group_state(pid),
+                                                                              (UNKNOWN, "group_unknown"))
+    if tree == "job_object" and entry.get("kill_on_close") is True:
+        owner, mark = entry.get("owner_pid"), entry.get("owner_start")
+        if type(owner) is int and owner > 0 and isinstance(mark, str) and mark:
+            holder = state(owner, mark)
+            if holder == DEAD:
+                return DEAD, "job_closed"
+            if holder == ALIVE:
+                return ALIVE, "owner_running"
+        return UNKNOWN, "owner_unknown"
+    return UNKNOWN, "descendants_unknown"

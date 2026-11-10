@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import math
+import os
 from pathlib import Path
 import json
 import re
@@ -281,10 +282,25 @@ class Observation:
     report it. Neither is read from what the agent wrote.
     """
 
-    def __init__(self, on_start=None):
-        self.launch = Launch(on_start)
+    def __init__(self, on_start=None, *, on_launch=None, on_end=None):
+        self.launch = Launch(on_start, on_launch=on_launch, on_end=on_end)
         self.turns: int | None = None
         self.tokens: int | None = None
+
+
+def supervision() -> bool:
+    """Whether recorded agent calls are supervised (`process.execute(supervise=True)`, Phase 2.5 Step 09).
+
+    `PATCHRONDO_SUPERVISION=0` starts them as before Step 09 (on native
+    Windows without a job object); nothing then confirms that a call's tree
+    ended, so no automatic continuation follows any call.
+    """
+    return os.environ.get("PATCHRONDO_SUPERVISION", "1") != "0"
+
+
+# The CLI exited by itself, and processes it started were still running; stopping them could not be confirmed.
+TREE_UNCONFIRMED = ("exited while processes it started were still running, and stopping them could not be confirmed: "
+                    "they may still be running. Its answer was not used")
 
 
 def _noted(*_args, **_fields) -> None:
@@ -403,7 +419,8 @@ class OfficialCLI:
             result = execute(argv, workspace, stdin=prompt, timeout=timeout,
                              pid_file=run_dir / f"{role}.active-process.json",
                              **({"on_stdout": stream.feed} if stream is not None else {}),
-                             **({"launch": observation.launch} if observation is not None else {}))
+                             **({"launch": observation.launch, **({"supervise": True} if supervision() else {})}
+                                if observation is not None else {}))
         except FileNotFoundError as exc:
             raise AgentFailure(f"CLI not found: {argv[0]}. Install the official CLI and authenticate it.",
                                "configuration", provider=provider) from exc
@@ -427,6 +444,9 @@ class OfficialCLI:
         if result.timed_out:
             raise AgentFailure(f"Timeout after {timeout}s for {provider}/{role}" + (f". {KILL_REFUSED}" if refused else ""),
                                "timeout", provider=provider)
+        if getattr(result, "tree_ended", None) is False:
+            # A supervised call (Step 09): nothing it said is taken while what it started may still be writing.
+            raise AgentFailure(f"{provider}/{role} {TREE_UNCONFIRMED}.", "process_tree_unconfirmed", provider=provider)
         turn_limit = None
         if provider == "claude" and _claude_subtype(stream.result if stream is not None else result.stdout) == CLAUDE_TURN_LIMIT \
                 and _classify_error(result.stderr) == "agent_error":

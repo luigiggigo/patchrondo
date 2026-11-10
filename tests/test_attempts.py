@@ -28,6 +28,7 @@ from patchrondo.process import Result  # noqa: E402
 from patchrondo.storage import read_json, save_json  # noqa: E402
 
 PID = 4242
+OWNER = 4343  # the run that holds a supervised call's job object or group, in a plan that names an identity
 KEEP = object()  # `configure`: leave the execution section as it is
 TEST = [sys.executable, "-c", "from pathlib import Path; assert Path('feature.txt').read_text() == 'good'"]
 
@@ -47,25 +48,35 @@ class FakeCLI:
         self.plans.extend(plans)
 
     def __call__(self, argv, cwd, *, stdin="", timeout=600, pid_file=None, on_stdout=None, on_stderr=None, tree=False,
-                 launch=None):
+                 launch=None, supervise=False):
         plan = self.plans.pop(0) if self.plans else {}
         provider = argv[0]
         reviewer = "--json-schema" in argv or "--output-schema" in argv
+        if launch is not None:
+            launch._launching()  # as `process._spawn`: before anything is created; if it raises, nothing is
         self.calls.append({"argv": list(argv), "launch": launch is not None, "timeout": timeout, "pid_file": pid_file,
-                           "role": "reviewer" if reviewer else "developer"})
+                           "role": "reviewer" if reviewer else "developer", "supervise": supervise})
         if plan.get("missing"):
             raise FileNotFoundError(argv[0])
         if plan.get("denied"):  # the system refused to start it (not executable, access denied)
             raise PermissionError(13, "Permission denied", argv[0])
+        if plan.get("crash") == "launching":
+            raise Crash()
         held = plan.get("tree", process.GROUP)
         if launch is not None:
-            launch._began(PID, held)
+            if supervise and "identity" in plan:  # a supervised process with its identity (`process._hold`)
+                launch._began(PID, held, plan["identity"], plan.get("owner", (OWNER, "owner-token")),
+                              kill_on_close=plan.get("kill_on_close", held == process.JOB))
+            else:
+                launch._began(PID, held)
         if "before_start" in plan:
             plan["before_start"]()
         if plan.get("crash") == "before_identity":
             raise Crash()
         if pid_file is not None:
-            save_json(pid_file, {"pid": PID, "command": argv[0]})
+            save_json(pid_file, {"pid": PID, "command": argv[0], **({key: value for key, value in launch.recorded().items()
+                                                                    if key != "pid"} if launch is not None
+                                                                   and launch.supervised else {})})
         if launch is not None:
             launch._started()
         if "after_start" in plan:
@@ -76,20 +87,33 @@ class FakeCLI:
             refused = bool(plan.get("refused"))
             if launch is not None:
                 launch._ended(refused)
+                launch._finished(not refused if supervise and held != process.CHILD else None, None)
+            if plan.get("crash") == "after_end":
+                raise Crash()
             if pid_file is not None:
                 pid_file.unlink(missing_ok=True)
             if plan.get("interrupt"):
                 raise KeyboardInterrupt
-            return Result(124, "", "", timed_out=True, process_tree=held, kill_refused=refused)
+            return Result(124, "", "", timed_out=True, process_tree=held, kill_refused=refused,
+                          tree_ended=launch.tree_ended if launch is not None else None)
         live = "stream-json" in argv or "--json" in argv
         lines, code, stderr = (self.claude if provider == "claude" else self.codex)(argv, cwd, stdin, reviewer, plan)
         stdout = "".join(json.dumps(line) + "\n" for line in lines) if live else (json.dumps(lines[-1]) + "\n"
                                                                                   if lines and provider == "claude" else "")
         if live and on_stdout is not None:
             on_stdout(stdout.encode("utf-8"))
+        # As `process._settle_tree` once the CLI exited by itself: its tree ended, or what it left was stopped.
+        ended, left = (plan.get("tree_ended", True), plan.get("left_behind", False))             if supervise and held != process.CHILD else (None, None)
+        if launch is not None:
+            if ended is False:  # what it left could not be confirmed stopped: the call's stop is refused
+                launch._ended(True)
+            launch._finished(ended, left)
+        if plan.get("crash") == "after_end":
+            raise Crash()
         if pid_file is not None:
             pid_file.unlink(missing_ok=True)
-        return Result(code, stdout, stderr, process_tree=held)
+        return Result(code, stdout, stderr, process_tree=held, kill_refused=ended is False, tree_ended=ended,
+                      left_behind=left)
 
     @staticmethod
     def _develop(cwd) -> None:
@@ -544,7 +568,7 @@ class CrashTests(AttemptCase):
             release_attempt(self.home, task_id, "CX-0001", confirm=True)
         self.assertEqual(run_task(self.home, task_id)["status"], "done")
 
-    def test_lost_after_its_cli_exited_it_is_still_uncertain(self):
+    def lost_after_its_cli_exited(self, **plan):
         task_id, path = self.task()
         real, calls = core._fingerprint_or_none, []
 
@@ -554,10 +578,41 @@ class CrashTests(AttemptCase):
                 raise Crash()
             return real(workspace)
 
+        if plan:
+            self.cli.plan(plan)
         self.crash(task_id, patch("patchrondo.core._fingerprint_or_none", side_effect=fingerprinted))
         self.assertEqual(self.record(path).step.last.status, AttemptStatus.RUNNING)
         self.assertTrue((self.folder(path, "develop", 1) / "developer.reply.md").exists())  # its answer is not used
+        return task_id, path
+
+    def test_lost_after_its_cli_exited_without_its_tree_confirmed_ended_it_is_still_uncertain(self):
+        # Nothing held what the CLI started (no job object): its launch record cannot say the tree ended.
+        task_id, path = self.lost_after_its_cli_exited(tree=process.CHILD)
         UncertainTests.assert_held(self, task_id, path, "CX-0001")
+
+    def test_lost_after_its_cli_exited_with_its_tree_ended_it_is_reconciled_and_its_answer_is_not_used(self):
+        # Step 09: the launch record says the call ended and its whole tree was confirmed ended, before the run that
+        # started it was lost. Its end is recorded now, its outcome unknown: the reply in its folder is not an answer.
+        task_id, path = self.lost_after_its_cli_exited()
+        calls = len(self.cli.calls)
+        state = run_task(self.home, task_id)
+        self.assertEqual((state["status"], state["last_error"]["kind"], state["phase"]),
+                         ("paused", "attempt_reconciled", "develop"))
+        item = execution.load(state).step.last
+        self.assertEqual((item.outcome, item.termination, item.elapsed_seconds, item.turns.availability),
+                         (AttemptOutcome.UNKNOWN, Termination.RECONCILED, 2700, Availability.UNKNOWN))
+        self.assertEqual(execution.load(state).step.budget.line(Unit.PROVIDER_CALLS).used, 1)  # charged once, kept
+        self.assertNotIn("development_completed", [entry["event"] for entry in state["history"]])
+        self.assertFalse((path / "handoff.md").exists())
+        reconciled = [entry for entry in state["history"] if entry["event"] == "attempt_reconciled"]
+        self.assertEqual([(entry["attempt"], entry["previously"], entry["evidence"], entry["effects"])
+                          for entry in reconciled], [("CX-0001", "no_end", ["ended_confirmed"], "unknown")])
+        self.assertEqual(len(self.cli.calls), calls)  # nothing was started to find it
+        # The user resumes: a new call of the step, in a folder of its own; the reconciled one is not repeated by itself.
+        done = run_task(self.home, task_id)
+        self.assertEqual(done["status"], "done", done.get("last_error"))
+        self.assertEqual(len(self.cli.calls), calls + 2)
+        self.assertEqual([entry["event"] for entry in done["history"]].count("attempt_reconciled"), 1)
 
     def test_release_is_refused_for_anything_but_the_uncertain_attempt(self):
         task_id, path = self.task()

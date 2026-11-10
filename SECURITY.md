@@ -52,10 +52,13 @@ an edit of the file.
 Captured process output is bounded in memory; temporary capture files can grow on
 disk until the timeout. Apply disk quotas in isolated runners. On native Windows,
 the project's checks run in a job object, so a time limit ends every process
-they started; an agent CLI is still terminated alone, a process started before
-the job object holds it escapes, a check no job object could hold is
-terminated alone and its record says so, and stale-lock recovery is
-conservative. Use
+they started; an agent CLI of a task recorded by Adaptive Execution runs in a
+job object made before it, created suspended and resumed only once it is put
+in the job and recorded, and the system stops everything in that job when the
+run that holds it ends however it ends; other agent CLIs are still terminated
+alone, a process a check starts before its job object holds it escapes, a
+check no job object could hold is terminated alone and its record says so,
+and stale-lock recovery is conservative. Use
 WSL2 for POSIX process-group cleanup.
 
 ## Environment check and repairs
@@ -322,19 +325,32 @@ may still be running. An agent step, or a command of the test stage before
 checks, stopped that way says the same in the message of the pause and at
 the end of its log. A process that leaves the group is not stopped.
 
-**An agent call that may still be running.** Agent CLIs run without a job
-object on native Windows, so a timeout or an interruption there stops the
-CLI alone. With Adaptive Execution enabled, each call is recorded before it
-starts; a call stopped without proof that what it started stopped, or found
-with no recorded end after a lost run, holds the task (`attempt_uncertain`):
-no other agent call starts until you have checked and run `patchrondo
-release-attempt … --confirm-stopped`, which only records your statement and
-is refused without that acknowledgement, while the task was not paused by a
-run, while the call's folder cannot be read, and while the call's process
-file names a process that may be alive (on native Windows, any). A release
-claims nothing about what the call did: its outcome stays unknown and its
-changes are not undone. Without Adaptive Execution, a Resume after such a
-timeout starts the next call as before.
+**An agent call that may still be running.** Without Adaptive Execution,
+agent CLIs run without a job object on native Windows, so a timeout or an
+interruption there stops the CLI alone, and a Resume after such a timeout
+starts the next call as before. With Adaptive Execution enabled, each call
+is recorded before it starts, and since November 10, 2026 its whole process
+tree is supervised: a process group on POSIX, on native Windows a job
+object made before the CLI, which is created suspended and runs only once
+it is in the job and recorded, and which the system empties when the run
+that holds it ends, a crash included. What the CLI leaves running when it
+exits is stopped. A call stopped without proof that what it started
+stopped, or found with no recorded end after a lost run, holds the task
+(`attempt_uncertain`) until a later run shows from its launch record and
+the identity of its processes that it never started or that everything it
+started has ended; a PID alone, a missing process file or a reply file is
+never taken for that proof. A call shown ended is recorded with its outcome
+unknown and pauses the task once (`attempt_reconciled`); nothing repeats it
+by itself. Otherwise no other agent call starts until you have checked and
+run `patchrondo release-attempt … --confirm-stopped`, which only records
+your statement and is refused without that acknowledgement, while the task
+was not paused by a run, while the call's folder cannot be read, and while
+the call's process file names a process that may be alive (on native
+Windows, any whose identity it does not name) or its launch record names a
+process shown running. A release claims nothing about what the call did:
+its outcome stays unknown and its changes are not undone. The launch record
+and process files stay in the task's private run folder; what is saved for
+people names codes, never a PID.
 
 **Budgets of agent calls.** With Adaptive Execution enabled, no agent call
 starts that the frozen budget of its step or of the task cannot take,
@@ -353,10 +369,12 @@ be lower, never higher, than the step's. Its prompt adds a checkpoint brief
 in which an agent's words stay labelled as reported and quoted as data; the
 provider's own session is never resumed. No continuation starts after a
 quota limit, a timeout, an interruption or an error, after a call of the step
-was released, while a process file is left in the task's runs, or when
-nothing showed that a process group or a job object held what the call
-started: on native Windows, where agents run without a job object, none
-starts. The environment is checked again before the new call. Since
+was released or found ended after a lost run, while a process file is left
+in the task's runs, when nothing showed that a process group or a job object
+held what the call started and that all of it had ended when the call
+returned, or when the CLI left processes running. On native Windows a real
+CLI is not continued until it has been validated with real providers inside
+a job object. The environment is checked again before the new call. Since
 November 9, 2026 the same opt-in also follows a reviewer call whose answer
 could not be used as a review (empty, too large or unreadable) with one new,
 independent review: built by the same command builder from the reviewer's

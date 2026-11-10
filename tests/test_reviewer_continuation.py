@@ -456,14 +456,18 @@ class CrashTests(ReviewCase):
         self.assertEqual(first.attempt_id, "CX-0002")
         self.assertFalse(self.folder(path, "review", 2).exists())
         if not first.ended:  # its end was not saved: what it did is not known, so nothing is started
-            self.assertEqual((self.go(task_id)["last_error"]["kind"], len(self.reviewers())), ("attempt_uncertain", 1))
+            self.assertIn(self.go(task_id)["last_error"]["kind"], ("attempt_reconciled", "attempt_uncertain"))
+            self.assertEqual(len(self.reviewers()), 1)
             return
-        # Saved by the check before the continuation: the user's Resume is an ordinary call of the step.
+        # Saved by the check before the continuation, which the lost run never started. Step 09: the Resume carries
+        # that continuation out (a new, independent review with its brief), once, never as an ordinary call instead.
         self.cli.plan({"reply": APPROVE})
         state = self.go(task_id)
         self.assertEqual(state["status"], "done", state.get("last_error"))
         self.assertEqual([(item.attempt_id, item.continuation) for item in execution.load(state).step.attempts],
-                         [("CX-0002", ContinuationMode.NONE), ("CX-0003", ContinuationMode.NONE)])
+                         [("CX-0002", ContinuationMode.NONE), ("CX-0003", ContinuationMode.CHECKPOINT_RESUME)])
+        started = [entry for entry in state["history"] if entry["event"] == "continuation_started"]
+        self.assertEqual([(entry["after"], entry.get("resumed")) for entry in started], [("CX-0002", True)])
 
 
 class CompatibilityTests(ReviewCase):
@@ -493,7 +497,8 @@ class ControllerTests(ReviewCase):
         self.paused = self.go(self.task_id)
         self.workspace = Path(self.paused["worktree"])
         self.failure = AgentFailure("Review is not valid JSON", "invalid_review", provider="codex")
-        self.held = {"attempt": "CX-0002", "tree": process.GROUP, "refused": False}
+        # As `_attempt` records it from the call's `Launch` (Step 09: its whole tree confirmed ended, nothing left).
+        self.held = {"attempt": "CX-0002", "tree": process.GROUP, "refused": False, "ended": True, "left": False}
 
     def ask(self, state=None, role="reviewer"):
         state = copy.deepcopy(self.paused) if state is None else state

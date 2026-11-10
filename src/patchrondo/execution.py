@@ -178,9 +178,15 @@ class Termination(StrEnum):
     UNVERIFIED = "unverified"    # stopped, and what it started may still run (no job object; a signal refused)
     NOT_STARTED = "not_started"  # no process was started for it
     RELEASED = "released"        # was uncertain; the user stated that its processes stopped (`ExecutionRecord.release`)
+    # Step 09: was uncertain; PatchRondo later found the call and everything it started gone, from the identity of its
+    # processes and what held them (`ExecutionRecord.reconcile`). What the call did stays unknown, as after a release.
+    RECONCILED = "reconciled"
 
 
-SETTLED = frozenset({Termination.EXITED, Termination.STOPPED, Termination.NOT_STARTED, Termination.RELEASED})
+SETTLED = frozenset({Termination.EXITED, Termination.STOPPED, Termination.NOT_STARTED, Termination.RELEASED,
+                     Termination.RECONCILED})
+# Terminations after which what the call did is not known: no automatic continuation follows in its step (`next_call`).
+EFFECTS_UNKNOWN = frozenset({Termination.RELEASED, Termination.RECONCILED})
 
 
 class ContinuationMode(StrEnum):
@@ -227,6 +233,9 @@ OUTCOME_OF_KIND = {
     "model_unavailable": AttemptOutcome.PROVIDER_ERROR,
     "agent_error": AttemptOutcome.PROVIDER_ERROR,
     "system_error": AttemptOutcome.UNKNOWN,  # an OSError or RuntimeError: what the call did is not known
+    # Step 09: the CLI exited, processes it started were still running, and stopping them could not be confirmed.
+    # Its answer is not used: what the call did is not known.
+    "process_tree_unconfirmed": AttemptOutcome.UNKNOWN,
 }
 # A kind a more precise error of the system narrows, never the reverse. `system_error` is what `core._failure` saves
 # for any OSError or RuntimeError; a PermissionError among them is the system refusing access (the CLI could not be
@@ -242,7 +251,9 @@ ENGINE_KINDS = frozenset({"tests_disabled", "verification_error", "verification_
                           # Step 05: a budget refused the next call before anything was started.
                           "budget_exhausted",
                           # Step 05.1: a recorded task whose record is missing, or whose policy is not known.
-                          "execution_record_missing", "execution_policy_missing"})
+                          "execution_record_missing", "execution_policy_missing",
+                          # Step 09: an uncertain attempt was found ended and reconciled; the user resumes.
+                          "attempt_reconciled"})
 
 
 def outcome_for_failure(kind) -> AttemptOutcome | None:
@@ -738,12 +749,25 @@ class AttemptRecord:
         unverified keeps its outcome and everything it observed; only its
         termination changes. Nothing else of an ended attempt is ever changed.
         """
+        return self._settled_as(Termination.RELEASED, ended_at)
+
+    def reconciled(self, *, ended_at: str) -> "AttemptRecord":
+        """The attempt after PatchRondo found it and everything it started gone (Step 09). Only an uncertain one.
+
+        As `released`: one found without an end ends with the outcome
+        `UNKNOWN` and the most it was allowed, and one stopped unverified keeps
+        its outcome; only the termination says who settled it. What the call
+        did is not known either way.
+        """
+        return self._settled_as(Termination.RECONCILED, ended_at)
+
+    def _settled_as(self, termination: Termination, ended_at: str) -> "AttemptRecord":
         if not self.uncertain:
-            raise InvalidRecord("only an attempt that may still run is released")
+            raise InvalidRecord(f"only an attempt that may still run is {termination}")
         if self.ended:
-            return replace(self, termination=Termination.RELEASED)
+            return replace(self, termination=termination)
         return self.end(AttemptOutcome.UNKNOWN, ended_at=ended_at, elapsed_seconds=self.timeout_seconds,
-                        termination=Termination.RELEASED)
+                        termination=termination)
 
     def to_dict(self) -> dict:
         return {"version": 1 if self.draft is None else 2, "attempt_id": self.attempt_id, "task_id": self.task_id,
@@ -884,6 +908,21 @@ class StepExecution:
     @property
     def last(self) -> AttemptRecord | None:
         return self.attempts[-1] if self.attempts else None
+
+    @property
+    def last_call(self) -> AttemptRecord | None:
+        """The last attempt that is not a continuation which never started a process (Step 09).
+
+        A continuation that was decided and saved, and then never started (a
+        run lost before its process existed, a folder that could not be made),
+        made no call: what it was to follow is still the step's last call, and
+        a later run may carry the continuation out (`next_call`).
+        """
+        for item in reversed(self.attempts):
+            if not (item.continuation is ContinuationMode.CHECKPOINT_RESUME
+                    and item.termination is Termination.NOT_STARTED):
+                return item
+        return None
 
     @property
     def status(self) -> StepStatus:
@@ -1161,7 +1200,23 @@ class ExecutionRecord:
         last = step.last if step is not None else None
         if last is None or last.attempt_id != attempt:
             raise InvalidRecord("only the last attempt of the current step can be released")
-        item = last.released(ended_at=ended_at)
+        return self._settle_last(last.released(ended_at=ended_at))
+
+    def reconcile(self, attempt: str, *, ended_at: str) -> "ExecutionRecord":
+        """The record after PatchRondo found `attempt`, the uncertain last one, and everything it started gone (Step 09).
+
+        Charges are unchanged, as for a release: nothing about what the call
+        used or did was learned.
+        """
+        step = self.step
+        last = step.last if step is not None else None
+        if last is None or last.attempt_id != attempt:
+            raise InvalidRecord("only the last attempt of the current step can be reconciled")
+        return self._settle_last(last.reconciled(ended_at=ended_at))
+
+    def _settle_last(self, item: AttemptRecord) -> "ExecutionRecord":
+        step = self.step
+        last = step.last
         before, after = last.charges(), item.charges()
         return replace(self, budget=self.budget.charged(after, withdrawn=before),
                        step=replace(step, budget=step.budget.charged(after, withdrawn=before),
@@ -1223,9 +1278,13 @@ class Declined(StrEnum):
     WORKSPACE_CHANGED = "workspace_changed"          # a review call changed the files, or they could not be compared
     LIMIT_REACHED = "limit_reached"                  # `AUTOMATIC_CONTINUATIONS` of the step were made
     BUDGET = "budget"                                # no call fits what the budgets have left (`sized_call`)
+    RECONCILED_ATTEMPT = "reconciled_attempt"        # Step 09: a call of the step was reconciled; its effects are unknown
     # Decided by `core._next_call` from what the run observed.
-    PROCESS_TREE_UNVERIFIED = "process_tree_unverified"  # neither a process group nor a job object held the call
+    PROCESS_TREE_UNVERIFIED = "process_tree_unverified"  # nothing held the call's tree and confirmed that it all ended
     BRIEF_UNAVAILABLE = "brief_unavailable"          # `continuation.prepare` refused: the brief would not hold
+    # Step 09.
+    DESCENDANTS_LEFT = "descendants_left"            # the CLI exited while processes it started still ran (now stopped)
+    WINDOWS_NOT_VALIDATED = "windows_not_validated"  # a real CLI on native Windows: not validated with real providers
 
 
 NOT_OPTED_IN = frozenset({Declined.NOT_A_TURN_LIMIT, Declined.NOT_AN_UNUSABLE_ANSWER, Declined.POLICY_UNBOUND,
@@ -1283,9 +1342,16 @@ def next_call(record: ExecutionRecord) -> NextCall:
     fits what the budgets have left (`sized_call`: Claude turns only for
     Claude, calls and seconds for every provider). The first condition that
     does not hold is the reason.
+
+    Since Step 09 the call followed is the step's last call (`last_call`): a
+    continuation that was saved and never started a process made no call, is
+    not counted as made, and does not stand in the way of the one it was to be
+    (a later run carries it out, `core._resumed`). A call whose processes were
+    found gone by a later run (`Termination.RECONCILED`) is, like a released
+    one, never followed in its step.
     """
     step = record.step
-    last = step.last if step is not None else None
+    last = step.last_call if step is not None else None
     outcome, kinds = FOLLOWED[step.phase] if step is not None else FOLLOWED[Phase.DEVELOP]
     if last is None or not last.ended or last.outcome is not outcome or last.failure_kind not in kinds:
         none = Declined.NOT_AN_UNUSABLE_ANSWER if step is not None and step.phase is Phase.REVIEW \
@@ -1299,13 +1365,16 @@ def next_call(record: ExecutionRecord) -> NextCall:
         return NextCall(trigger, declined=Declined.ADAPTIVE_OFF)
     if not settings.checkpoint_resume:
         return NextCall(trigger, declined=Declined.CHECKPOINT_RESUME_OFF)
-    made = sum(1 for item in step.attempts if item.continuation is ContinuationMode.CHECKPOINT_RESUME)
+    made = sum(1 for item in step.attempts if item.continuation is ContinuationMode.CHECKPOINT_RESUME
+               and item.termination is not Termination.NOT_STARTED)
     if last.draft is not None:
         return NextCall(trigger, declined=Declined.TEST_REQUEST, made=made)
     if last.termination is not Termination.EXITED:
         return NextCall(trigger, declined=Declined.NOT_SETTLED, made=made)
     if any(item.termination is Termination.RELEASED for item in step.attempts):
         return NextCall(trigger, declined=Declined.RELEASED_ATTEMPT, made=made)
+    if any(item.termination is Termination.RECONCILED for item in step.attempts):
+        return NextCall(trigger, declined=Declined.RECONCILED_ATTEMPT, made=made)
     if step.phase is Phase.REVIEW and (last.workspace_before is None or last.workspace_after != last.workspace_before):
         return NextCall(trigger, declined=Declined.WORKSPACE_CHANGED, made=made)
     if made >= AUTOMATIC_CONTINUATIONS:

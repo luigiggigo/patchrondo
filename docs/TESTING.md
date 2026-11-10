@@ -168,6 +168,23 @@ same either way. One
 test runs the real pytest and is skipped where pytest is not installed, as on
 CI; a skip is not a pass.
 
+`tests/test_supervision.py` checks the supervision of an agent call's
+process tree with real local processes, a grandchild that writes a
+heartbeat file showing whether a tree was really stopped: normal ends,
+grandchildren left running, timeouts, interruptions, stops the system does
+not confirm, PIDs without identity or recycled, a live descendant that keeps
+`--unlock` refused, and an unrelated process left alone. Job objects
+(created before a suspended process, refused, impossible, a process that
+cannot be resumed, and a run killed while its call runs, whose job the
+system closes) are checked on native Windows only; process groups (a member
+left behind, a run killed while its call runs, whose group goes on, a lock
+whose PID was recycled) on POSIX only. Run it on both. Its `EngineTests`
+run whole tasks against `support.ScriptedCLI`, real processes behind the
+simulated provider. `tests/test_reconciliation.py` crashes the emulated CLI
+of `tests/test_attempts.py` at each point of a call's start and end and
+checks what the next Resume finds, with the system's answer about a process
+tree fixed by the test.
+
 `tests/test_provenance.py` checks the fingerprint of a task's files, the
 inputs a check declares, each rule of the validity of a record, the
 invalidation records and the loop with the real runner. Junctions and

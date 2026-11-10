@@ -22,7 +22,7 @@ from .process import GROUP, JOB, KILL_REFUSED, execute, short_log, stop_refused,
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
 from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery
-from . import execution, gate, provenance, runfiles, storage, verification, winacl
+from . import execution, gate, provenance, reconciliation, runfiles, storage, verification, winacl
 from . import continuation as briefs
 
 DEFAULT_CONFIG = {
@@ -688,7 +688,12 @@ def _invoke(adapter, path: Path, state: dict, role: str, prompt: str, workspace:
 # A step that started without a record runs as it always did, in the iteration's folder, and gains none.
 
 class AttemptUncertain(AgentFailure):
-    """A call of the task may still be running: no other call starts until the user releases it."""
+    """A call of the task may still be running: no other call starts until it is shown ended or the user releases it."""
+
+    def __init__(self, message: str, kind: str = "attempt_uncertain", *, provider: str | None = None,
+                 assessment: reconciliation.Assessment | None = None):
+        super().__init__(message, kind, provider=provider)
+        self.assessment = assessment
 
 
 def _execution(state: dict) -> execution.ExecutionRecord | None:
@@ -772,40 +777,90 @@ def _ended_event(state: dict, item: execution.AttemptRecord, **extra) -> None:
               else {}), **extra)
 
 
-def _settle_attempts(path: Path, state: dict) -> None:
-    """Before a run or a request for tests starts anything: stop when a call of the task may still be running.
+class AttemptReconciled(AgentFailure):
+    """An uncertain attempt was found ended with everything it started, and reconciled: the user decides to go on."""
 
-    An attempt saved as STARTING whose folder does not exist never started a
-    process (its folder is made before anything is started): it is closed as
-    `NOT_STARTED`. Any other attempt without an end, and one stopped while what
-    it started may still run, pauses with `attempt_uncertain`, the record left
-    as it is, until the user releases it (`release_attempt`): no file, PID or
-    missing result is taken for proof that it stopped.
+
+def _mark(folder: Path, item: execution.AttemptRecord, stage: str, launch=None) -> None:
+    """Write the attempt's launch record (`reconciliation.MARKER`) in its own folder, atomically and durably."""
+    save_json(folder / reconciliation.MARKER, reconciliation.marker(item.attempt_id, stage, _instant(), launch))
+
+
+def _assessment(path: Path, state: dict) -> reconciliation.Assessment | None:
+    """What is on record of the task's attempt that may still run (`reconciliation.assess`); None when there is none.
+
+    Reads only: no event, no write, no environment check, no provider call.
+    A record that cannot be read is left to `_execution`.
+    """
+    try:
+        record = execution.load(state)
+    except execution.InvalidRecord:
+        return None
+    item = record.step.uncertain if record is not None and record.step is not None else None
+    return None if item is None else reconciliation.assess(path, item, _folder_of(item))
+
+
+def _still_uncertain(path: Path, state: dict) -> bool:
+    """Whether a Resume would find the uncertain attempt as unsettled as before: then it does nothing."""
+    found = _assessment(path, state)
+    return found is not None and not found.settles
+
+
+def _settle_attempts(path: Path, state: dict) -> None:
+    """Before a run or a request for tests starts anything: reconcile, or stop while a call may still be running.
+
+    The one procedure for an attempt a run finds uncertain (Step 09; see
+    `reconciliation`). `NEVER_STARTED` (its folder was never made, or its
+    launch record never went past `prepared`) is closed as `NOT_STARTED`: no
+    provider call is charged, and the run goes on. `TERMINATED_UNRECORDED`
+    (its process and everything it started are shown gone) is reconciled:
+    its outcome stays unknown, its charges stay, its files are kept and
+    never used as an answer, and the run pauses once with
+    `attempt_reconciled` so that the user decides whether a new call of the
+    step follows. Every other finding pauses with `attempt_uncertain` and the
+    diagnosis, the record left as it is, until the processes are shown gone
+    or the user releases it (`release_attempt`): no file, PID or missing
+    result is taken for proof that it stopped. Idempotent: what was settled
+    is not uncertain any more, and what was not is read again unchanged.
     """
     record = _execution(state)
     item = record.step.uncertain if record is not None and record.step is not None else None
     if item is None:
         return
-    if item.status is execution.AttemptStatus.STARTING:
-        try:
-            os.lstat(path / runfiles.RUNS / _folder_of(item))
-        except FileNotFoundError:
-            ended = item.end(execution.AttemptOutcome.INTERRUPTED, ended_at=_instant(item.started_at), elapsed_seconds=0,
-                             termination=execution.Termination.NOT_STARTED, **_unused(item.provider))
-            state[execution.KEY] = record.update(ended).to_dict()
-            _ended_event(state, ended, found=True)
-            return
-        except OSError:
-            pass  # cannot be looked at: not taken for absent
-    what = ("has no end on record: the run that started it stopped before it could save one, so whether its CLI "
-            "is still running is not known") if not item.ended else \
-        "was stopped, and what its CLI started may still be running (nothing could stop or confirm all of it)"
+    found = reconciliation.assess(path, item, _folder_of(item))
+    if found.finding is reconciliation.Finding.NEVER_STARTED:
+        ended = item.end(execution.AttemptOutcome.INTERRUPTED, ended_at=_instant(item.started_at), elapsed_seconds=0,
+                         termination=execution.Termination.NOT_STARTED, **_unused(item.provider))
+        state[execution.KEY] = record.update(ended).to_dict()
+        _ended_event(state, ended, found=True, **({} if found.evidence == ("folder_missing",)
+                                                  else {"evidence": list(found.evidence)}))
+        return
+    if found.finding is reconciliation.Finding.TERMINATED_UNRECORDED:
+        record = record.reconcile(item.attempt_id, ended_at=_instant(item.started_at))
+        settled = record.step.last
+        state[execution.KEY] = record.to_dict()
+        # Fixed words and codes: what was shown, what the record says now; never a PID, never a claim about effects.
+        _event(state, "attempt_reconciled", attempt=item.attempt_id, previously="no_end" if not item.ended else "unverified",
+               outcome=str(settled.outcome), evidence=list(found.evidence), effects="unknown")
+        raise AttemptReconciled(
+            f"Attempt {item.attempt_id} of the {item.role} (iteration {item.iteration}) "
+            f"{reconciliation.FINDING_WORDS[found.finding]}: "
+            f"{'; '.join(reconciliation.WORDS.get(code, code) for code in found.evidence)}. PatchRondo recorded it as "
+            f"ended. What it did is not known: its outcome stays {settled.outcome}, its charges stay, its files are kept "
+            f"in runs/{_folder_of(item)} and none of them is used as an answer, and no automatic continuation follows "
+            "it. Check the task's files, then resume to start a new call of this step, if its budgets admit one.",
+            "attempt_reconciled", provider=item.provider)
+    what = ("has no end on record: the run that started it stopped before it could save one"
+            if not item.ended else "was stopped, and what its CLI started may still be running")
+    release = "" if found.finding is reconciliation.Finding.ACTIVE else (
+        f" or, once you checked that no process of it is left, run: patchrondo release-attempt {state['id']} "
+        f"{item.attempt_id} --confirm-stopped")
     raise AttemptUncertain(
-        f"Attempt {item.attempt_id} of the {item.role} (iteration {item.iteration}) {what}. No other call is started "
-        f"while it may still run. Check that no process of it is left (its files are in runs/{_folder_of(item)}), "
-        f"then run: patchrondo release-attempt {state['id']} {item.attempt_id} --confirm-stopped and resume. "
-        "Releasing says nothing about what the call did: its outcome stays unknown and its files are not used as an answer.",
-        "attempt_uncertain", provider=item.provider)
+        f"Attempt {item.attempt_id} of the {item.role} (iteration {item.iteration}) {what}. "
+        f"{' '.join(found.lines())} No other call is started while it may still run. Resume once its processes "
+        f"have ended (PatchRondo checks again){release}; patchrondo release-attempt {state['id']} {item.attempt_id} "
+        "shows this diagnosis again. Releasing says nothing about what the call did: its outcome stays unknown and "
+        "its files are not used as an answer.", "attempt_uncertain", provider=item.provider, assessment=found)
 
 
 def _step_settings(root: Path, home: Path, cfg: dict, state: dict, role: str) -> tuple[dict, execution.ExecutionRecord | None]:
@@ -966,7 +1021,7 @@ def _budget_message(refusal: execution.Refusal, role: str, iteration: int) -> st
             "and the evidence are kept. This version has no way to amend a budget: create a follow-up task to go on.")
 
 
-def _refusal(state: dict, cfg: dict) -> execution.Refusal | None:
+def _refusal(state: dict, cfg: dict, path: Path | None = None, live: bool = False) -> execution.Refusal | None:
     """Whether the next call of the step the task is at would be refused by a budget. Reads only; None: not refused.
 
     Only a recorded step, or a step about to begin of a recorded task, is ever
@@ -976,6 +1031,11 @@ def _refusal(state: dict, cfg: dict) -> execution.Refusal | None:
     the task's budget is asked whether it could take the smallest call. An
     attempt that may still run is left to `_settle_attempts`, and a record
     that cannot be read to `_execution`: neither is a refusal.
+
+    Step 09: when a continuation of the step is due (`_due`, with the task's
+    folder `path`), the next call is that continuation, admitted at its
+    smaller size: a budget that cannot take a full call is not taken for one
+    that cannot take the continuation.
     """
     phase = {"develop": execution.Phase.DEVELOP, "review": execution.Phase.REVIEW}.get(state.get("phase"))
     if phase is None:
@@ -988,15 +1048,18 @@ def _refusal(state: dict, cfg: dict) -> execution.Refusal | None:
         return None
     step, role = record.step, execution.ROLE_OF[phase]
     if step is not None and (step.iteration, step.phase) == (state.get("iteration"), phase):
-        return None if step.uncertain is not None else record.admission()
+        if step.uncertain is not None:
+            return None
+        due = _due(path, state, record, role, live) if path is not None else None
+        return record.admission(due.call) if due is not None else record.admission()
     if state.get(role) not in agents.PROVIDERS:
         return None
     return record.task_admission(execution.smallest_request(state[role]))
 
 
-def _admit(state: dict, cfg: dict) -> None:
+def _admit(state: dict, cfg: dict, path: Path | None = None, live: bool = False) -> None:
     """Stop the run before anything starts a CLI when the next call of its step would be refused by a budget."""
-    refusal = _refusal(state, cfg)
+    refusal = _refusal(state, cfg, path, live)
     if refusal is not None:
         role = "developer" if state["phase"] == "develop" else "reviewer"
         raise BudgetExhausted(_budget_message(refusal, role, state["iteration"]), refusal, provider=state[role])
@@ -1004,7 +1067,8 @@ def _admit(state: dict, cfg: dict) -> None:
 
 def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace: Path, run_dir: Path, settings: dict,
              record: execution.ExecutionRecord | None, accept=None, *, draft: bool = False,
-             continuing: execution.NextCall | None = None, brief: str | None = None, held: dict | None = None) -> tuple:
+             continuing: execution.NextCall | None = None, brief: str | None = None, held: dict | None = None,
+             resumed: bool = False) -> tuple:
     """One call of a step: (its reply, the folder it wrote in, what `accept` made of the reply).
 
     `accept`, when given, reads the reply as its role needs it (the review's
@@ -1031,7 +1095,10 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
     SHA-256 of the checkpoint brief its prompt carries, named in that event.
     `held`, when given, learns how the call's processes were held once it
     ended (`tree`: `process.GROUP`, `JOB`, `CHILD` or None; `refused`: the
-    last signal was refused): what `_continued` reads before a continuation.
+    last signal was refused; `ended`: its whole tree was confirmed ended;
+    `left`: it left processes running): what `_continued` reads before a
+    continuation. `resumed`: a continuation a later run carries out (Step 09),
+    said so in its event.
     """
     if record is None:
         reply = _invoke(adapter, path, state, role, prompt, workspace, run_dir, settings)
@@ -1066,7 +1133,7 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
                continuation=continuing.made + 1, of=execution.AUTOMATIC_CONTINUATIONS, turn_limit=item.turn_limit,
                timeout_seconds=item.timeout_seconds, step_turn_limit=step.call.turn_limit,
                step_timeout_seconds=step.call.timeout_seconds, remaining=continuing.remaining(before),
-               **({"brief": brief} if brief else {}))
+               **({"brief": brief} if brief else {}), **({"resumed": True} if resumed else {}))
     _event(state, "attempt_started", attempt=item.attempt_id, ordinal=item.ordinal, folder=_folder_of(item),
            turn_limit=item.turn_limit, timeout_seconds=item.timeout_seconds,
            **({"purpose": "test_draft"} if item.draft is not None else {}),
@@ -1095,13 +1162,21 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
                                      failure_kind=kind if outcome is None else None, workspace_after=after, **usage)
         current["record"] = latest.update(ended)
         state[execution.KEY] = current["record"].to_dict()
-        _ended_event(state, ended)
-        if held is not None and observation is not None:
-            held.update(tree=observation.launch.process_tree, refused=observation.launch.kill_refused)
+        launch = observation.launch if observation is not None else None
+        _ended_event(state, ended, **({"left_behind": True} if launch is not None and launch.left_behind else {}))
+        if held is not None and launch is not None:
+            held.update(tree=launch.process_tree, refused=launch.kill_refused, ended=launch.tree_ended,
+                        left=launch.left_behind)
 
+    metered = getattr(adapter, "metered", False)
     try:
         folder = _make_draft(path, item) if item.draft is not None else \
             runfiles.allocate(path, item.iteration, str(item.phase), item.ordinal)
+        if metered:
+            # Step 09: before the CLI is asked to start. A later run that finds the record still `prepared` knows that
+            # no process of it was created (`launching` is written before one is). Without an adapter that reports its
+            # process there is no record, and nothing is ever taken as not started from its absence.
+            _mark(folder, item, reconciliation.PREPARED)
     except (OSError, runfiles.UnsafeFolder) as exc:
         # Nothing was started. An existing folder is never written into, whatever made it.
         close(exc, termination=execution.Termination.NOT_STARTED, outcome=execution.AttemptOutcome.ENVIRONMENT_BLOCKED)
@@ -1112,14 +1187,26 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
                                "attempt_folder_exists", provider=item.provider) from exc
         raise
 
+    def launching() -> None:
+        # Before the process is created; if this cannot be written, nothing is created.
+        _mark(folder, item, reconciliation.LAUNCHING)
+
     def running() -> None:
+        # The process, its identity and what holds it, in the attempt's folder before RUNNING is saved: what a later
+        # run reads if this one is lost (`reconciliation.assess`). On native Windows a supervised CLI is still
+        # suspended here, and runs only once both are on disk.
+        _mark(folder, item, reconciliation.STARTED, observation.launch)
         latest = current["record"]
         if latest.step.last.status is execution.AttemptStatus.STARTING:  # once, also when the CLI is started again
             current["record"] = latest.update(latest.step.last.running())
             state[execution.KEY] = current["record"].to_dict()
             _save(path, state)
 
-    observation = providers.Observation(on_start=running) if getattr(adapter, "metered", False) else None
+    def finished() -> None:
+        # Before its process file is removed: whether its whole tree was confirmed ended (`process.Launch._finished`).
+        _mark(folder, item, reconciliation.ENDED, observation.launch)
+
+    observation = providers.Observation(on_start=running, on_launch=launching, on_end=finished) if metered else None
     # The call's limits, given as agent settings: `agents.command` builds the command, as for every call. They are the
     # step's frozen limits, or a continuation's smaller ones (Step 07): never more, and nothing else of the settings.
     call = {**settings, "timeout_seconds": item.timeout_seconds,
@@ -1165,14 +1252,47 @@ DECLINED = {
                                        "can be measured"),
     execution.Declined.BUDGET: "what the budgets of the step and the task have left cannot take another call",
     execution.Declined.PROCESS_TREE_UNVERIFIED: ("nothing showed that every process the call started was held by a "
-                                                 "process group or a job object (on native Windows agents run without "
-                                                 "one)"),
+                                                 "process group or a job object and had ended when the call returned"),
     execution.Declined.BRIEF_UNAVAILABLE: "no checkpoint brief of the step could be prepared",
+    execution.Declined.RECONCILED_ATTEMPT: ("a call of this step was found ended after its run was lost, and what it did "
+                                            "is not known; a call that could repeat its actions is never started "
+                                            "automatically"),
+    execution.Declined.DESCENDANTS_LEFT: ("the CLI exited while processes it started were still running (they were "
+                                          "stopped); a call that left work going on is not continued automatically"),
+    execution.Declined.WINDOWS_NOT_VALIDATED: ("on native Windows automatic continuation of a real CLI waits for the "
+                                               "validation with real providers at the end of Phase 2.5"),
 }
 
+# Decision D4, narrowed by Step 09. Automatic continuation follows only a call whose whole process tree was held (a
+# process group, or a job object made before the CLI ran) and confirmed ended when the call returned, with nothing it
+# started left running. On native Windows that is shown with simulated providers only: a real CLI there is not
+# continued until the end-of-phase validation with real providers sets this, by a decision of the project's owner.
+WINDOWS_REAL_CONTINUATION = False
 
-def _next_call(path: Path, state: dict, workspace: Path, held: dict, failure: AgentFailure,
-               role: str = "developer") -> tuple:
+
+def _tree_declined(held: dict, live: bool) -> tuple:
+    """Why the processes of the call `held` describes keep it from being continued: (reason or None, detail)."""
+    if held.get("tree") not in (GROUP, JOB) or held.get("refused") is not False:
+        return execution.Declined.PROCESS_TREE_UNVERIFIED, {"process_tree": str(held.get("tree") or "unknown")}
+    if held.get("ended") is not True:
+        return execution.Declined.PROCESS_TREE_UNVERIFIED, {"process_tree": str(held["tree"]), "ended": "unconfirmed"}
+    if held.get("left") is not False:
+        return execution.Declined.DESCENDANTS_LEFT, {"process_tree": str(held["tree"])}
+    if os.name == "nt" and live and not WINDOWS_REAL_CONTINUATION:
+        return execution.Declined.WINDOWS_NOT_VALIDATED, {"process_tree": str(held["tree"])}
+    return None, {}
+
+
+def _held_of(path: Path, item: execution.AttemptRecord) -> dict:
+    """How `item`'s processes were held at its end, from its launch record (Step 09); empty when nothing says."""
+    try:
+        return reconciliation.held(reconciliation.read_marker(path / runfiles.RUNS / _folder_of(item)), item.attempt_id)
+    except (reconciliation.Unreadable, OSError, ValueError):
+        return {}
+
+
+def _next_call(path: Path, state: dict, workspace: Path, held: dict, failure: AgentFailure | None,
+               role: str = "developer", *, live: bool = False, resumed: bool = False):
     """Whether the call of `role` that just ended with `failure` is continued: (the decision, the brief's text).
 
     Raises `failure` again when it is not: unchanged when the task did not
@@ -1180,31 +1300,41 @@ def _next_call(path: Path, state: dict, workspace: Path, held: dict, failure: Ag
     reason added to its message (kind, provider and pause unchanged), after a
     `continuation_declined` event. A continuation needs, besides
     `execution.next_call`: the call it follows is the one `held` names, of
-    `role`'s step; that call was held by a process group or a job object and
-    no signal was refused (decision D4: agents have neither on native
-    Windows, so no continuation starts there); a checkpoint brief of this
-    task, iteration, role, previous call and frozen settings
+    `role`'s step; that call's whole process tree was held by a process group
+    or a job object, no signal was refused, it was confirmed ended when the
+    call returned and nothing the CLI started was left running
+    (`_tree_declined`; decision D4 as Step 09 narrowed it, with real CLIs on
+    native Windows still waiting for their validation); a checkpoint brief of
+    this task, iteration, role, previous call and frozen settings
     (`continuation.prepare`, which also refuses while any process file is in
     the task's runs); and, for a review, files that are still the ones the
     call began and ended on (the brief's fingerprint is the call's
     `workspace_after`): a second review is of the files the tests ran on.
+
+    `resumed` (Step 09): asked by a later run for a continuation that was due
+    and never carried out (`_resumed`). It then returns None instead of
+    raising, and records nothing: that run makes the ordinary call of the step.
     """
     record = _execution(state)
     decided = execution.next_call(record) if record is not None else None
     if decided is None or decided.trigger is None or decided.trigger != held.get("attempt") or not decided.considered:
+        if resumed:
+            return None
         raise failure
     phase = execution.Phase.DEVELOP if role == "developer" else execution.Phase.REVIEW
     if record.step.phase is not phase:
+        if resumed:
+            return None
         raise failure  # another role's step: nothing of it is continued here
-    previous = record.step.last
+    previous = record.step.last_call
     reason, detail = decided.declined, {}
     if reason is execution.Declined.BUDGET and decided.refusal is not None:
         detail = {"budget": decided.refusal.to_dict()}
     if reason is execution.Declined.WORKSPACE_CHANGED:
         detail = {"workspace": "changed_by_call" if None not in (previous.workspace_before, previous.workspace_after)
                   else "unknown"}
-    if reason is None and (held.get("tree") not in (GROUP, JOB) or held.get("refused") is not False):
-        reason, detail = execution.Declined.PROCESS_TREE_UNVERIFIED, {"process_tree": str(held.get("tree") or "unknown")}
+    if reason is None:
+        reason, detail = _tree_declined(held, live)
     text = ""
     if reason is None:
         try:
@@ -1222,6 +1352,8 @@ def _next_call(path: Path, state: dict, workspace: Path, held: dict, failure: Ag
         except (OSError, RuntimeError, ValueError):
             reason, detail = execution.Declined.BRIEF_UNAVAILABLE, {"brief": "unreadable"}
     if reason is not None:
+        if resumed:
+            return None
         _event(state, "continuation_declined", after=decided.trigger, reason=str(reason), made=decided.made, **detail)
         raise AgentFailure(f"{failure} Automatic continuation was not started: {DECLINED[reason]}. A Resume starts a "
                            "new call of this step only if its budgets admit one.", failure.kind,
@@ -1229,8 +1361,51 @@ def _next_call(path: Path, state: dict, workspace: Path, held: dict, failure: Ag
     return decided, text
 
 
+def _due(path: Path, state: dict, record: execution.ExecutionRecord | None, role: str,
+         live: bool) -> execution.NextCall | None:
+    """The continuation of `role`'s current step that is due and was never carried out, from what is on disk.
+
+    Step 09. A run lost after a call's end was saved and before its
+    continuation started (the environment check saves the state in between),
+    a continuation saved and never started (`last_call`), and a pause that
+    stopped one before its call (the environment, a folder in the way) leave
+    the step's last call one that `execution.next_call` allows to be followed.
+    Only the record, and how that call's processes were held as its launch
+    record says, are read here (no brief): enough for a budget to admit the
+    smaller call it would be. None when nothing is due.
+    """
+    phase = execution.Phase.DEVELOP if role == "developer" else execution.Phase.REVIEW
+    step = record.step if record is not None else None
+    if step is None or (step.iteration, step.phase) != (state.get("iteration"), phase):
+        return None
+    decided = execution.next_call(record)
+    if not decided.allowed:
+        return None
+    trigger = step.last_call
+    if trigger is None or trigger.attempt_id != decided.trigger:
+        return None
+    reason, _ = _tree_declined(_held_of(path, trigger), live)
+    return decided if reason is None else None
+
+
+def _resumed(path: Path, state: dict, workspace: Path, record: execution.ExecutionRecord | None, role: str,
+             live: bool) -> tuple | None:
+    """A continuation a later run carries out instead of an ordinary call (Step 09): (the decision, the brief's text).
+
+    Only when one is due (`_due`) and every condition of `_next_call` holds
+    again now, the brief included; it keeps the one-per-step bound and the
+    smaller limits of `sized_call` (never the step's full limits). None
+    otherwise, and nothing is recorded: the run then makes the step's
+    ordinary call, admitted by its budgets as before.
+    """
+    if _due(path, state, record, role, live) is None:
+        return None
+    trigger = record.step.last_call
+    return _next_call(path, state, workspace, _held_of(path, trigger), None, role, live=live, resumed=True)
+
+
 def _continued(adapter, path: Path, state: dict, role: str, workspace: Path, run_dir: Path, settings: dict,
-               record: execution.ExecutionRecord | None, prompt_of, ready, accept=None) -> tuple:
+               record: execution.ExecutionRecord | None, prompt_of, ready, accept=None, *, live: bool = False) -> tuple:
     """The call of `role`'s step, and the automatic continuation that may follow it (Steps 07-08): what `_attempt` gives.
 
     `prompt_of(text)` builds the role's prompt, with a brief's text for a
@@ -1244,24 +1419,34 @@ def _continued(adapter, path: Path, state: dict, role: str, workspace: Path, run
     interruption, a timeout, quota, an error of the system and every other
     failure go to the run's pause unchanged, and a continuation that ends the
     same way is not continued again (`execution.AUTOMATIC_CONTINUATIONS`).
+
+    Step 09: a continuation that was due and never carried out (`_resumed`)
+    is carried out first, in place of the step's ordinary call, never as a
+    full-size call. `live` says whether real CLIs are called (`_callers`).
     """
     kinds = execution.FOLLOWED[execution.Phase.DEVELOP if role == "developer" else execution.Phase.REVIEW][1]
     held: dict = {}
-    try:
-        return _attempt(adapter, path, state, role, prompt_of(""), workspace, run_dir, settings, record, accept,
-                        held=held)
-    except AgentFailure as exc:
-        if record is None or exc.kind not in kinds:
-            raise
-        failure = exc
+    resumed = _resumed(path, state, workspace, record, role, live) if record is not None else None
+    if resumed is None:
+        try:
+            return _attempt(adapter, path, state, role, prompt_of(""), workspace, run_dir, settings, record, accept,
+                            held=held)
+        except AgentFailure as exc:
+            if record is None or exc.kind not in kinds:
+                raise
+            failure = exc
     while True:
-        decided, text = _next_call(path, state, workspace, held, failure, role)
+        if resumed is not None:
+            (decided, text), resumed, again = resumed, None, True
+        else:
+            decided, text = _next_call(path, state, workspace, held, failure, role, live=live)
+            again = False
         ready()
         held = {}
         try:
             return _attempt(adapter, path, state, role, prompt_of(text), workspace, run_dir, settings,
                             _execution(state), accept, continuing=decided,
-                            brief=hashlib.sha256(text.encode("utf-8")).hexdigest(), held=held)
+                            brief=hashlib.sha256(text.encode("utf-8")).hexdigest(), held=held, resumed=again)
         except AgentFailure as exc:
             if exc.kind not in kinds:
                 raise
@@ -1287,6 +1472,62 @@ def _process_files(folder: Path) -> list[Path]:
         raise RuntimeError(f"The folder of the call cannot be read ({exc.strerror or exc}): {folder}. Check it "
                            "manually") from None
     return [folder / name for name in names if name.endswith(runfiles.PROCESS_SUFFIX)]
+
+
+def _launch_record(path: Path, item: execution.AttemptRecord) -> dict | None:
+    """The process the attempt's launch record names, when it names one with an identity; None otherwise."""
+    try:
+        record = reconciliation.read_marker(path / runfiles.RUNS / _folder_of(item))
+    except reconciliation.Unreadable:
+        return None
+    if record is None or record.get("attempt") != item.attempt_id or record.get("pid") is None \
+            or not isinstance(record.get("start"), str):
+        return None
+    return {name: record.get(name) for name in ("pid", "start", "tree", "kill_on_close", "owner_pid", "owner_start")}
+
+
+def diagnose_attempt(home: Path, task_id: str) -> dict:
+    """What is on record of the task's latest attempt, for the user deciding about it. Reads only; takes no lock.
+
+    The attempt that may still run, or else the current step's last one: the
+    reconciliation's finding with what was shown and what is not known
+    (`reconciliation.assess`), its outcome and charges as recorded, whether
+    its files changed since it started (compared with the fingerprint it
+    recorded; this decides nothing), whether the task's lock is held, and
+    whether automatic continuation could follow it. Nothing is written,
+    released or started.
+    """
+    path = task_dir(home, task_id)
+    state = read_json(path / "state.json")
+    record = _execution(state)
+    item = None if record is None or record.step is None else (record.step.uncertain or record.step.last)
+    if item is None:
+        return {"task": task_id, "attempt": None, "lines": ["This task has no recorded agent call."]}
+    found = reconciliation.assess(path, item, _folder_of(item))
+    lines = found.lines()
+    charges = {str(unit): value for unit, value in item.charges().items()}
+    lines.append(f"Recorded: status {item.status}, outcome {item.outcome or 'none yet'}, termination "
+                 f"{item.termination or 'none yet'}; charged {', '.join(f'{k} {v}' for k, v in charges.items())}.")
+    current = _fingerprint_or_none(Path(state["worktree"]))
+    if item.workspace_before is None or current is None:
+        lines.append("Whether the task's files changed since the call started is not known.")
+    else:
+        lines.append("The task's files changed since the call started." if current != item.workspace_before
+                     else "The task's files are as they were when the call started.")
+    lock = path / ".run.lock"
+    lines.append("The task's lock is held: a run may be going on." if lock.exists() else "The task's lock is free.")
+    if found.finding is reconciliation.Finding.ACTIVE:
+        lines.append("A release would be refused while a process of it is shown running.")
+    elif found.settles:
+        lines.append("A Resume settles it by itself: nothing needs to be released.")
+    elif item.uncertain:
+        lines.append(f"Once you checked that no process of it is left: patchrondo release-attempt {task_id} "
+                     f"{item.attempt_id} --confirm-stopped (your statement; PatchRondo cannot verify it).")
+    if item.uncertain or item.termination in execution.EFFECTS_UNKNOWN:
+        lines.append("No automatic continuation follows a call whose processes were not shown ended by itself, or "
+                     "whose effects are unknown.")
+    return {"task": task_id, "attempt": item.attempt_id, "finding": str(found.finding), "brief": found.brief(),
+            "lines": lines}
 
 
 def release_attempt(home: Path, task_id: str, attempt_id: str, *, confirm: bool = False) -> dict:
@@ -1331,12 +1572,23 @@ def release_attempt(home: Path, task_id: str, attempt_id: str, *, confirm: bool 
         found = _process_files(path / runfiles.RUNS / _folder_of(item))
         for entry in found:
             try:
-                pid = int(read_json(entry)["pid"])
+                recorded = read_json(entry)
+                pid = int(recorded["pid"])
             except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError):
                 raise RuntimeError(f"Unreadable process file: {entry}. Check manually") from None
-            if storage._alive(pid):
-                raise RuntimeError(f"The process file {entry} names PID {pid}, which may still be running. Check it; "
-                                   "remove the file only once that process and what it started have stopped")
+            # The process itself must be shown gone, and nothing of it shown running (Step 09: by its identity when
+            # its file names one; otherwise as before, by its PID, which on native Windows is never enough). What it
+            # started is what the user states.
+            why = storage.may_run(recorded, pid, leader_only=True)
+            if why is not None:
+                raise RuntimeError(f"The process file {entry} names PID {pid}, which may still be running "
+                                   f"({why.replace('_', ' ')}). Check it; remove the file only once that process and "
+                                   "what it started have stopped")
+        launched = _launch_record(path, item)
+        if launched is not None and storage.may_run(launched, launched["pid"], leader_only=True)                 in reconciliation.ALIVE_CODES:
+            raise RuntimeError(f"The launch record of {attempt_id} names a process, or a process of its group or the run "
+                               "that holds its job object, that is still running. Nothing was released: stop it and "
+                               "what it started first")
         record = record.release(attempt_id, ended_at=_instant(item.started_at))
         released = record.step.last
         state[execution.KEY] = record.to_dict()
@@ -1631,6 +1883,8 @@ def _failure(exc: BaseException, state: dict, at: datetime) -> dict:
         error["source"] = "gate"  # the details are in the task's `gate` record
     if isinstance(exc, BudgetExhausted):
         error["budget"] = exc.refusal.to_dict()  # which limit, in which unit: the scope, the limit, used and asked
+    if isinstance(exc, AttemptUncertain) and exc.assessment is not None:
+        error["reconciliation"] = exc.assessment.brief()  # what was shown and what is not known: codes, never a PID
     provider = getattr(exc, "provider", None)
     if kind == "quota":
         provider = provider or state["developer" if state["phase"] == "develop" else "reviewer"]
@@ -1880,14 +2134,14 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
             return state
         if state["status"] == "paused" and isinstance(error, dict) and (
                 (error.get("kind") == "execution_unreadable" and _execution_unreadable(state))
-                or (error.get("kind") == "attempt_uncertain" and _uncertain_attempt(state) is not None)
+                or (error.get("kind") == "attempt_uncertain" and _still_uncertain(path, state))
                 or (error.get("kind") == "execution_record_missing" and _record_missing(path, state))
                 or (error.get("kind") == "execution_policy_missing" and _policy_missing(state, cfg))):
             # Idempotent Resume: while the execution record cannot be read or is missing, a recorded task has no
-            # policy, or a call may still be running and nobody released it, a run may do nothing: no event, no
-            # environment check, no provider call.
+            # policy, or a call may still be running (nothing shows it ended, Step 09) and nobody released it, a run may
+            # do nothing: no event, no environment check, no provider call.
             return state
-        refusal = _refusal(state, cfg)
+        refusal = _refusal(state, cfg, path, live)
         if state["status"] == "paused" and isinstance(error, dict) and error.get("kind") == "budget_exhausted" \
                 and refusal is not None:
             # Idempotent Resume: a budget is never raised by a run, so while it still refuses the next call nothing
@@ -1929,7 +2183,7 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                 reusable = state["phase"] == "review" and record.code.get("status") == criteria.Code.APPROVED \
                     and isinstance(state.get("review"), dict)
                 if state["phase"] == "develop" or (state["phase"] == "review" and not reusable):
-                    _admit(state, cfg)  # a call follows: refused by a budget before any check starts a CLI
+                    _admit(state, cfg, path, live)  # a call follows: refused by a budget before any check starts a CLI
             elif _validate_stage(sync, cfg, path, state, workspace):
                 return state
             if manager is not None:
@@ -1947,7 +2201,7 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     # One call; and, for a task that opted in, one automatic continuation of it (Step 07).
                     reply, _, _ = _continued(adapter, path, state, "developer", workspace, run_dir, settings, executing,
                                              lambda text: _developer_prompt(path, state, workspace, context, work, text),
-                                             developer_ready)
+                                             developer_ready, live=live)
                     atomic_text(path / "handoff.md", f"# Handoff — iteration {iteration}\n\n{reply.text[:30000]}\n")
                     state["handoff"] = str(path / "handoff.md")
                     _event(state, "development_completed", agent=state["developer"])
@@ -1972,7 +2226,7 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                     if reused:
                         review = state["review"]
                     else:
-                        _admit(state, cfg)  # a review call follows: refused by a budget before the check starts a CLI
+                        _admit(state, cfg, path, live)  # a review call follows: refused before the check starts a CLI
                         if manager is not None:
                             # Before every review; a ready result is reused only while nothing it depends on changed.
                             _environment(manager, home, path, state, cfg, live=live, reviewer_only=True)
@@ -1998,7 +2252,7 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
                         reply, answered_in, review = _continued(
                             adapter, path, state, "reviewer", workspace, run_dir, settings, executing,
                             lambda text: _review_prompt(path, state, workspace, context, asked, text),
-                            reviewer_ready, accept=settled)
+                            reviewer_ready, accept=settled, live=live)
                         current = _check_test_context(state, cfg, workspace)
                         # Each issue is recorded as a finding, or linked to one of an earlier review by a fixed rule.
                         review = registry.settle(review, record) if registry is not None else findings.unlinked(review)
@@ -2066,7 +2320,7 @@ def run_task(home: Path, task_id: str, *, adapter=None, force_unlock: bool = Fal
             # The retry plan is saved with the pause, before the lock is released. A retry no budget could take is
             # never planned: the refusal of the step's next call is read from the record as this failure left it.
             try:
-                refused = _refusal(state, cfg) if state["last_error"]["kind"] == "quota" else None
+                refused = _refusal(state, cfg, path, live) if state["last_error"]["kind"] == "quota" else None
             except Exception:  # noqa: BLE001 - the pause is saved whatever; the retry's own admission still decides
                 refused = None
             recovery.on_failure(state, cfg, active=auto, now=failed_at,

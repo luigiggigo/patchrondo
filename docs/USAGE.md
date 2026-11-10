@@ -815,8 +815,13 @@ default.
 If the Python process was killed abruptly and left a `.run.lock`, **first confirm
 that no other run is active**, then use
 `patchrondo resume T-a1b2c3d4e5f6 --unlock`. The lock is not removed if a recorded
-runner, agent or test PID is still active. On native Windows, manual lock removal
-is required after a reboot.
+runner, agent or test PID is still active, or if what a recorded agent or test
+process started may still be running (on POSIX, a member of its process group;
+since November 10, 2026 a process file that names the process's identity is
+read by that identity, and one that names a job object is gone only when the
+run that held the job is gone too). On POSIX a lock whose PID now belongs to
+another program is not taken for the runner. On native Windows, manual lock
+removal is required after a reboot.
 
 Statuses: `ready`, `running`, `paused`, `done`, `blocked`.
 Phases: `develop`, `test`, `review`, `validate`, `complete`.
@@ -928,9 +933,13 @@ recorded (since November 8, 2026):
   be measured); the budgets have no call, no turn or fewer than 60 seconds
   left; a call of the step was released (what it did is unknown); the call
   did not end by itself; nothing showed that every process it started was
-  held by a process group (POSIX, WSL2) or a job object, which is always
-  the case **on native Windows, where no automatic continuation starts**; a
-  process file is left in the task's runs; or no brief can be prepared. A
+  held by a process group (POSIX, WSL2) or a job object and had ended,
+  everything it started included, when the call returned; the CLI left
+  processes running when it exited (they are stopped); **on native Windows,
+  a real CLI** (agent calls there are supervised by a job object since
+  November 10, 2026, but real Claude Code and Codex have not been validated
+  inside one, so their calls are not continued); a process file is left in
+  the task's runs; or no brief can be prepared. A
   quota limit, a timeout, an interruption, an error and an unusable answer
   of the developer are never continued; quota retries stay with automatic
   recovery. The environment is checked again before the new call. The tests
@@ -939,7 +948,10 @@ recorded (since November 8, 2026):
   which, with which limits, and what each budget had left) or
   `continuation_declined` (why not), and `attempt_started`/`attempt_ended`
   name the continuation. A Resume after such a pause is an ordinary call
-  with the step's full limits, admitted by the budgets as before.
+  with the step's full limits, admitted by the budgets as before, except
+  when the continuation was decided and never started (a run lost in
+  between, a folder in the way): the Resume then carries out that
+  continuation, at the size the budgets admit, once.
 - **Automatic continuation of the reviewer (same opt-in, since November 9,
   2026).** A reviewer call whose final answer cannot be used as a review
   (empty, too large, not the JSON the review needs, truncated, or an
@@ -1008,11 +1020,22 @@ recorded (since November 8, 2026):
   the completion gate finishes a task.
 - **A call that may still be running holds the task.** When a run finds a
   call with no end on record (the run was killed or the computer stopped),
-  or a call was stopped while what it started may still run (a timeout or
-  an interruption on native Windows, where agents have no job object, or a
-  signal the system refused), the task pauses with `attempt_uncertain` and
-  starts nothing, at every Resume, until you check that no process of it is
-  left and release it:
+  or a call was stopped while what it started may still run (a stop the
+  system did not confirm), it reads what is on record of that call (since
+  November 10, 2026): the call's `launch.json`, its process files and the
+  identity of the processes they name. A call shown never started is closed
+  and the run goes on, charged nothing. A call shown ended with everything
+  it started (its record confirmed it, or its process group has no member
+  left, or, on native Windows, the job object that held it was closed by
+  the end of the run that held it) is recorded as ended, its outcome
+  unknown, and the task pauses once with `attempt_reconciled`: check the
+  files and resume to start a new call. Otherwise the task pauses with
+  `attempt_uncertain`, its message saying what was shown and what is not
+  known, and starts nothing at every Resume until the processes are shown
+  gone or you check that no process of it is left and release it.
+  `patchrondo release-attempt T-a1b2c3d4e5f6 CX-0003` without
+  `--confirm-stopped` only shows what is on record; with it, it releases the
+  call:
 
   ```bash
   patchrondo release-attempt T-a1b2c3d4e5f6 CX-0003 --confirm-stopped
@@ -1024,9 +1047,11 @@ recorded (since November 8, 2026):
   missing process file proves nothing). It is refused unless the task is
   paused (a task left running by a killed run: resume it first, which pauses
   it and names the call), for any call but the one the pause names, while
-  the call's folder cannot be read, and while it holds a process file of a
+  the call's folder cannot be read, while it holds a process file of a
   process that may be alive, as `--unlock` is (on native Windows, any
-  process file: remove it yourself once you checked). Releasing says nothing
+  process file that does not name its process's identity: remove it
+  yourself once you checked), and while its launch record names a process
+  shown running. Releasing says nothing
   about what the call did: its outcome stays unknown, it stays charged the
   most it was allowed, its files are not used as an answer and nothing is
   undone. A call saved as starting whose folder was never made provably
@@ -1403,7 +1428,7 @@ are cleaned up automatically. *Settings → RAG → Update index now* does what
 7. **Billing and limits:** subscriptions have quotas and may support additional usage billing. The loop stops on rate limits, timeouts, errors, `BLOCKED` or the maximum iteration count. Nothing polls for quota availability. With the opt-in [automatic quota recovery](#automatic-quota-recovery-opt-in), a waiting process retries a usage-limit pause a bounded number of times; every retry uses plan quota.
 8. **Fallible LLM review:** the JSON schema checks structure, not review accuracy. Require human review before integrating changes into main or production.
 9. **Sensitive logs:** logs and handoffs may contain confidential project data. They are saved locally with private permissions; protect backups and disk storage, and do not share `~/.patchrondo`. The activity journal holds agent messages, command lines, file paths and excerpts of command output; masking of values that look like credentials is best effort, not a guarantee.
-10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group. On native Windows the project's checks run in a job object, which a timeout ends with everything they started, while an agent CLI is terminated alone, so WSL2 remains recommended. If Windows refuses to put a check in a job object, the check still runs but is terminated alone: its evidence record says `child_only`, and a timeout's message says that what it started may still be running. On POSIX, if the system refuses the last signal to the check's process group for two seconds (macOS does while what is left of the group has exited and is not yet reaped), the check is still a timeout, never a refused start: its record says `kill_refused` and its message says that what it started may still be running. An agent step, or a command of the test stage before checks (`PATCHRONDO_VERIFICATION=0`), stopped that way says it too, in the message of the pause and on a last line of its log marked `[PatchRondo]`.
+10. **Output and processes:** stdout/stderr are captured in temporary files and bounded in memory. Disk use remains proportional to output until the timeout. On POSIX, timeouts terminate the process group. On native Windows the project's checks run in a job object, which a timeout ends with everything they started; an agent CLI of a task recorded by Adaptive Execution runs in a job object too (since November 10, 2026), created suspended and resumed only once it is recorded, which stops everything it started when the run ends however it ends; other agent CLIs are terminated alone, so WSL2 remains recommended. If Windows refuses to put a check in a job object, the check still runs but is terminated alone: its evidence record says `child_only`, and a timeout's message says that what it started may still be running. On POSIX, if the system refuses the last signal to the check's process group for two seconds (macOS does while what is left of the group has exited and is not yet reaped), the check is still a timeout, never a refused start: its record says `kill_refused` and its message says that what it started may still be running. An agent step, or a command of the test stage before checks (`PATCHRONDO_VERIFICATION=0`), stopped that way says it too, in the message of the pause and on a last line of its log marked `[PatchRondo]`.
 11. **Windows access control lists:** POSIX private permissions are not translated into Windows lists. On Windows the privacy of the state directory is whatever Python gives a directory made with mode `0o700`: measured on October 11, 2026, owner-only with Python 3.13.3 and inherited from the parent folder with Python 3.11.3. PatchRondo changes lists in one place only, described under [Preparation and repairs](#preparation-and-repairs): read access for your own user on the `worktrees` folder, and "read attributes" on a folder of its own above it. A Codex reviewer's read-only sandbox reads what your user may read by name on the whole disk; that is the design of that sandbox, not something PatchRondo widens.
 12. **The interface is local and single-user.** It is bound to the loopback interface and protected by a session token, but anyone who can read that token (your terminal output, your browser tab) can create tasks, change settings and start runs with your accounts. A repository does not become trusted by being added: its tests stay disabled until you enable them for it.
 

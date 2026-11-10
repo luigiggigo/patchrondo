@@ -381,7 +381,11 @@ class LegacyTests(unittest.TestCase):
         Since Step 06 `continuation.py` reads them to prepare a brief: loading, enums and the admission, nothing that
         makes, changes or releases an attempt (`test_continuation.StructureTests`). Since Step 07 the developer's
         automatic continuation reads its decision in `core._next_call` and `core._continued` (the reviewer's too since
-        Step 08), and starts it through `_attempt` only."""
+        Step 08), and starts it through `_attempt` only. Since Step 09 `reconciliation.py` reads an attempt to assess it
+        (its type and status, nothing that changes it), and in `core.py` the reconciliation (`_assessment`,
+        `_settle_attempts`), the launch record (`_mark`, `_launch_record`, `_held_of`), the diagnosis
+        (`diagnose_attempt`) and the continuation a later run carries out (`_due`, `_resumed`, `_tree_declined`) read
+        it; only `_settle_attempts` writes, through `ExecutionRecord.reconcile`."""
         users = {}
         for source in sorted(SOURCES.glob("*.py")):
             if source.name == "execution.py":
@@ -395,7 +399,8 @@ class LegacyTests(unittest.TestCase):
                         (function.name, node.attr) for function in ast.walk(tree) if isinstance(function, ast.FunctionDef)
                         for node in ast.walk(function) if isinstance(node, ast.Attribute)
                         and isinstance(node.value, ast.Name) and node.value.id == "execution")
-        self.assertEqual(set(users), {"core.py", "continuation.py"})
+        self.assertEqual(set(users), {"core.py", "continuation.py", "reconciliation.py"})
+        self.assertLessEqual({name for _, name in users["reconciliation.py"]}, {"AttemptRecord", "AttemptStatus"})
         self.assertLessEqual({name for _, name in users["continuation.py"]},
                              {"load", "InvalidRecord", "ExecutionRecord", "AttemptRecord", "Phase", "AttemptOutcome",
                               "Termination", "Availability", "Unit", "DIGEST"})
@@ -404,7 +409,8 @@ class LegacyTests(unittest.TestCase):
                           "_ended_event", "_settle_attempts", "_step_settings", "_termination", "_attempt",
                           "close", "running", "release_attempt", "_folder_of", "_refusal", "_budget_message", "__init__",
                           "draft_tests", "_attempt_of_draft", "_policy_of_project", "_make_draft", "_policy_missing",
-                          "_record_missing", "_next_call", "_continued"})
+                          "_record_missing", "_next_call", "_continued", "_assessment", "_mark", "_launch_record",
+                          "_held_of", "diagnose_attempt", "_due", "_resumed", "_tree_declined"})
         self.assertIn(("validate_config", "settings_of"), users["core.py"])
 
 

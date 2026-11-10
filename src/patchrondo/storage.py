@@ -121,16 +121,20 @@ class TaskLock:
             # depth; any process file at any of them counts, whatever its folder is called (`runfiles.process_files`).
             for entry in runfiles.process_files(runs):
                 try:
-                    child_pid = int(read_json(entry)["pid"])
+                    recorded = read_json(entry)
+                    child_pid = int(recorded["pid"])
                 except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError):
                     raise RuntimeError(f"Unreadable process file: {entry}. Check manually")
-                if _alive(child_pid):
-                    raise RuntimeError(f"Agent/test process is still active (PID {child_pid}); do not unlock the task")
+                why = may_run(recorded, child_pid)  # the process, and what it started
+                if why is not None:
+                    raise RuntimeError(f"Agent/test process is still active (PID {child_pid}) or may be "
+                                       f"({why.replace('_', ' ')}); do not unlock the task")
             try:
-                pid = int(read_json(self.path)["pid"])
-            except (ValueError, KeyError, OSError, json.JSONDecodeError):
-                pid = -1
-            if pid > 0 and _alive(pid):
+                held = read_json(self.path)
+                pid = int(held["pid"])
+            except (ValueError, KeyError, TypeError, OSError, json.JSONDecodeError):
+                held, pid = {}, -1
+            if pid > 0 and _alive(pid) and not _recycled(pid, held):
                 raise RuntimeError(f"Task is still active (PID {pid}): cannot unlock")
             self.path.unlink(missing_ok=True)
         try:
@@ -148,6 +152,45 @@ class TaskLock:
         if self.owner:
             _unshared(lambda: self.path.unlink(missing_ok=True))
             self.owner = False
+
+
+def may_run(recorded, pid: int, *, leader_only: bool = False) -> str | None:
+    """Why the process a process file names, or what it started, may still run (fixed words); None once shown gone.
+
+    A file without the identity of its process (every file before Phase 2.5
+    Step 09, and every call that is not supervised) keeps the rule of earlier
+    versions: its PID alone (`_alive`, always alive on native Windows), and
+    on POSIX its process group too. A file with one is read by
+    `procinfo.tree_state`. `leader_only` (the release of an attempt, which
+    is the user's statement about the rest) asks only whether the process
+    itself is shown gone and nothing of it is shown running.
+    """
+    recorded = recorded if isinstance(recorded, dict) else {}
+    token = recorded.get("start")
+    if not (isinstance(token, str) and token):
+        if _alive(pid):
+            return "process_running"
+        if os.name == "posix" and not leader_only:
+            group = procinfo.group_state(pid)
+            if group != procinfo.DEAD:
+                return "group_running" if group == procinfo.ALIVE else "group_unknown"
+        return None
+    found, why = procinfo.tree_state({**recorded, "pid": pid})
+    if found == procinfo.DEAD or (leader_only and found == procinfo.UNKNOWN and why not in procinfo.LEADER_UNKNOWN):
+        return None
+    return why
+
+
+def _recycled(pid: int, held: dict) -> bool:
+    """POSIX: whether the lock's PID now belongs to another process than the runner that took the lock.
+
+    Only when the lock names the runner's identity (`start`, since 0.2.0) and
+    the process with that PID now has another one. Never on native Windows,
+    where a stale lock still needs a person (Step 09 keeps that).
+    """
+    token = held.get("start") if isinstance(held, dict) else None
+    return os.name == "posix" and pid != os.getpid() and isinstance(token, str) and bool(token) \
+        and procinfo.state(pid, token) == procinfo.DEAD
 
 
 def _alive(pid: int) -> bool:
