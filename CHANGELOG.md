@@ -1571,6 +1571,60 @@ as before.
   `supervision:`), ten patterns follow the changed code (497 in all).
   Real Claude Code and Codex were not run inside a job object.
 
+### Adaptive Execution: native session resume, off and simulated only — November 10, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 10). Tasks that do not
+ask for native resume run as before, apart from the masking of sessions in
+logs; no real CLI is resumed natively by this version.
+
+- **What an installed CLI can do is read from its own help**
+  (`sessions.py`: `Capability`, `capability_of`, `Status`, `Support`).
+  `providers.PROBES` gains `claude --version`, `codex --version` and `codex
+  exec resume --help` (`sessions.PROBE_COMMANDS`; no prompt, no session),
+  asked by `OfficialCLI.resume_capability` once per adapter and never while
+  providers are simulated. What the help does not show is unknown and never
+  used. Observed November 10, 2026 and saved in `tests/fixtures/cli`: Claude
+  Code 2.1.295 (native Windows) and 2.1.302 (WSL2) list every option a
+  resume needs; codex-cli 0.161.0 (native Windows) and 0.160.1 (WSL2) list
+  no `--sandbox` on `codex exec resume`, so no Codex session can be resumed
+  with the step's restrictions.
+- **The session a call reported**, only from Claude's `session_id`
+  (`system`/`init`, `result`) and Codex's `thread_id` (`thread.started`),
+  one lowercase UUID or none (`sessions.captured`). Kept only for a task
+  that asks for it, with settings that keep sessions, and never for a real
+  CLI: the ID in the call's launch record (`reconciliation.marker(session=)`),
+  an opaque reference in `AttemptRecord.session` (`sessions.reference`).
+  Transcripts, logs, the command shown in the Logs tab and failure messages
+  now mask `session_id` and `thread_id` for every task (`sessions.mask`).
+- **`execution.continuation.native_resume: "probe_then_use"`**, which needs
+  `checkpoint_resume: true` (before: only `"off"`). For a task bound to it,
+  each automatic continuation that the rules of Steps 07-09 already allow is
+  a native resume when `sessions.select` finds every condition held, and a
+  checkpoint resume otherwise, with one of 15 fixed reasons
+  (`sessions.Unavailable`). The choice is recorded on the attempt
+  (`execution.ResumeChoice`, attempt schema 3) and in the
+  `continuation_started` event (`resume`). Native resumes count toward the
+  one continuation per step and are admitted and charged as any call.
+- **A separate command path** (`agents.resume_command`): the step's
+  `agents.command` with the exact session added, every option checked
+  against the help of the resume form, never `--continue`, `--last`, a fork
+  or a new ID; refused for ephemeral Codex sessions, custom arguments of a
+  Codex step, and a reviewer that would not be read-only. `agents.command`
+  and the refusal of session options as custom arguments are unchanged.
+- **A resume is confirmed or not used.** A resumed call that does not report
+  the same session fails with `resume_unconfirmed`
+  (`AttemptOutcome.UNSUPPORTED_RESUME`); a resume the CLI refuses fails
+  that call; neither starts another process (`OfficialCLI.invoke` gives a
+  resume no second start without the streaming options).
+- The task page words the new pause, outcome and event detail.
+- Tests: `tests/test_sessions.py` (27) and `tests/test_native_resume.py`
+  (17), all with emulated or scripted CLIs. Changed to the new behavior: the
+  newer-schema tests of `test_execution` (attempts now read schema 3), its
+  importer list (four readers in `core.py`), and the configuration test
+  that kept `native_resume` at `"off"`. 25 new mutation protections
+  (`native:`), two patterns follow the changed code (522 in all). No real
+  Claude Code or Codex session was created or resumed.
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

@@ -10,3 +10,4 @@
 *.js text eol=lf
 *.html text eol=lf
 LICENSE text eol=lf
+tests/fixtures/** text eol=lf

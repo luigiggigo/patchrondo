@@ -167,11 +167,18 @@ class SectionTests(unittest.TestCase):
             with self.subTest(limits=limits):
                 self.refused({"enabled": True, "profile": "standard", "limits": limits}, "tokens are observed only")
 
-    def test_native_resume_stays_off(self):
-        for value in ("probe_then_use", "on", True, None, ["off"]):
+    def test_native_resume_is_off_unless_asked_for_with_its_fallback(self):
+        """Step 10: "off" (the default) or "probe_then_use", which needs the checkpoint resume it falls back to."""
+        for value in ("on", "auto", True, None, ["off"], "OFF", "probe-then-use"):
             with self.subTest(value=value):
                 self.refused({"enabled": True, "profile": "standard", "continuation": {"native_resume": value}},
                              "native_resume")
+        self.refused({"enabled": True, "profile": "standard",
+                      "continuation": {"native_resume": "probe_then_use", "checkpoint_resume": False}}, "checkpoint_resume")
+        self.assertEqual(execution.ExecutionSettings.parse({"enabled": True, "profile": "standard"}).native_resume, "off")
+        chosen = execution.ExecutionSettings.parse({"enabled": True, "profile": "standard",
+                                                    "continuation": {"native_resume": "probe_then_use"}})
+        self.assertEqual((chosen.native_resume, chosen.checkpoint_resume), ("probe_then_use", True))
 
     def test_a_limit_is_a_whole_number_within_its_hard_limit(self):
         hard = execution.HARD_LIMITS

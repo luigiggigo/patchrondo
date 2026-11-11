@@ -286,8 +286,9 @@ class MalformedTests(unittest.TestCase):
 
 class VersionTests(unittest.TestCase):
     def test_a_newer_schema_is_refused_as_newer(self):
-        # Attempts and task records also have a schema 2 since Step 05.1 (a request for tests, a bound policy).
-        for raw, loader, newer in ((ended_attempt().to_dict(), AttemptRecord.from_dict, 3),
+        # Attempts and task records also have a schema 2 since Step 05.1 (a request for tests, a bound policy), and
+        # attempts a schema 3 since Step 10 (the resume choice of a continuation).
+        for raw, loader, newer in ((ended_attempt().to_dict(), AttemptRecord.from_dict, 4),
                                    (finished(opened()).to_dict(), ExecutionRecord.from_dict, 3),
                                    (BudgetState.open(Scope.TASK, {}).to_dict(), BudgetState.from_dict, 2)):
             with self.subTest(loader=loader):
@@ -313,7 +314,7 @@ class VersionTests(unittest.TestCase):
 
     def test_a_newer_nested_record_is_refused_too(self):
         raw = finished(opened()).to_dict()
-        raw["step"]["attempts"][0]["version"] = 3
+        raw["step"]["attempts"][0]["version"] = 4
         with self.assertRaises(InvalidRecord) as caught:
             ExecutionRecord.from_dict(raw)
         self.assertTrue(caught.exception.newer)
@@ -385,7 +386,10 @@ class LegacyTests(unittest.TestCase):
         (its type and status, nothing that changes it), and in `core.py` the reconciliation (`_assessment`,
         `_settle_attempts`), the launch record (`_mark`, `_launch_record`, `_held_of`), the diagnosis
         (`diagnose_attempt`) and the continuation a later run carries out (`_due`, `_resumed`, `_tree_declined`) read
-        it; only `_settle_attempts` writes, through `ExecutionRecord.reconcile`."""
+        it; only `_settle_attempts` writes, through `ExecutionRecord.reconcile`. Since Step 10 the choice of native
+        resume reads the task's policy and the call followed (`_native_requested`, `_captures`, `_native`), and the
+        confirmation of a resumed session reads its attempt (`_confirm_resumed`); the choice is written by `_attempt`
+        only."""
         users = {}
         for source in sorted(SOURCES.glob("*.py")):
             if source.name == "execution.py":
@@ -410,7 +414,8 @@ class LegacyTests(unittest.TestCase):
                           "close", "running", "release_attempt", "_folder_of", "_refusal", "_budget_message", "__init__",
                           "draft_tests", "_attempt_of_draft", "_policy_of_project", "_make_draft", "_policy_missing",
                           "_record_missing", "_next_call", "_continued", "_assessment", "_mark", "_launch_record",
-                          "_held_of", "diagnose_attempt", "_due", "_resumed", "_tree_declined"})
+                          "_held_of", "diagnose_attempt", "_due", "_resumed", "_tree_declined", "_native_requested",
+                          "_captures", "_native", "_confirm_resumed"})
         self.assertIn(("validate_config", "settings_of"), users["core.py"])
 
 

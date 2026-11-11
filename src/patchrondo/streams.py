@@ -38,6 +38,7 @@ import threading
 
 from .activity import clip, redact
 from .process import LineReader
+from .sessions import SEEN_LIMIT, mask
 
 SWITCH = "PATCHRONDO_LIVE_ACTIVITY"
 OUTPUT_TAIL = 1500       # characters kept from the end of a command's output
@@ -115,6 +116,9 @@ class Stream:
         self.errors: list[str] = []     # what the CLI itself reported as a failure of the run
         self.result: dict | None = None  # Claude's final `result` object
         self.recognized = 0             # lines of a known type
+        # Step 10: every session value the CLI's own typed lines reported, in order (`sessions.captured` judges them).
+        # Never shown, never journaled; the transcript masks them.
+        self.sessions: list = []
         self.fed = self.closed = False
         self._last_error = None
 
@@ -145,14 +149,14 @@ class Stream:
             except ValueError:
                 pass
         if not isinstance(obj, dict):
-            self.transcript.add(redact(text))  # plain output of the CLI: kept for the log, never an event
+            self.transcript.add(redact(mask(text)))  # plain output of the CLI: kept for the log, never an event
             return
         try:
             keep = self.handle(obj)
         except Exception:  # noqa: BLE001 - an unexpected shape is left out; the run is not disturbed
             keep = {"type": str(obj.get("type"))[:60], "note": "not shown: unexpected shape"}
         if keep is True:
-            self.transcript.add(redact(text))
+            self.transcript.add(redact(mask(text)))
         elif isinstance(keep, dict):
             self.transcript.add(redact(_compact(keep)))
 
@@ -162,6 +166,11 @@ class Stream:
 
     def _unknown(self, obj: dict) -> dict:
         return {"type": str(obj.get("type"))[:60], "note": "not shown: unknown line type"}
+
+    def _session(self, obj: dict, key: str) -> None:
+        """Keep the session value of a typed line of the CLI, when the line has the field."""
+        if key in obj and len(self.sessions) < SEEN_LIMIT:
+            self.sessions.append(obj[key])
 
     def _message(self, text) -> None:
         text = text.strip() if isinstance(text, str) else ""
@@ -208,6 +217,7 @@ class ClaudeStream(Stream):
         if kind == "result":
             self.recognized += 1
             self.result = obj
+            self._session(obj, "session_id")  # the result line of the Claude Code headless documentation
             if obj.get("is_error"):
                 self._error(str(obj.get("result") or obj.get("subtype") or "Claude reported an error"))
             self.emit("status", status="result", turns=_number(obj.get("num_turns")),
@@ -224,6 +234,7 @@ class ClaudeStream(Stream):
         subtype = obj.get("subtype")
         if subtype == "init":
             self.recognized += 1
+            self._session(obj, "session_id")  # the init line of the Claude Code headless documentation
             model = obj.get("model") if isinstance(obj.get("model"), str) else None
             self.emit("status", status="session", model=model)
             tools = [tool for tool in obj.get("tools") or [] if isinstance(tool, str)][:60]
@@ -327,6 +338,7 @@ class CodexStream(Stream):
             return self._item(kind.partition(".")[2], item, obj) if isinstance(item, dict) else self._unknown(obj)
         if kind == "thread.started":
             self.recognized += 1
+            self._session(obj, "thread_id")  # `ThreadStartedEvent` of codex-rs/exec/src/exec_events.rs at rust-v0.160.1
             self.emit("status", status="session")
             return True
         if kind == "turn.started":

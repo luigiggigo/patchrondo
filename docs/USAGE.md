@@ -1077,11 +1077,19 @@ recorded (since November 8, 2026):
 - `enabled` (required, boolean). `profile` is required when it is `true`:
   enabling chooses a profile's limits explicitly. `adaptive`,
   `continuation` and `no_progress_windows` (1-10) are optional, with the
-  defaults above; `native_resume` accepts only `"off"`, since no provider's
-  own session resume has been validated. `adaptive: true` with
-  `checkpoint_resume: true` turns on the automatic continuations of the
-  developer and of the reviewer described above; `no_progress_windows` is
-  not applied yet.
+  defaults above. `adaptive: true` with `checkpoint_resume: true` turns on
+  the automatic continuations of the developer and of the reviewer
+  described above; `no_progress_windows` is not applied yet.
+- `native_resume` is `"off"` (the default) or, since November 10, 2026,
+  `"probe_then_use"`, which needs `checkpoint_resume: true`. With it, an
+  automatic continuation goes on in the session of the call it follows
+  when the installed CLI's own help shows that this can be done with the
+  step's settings, and is a checkpoint resume otherwise; the task's record
+  says which and why. This version never resumes a real CLI's session: the
+  setting has an effect only with simulated providers until the validation
+  with real providers at the end of Phase 2.5, and no Codex session is
+  resumed (`--ephemeral`, and no `--sandbox` in the resume form of the
+  observed versions). See [ARCHITECTURE](ARCHITECTURE.md#native-session-resume-step-10).
 - The section is project-level only: a task cannot override it, and there
   is no global level. It is validated even while `enabled` is `false`, so
   switching it on never makes a configuration unusable. A configuration

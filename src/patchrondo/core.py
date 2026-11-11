@@ -22,7 +22,7 @@ from .process import GROUP, JOB, KILL_REFUSED, execute, short_log, stop_refused,
 from .providers import OfficialCLI, AgentFailure
 from .environment import Manager as EnvironmentManager, VERSION as ENVIRONMENT_VERSION, enabled as environment_enabled
 from . import acceptance as criteria, activity, agents, capabilities, evidence, findings, history, providers, rag, recovery
-from . import execution, gate, provenance, reconciliation, runfiles, storage, verification, winacl
+from . import execution, gate, provenance, reconciliation, runfiles, sessions, storage, streams, verification, winacl
 from . import continuation as briefs
 
 DEFAULT_CONFIG = {
@@ -655,7 +655,8 @@ def _instructions(settings: dict) -> str:
 
 
 def _invoke(adapter, path: Path, state: dict, role: str, prompt: str, workspace: Path, run_dir: Path,
-            settings: dict | None = None, step: str | None = None, *, observation=None, attempt: str | None = None):
+            settings: dict | None = None, step: str | None = None, *, observation=None, attempt: str | None = None,
+            resume: sessions.Resume | None = None):
     """Call the agent of `role`, recording the attempt in the task's activity journal.
 
     The journal only observes: the reply, and every failure, pass through unchanged.
@@ -665,6 +666,9 @@ def _invoke(adapter, path: Path, state: dict, role: str, prompt: str, workspace:
     `observation` (`providers.Observation`) reaches only an adapter that is
     `metered`; `attempt` names the recorded attempt in the journal, so that
     the activity of two attempts of a step is never taken for one.
+    `resume` (Step 10): the session `sessions.select` chose to resume; only
+    an adapter that is `resumable` is given it, and any other refuses it
+    before anything is started.
     """
     provider = state[role]
     # `attempt_id`: the journal's own `attempt` is its random `A-` ID of this call, never the record's.
@@ -676,6 +680,11 @@ def _invoke(adapter, path: Path, state: dict, role: str, prompt: str, workspace:
             options["settings"] = settings
         if observation is not None and getattr(adapter, "metered", False):
             options["observation"] = observation
+        if resume is not None:
+            if not getattr(adapter, "resumable", False):
+                raise AgentFailure("The adapter of this run cannot resume a session, so nothing was started.",
+                                   "configuration", provider=provider)
+            options["resume"] = resume
         return adapter.invoke(provider, role, prompt + _instructions(settings or {}), workspace, run_dir, **options)
 
 
@@ -781,9 +790,9 @@ class AttemptReconciled(AgentFailure):
     """An uncertain attempt was found ended with everything it started, and reconciled: the user decides to go on."""
 
 
-def _mark(folder: Path, item: execution.AttemptRecord, stage: str, launch=None) -> None:
+def _mark(folder: Path, item: execution.AttemptRecord, stage: str, launch=None, session: dict | None = None) -> None:
     """Write the attempt's launch record (`reconciliation.MARKER`) in its own folder, atomically and durably."""
-    save_json(folder / reconciliation.MARKER, reconciliation.marker(item.attempt_id, stage, _instant(), launch))
+    save_json(folder / reconciliation.MARKER, reconciliation.marker(item.attempt_id, stage, _instant(), launch, session))
 
 
 def _assessment(path: Path, state: dict) -> reconciliation.Assessment | None:
@@ -1068,7 +1077,8 @@ def _admit(state: dict, cfg: dict, path: Path | None = None, live: bool = False)
 def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace: Path, run_dir: Path, settings: dict,
              record: execution.ExecutionRecord | None, accept=None, *, draft: bool = False,
              continuing: execution.NextCall | None = None, brief: str | None = None, held: dict | None = None,
-             resumed: bool = False) -> tuple:
+             resumed: bool = False, native: sessions.Selection | None = None, resume: sessions.Resume | None = None,
+             live: bool = False) -> tuple:
     """One call of a step: (its reply, the folder it wrote in, what `accept` made of the reply).
 
     `accept`, when given, reads the reply as its role needs it (the review's
@@ -1099,6 +1109,17 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
     `left`: it left processes running): what `_continued` reads before a
     continuation. `resumed`: a continuation a later run carries out (Step 09),
     said so in its event.
+
+    Step 10, for a task whose policy asks for native resume: `native` is
+    how the continuation is made (`_native`), recorded on its attempt
+    (`execution.ResumeChoice`) and in its event; `resume` is the session a
+    native resume names, given to the adapter only. A native resume whose
+    call does not report that same session in its own output fails with
+    `resume_unconfirmed` (`UNSUPPORTED_RESUME`): its answer is never used
+    and nothing else is started. Every other call of such a task, except a
+    request for tests, keeps the session it reported (`_captures`): its ID
+    in the attempt's launch record, its reference in the record. `live`
+    says whether real CLIs are called (`_callers`).
     """
     if record is None:
         reply = _invoke(adapter, path, state, role, prompt, workspace, run_dir, settings)
@@ -1112,12 +1133,20 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
     digest = frozen.get("digest") if isinstance(frozen.get("digest"), str) and execution.DIGEST.fullmatch(frozen["digest"]) \
         else None
     before = record
-    mode = execution.ContinuationMode.CHECKPOINT_RESUME if continuing is not None else execution.ContinuationMode.NONE
+    mode = execution.ContinuationMode.NONE if continuing is None else execution.ContinuationMode.NATIVE_RESUME \
+        if native is not None and native.native and resume is not None else execution.ContinuationMode.CHECKPOINT_RESUME
+    choice = None if continuing is None or native is None else execution.ResumeChoice(
+        mode, str(native.capability), native.cli_version, native.durable,
+        None if mode is execution.ContinuationMode.NATIVE_RESUME else str(native.reason or sessions.Unavailable.NO_SESSION))
+    native_mode = mode is execution.ContinuationMode.NATIVE_RESUME
+    # The calls whose session is kept: those of a task that asked for native resume, when it could ever be used.
+    capture = not draft and _captures(record, step.provider, live)
     try:
         record, item = record.new_attempt(started_at=_instant(), settings_digest=digest,
                                           workspace_before=_fingerprint_or_none(workspace),
                                           draft=_draft_name(path, state["iteration"]) if draft else None,
-                                          continuation=mode, call=continuing.call if continuing is not None else None)
+                                          continuation=mode, call=continuing.call if continuing is not None else None,
+                                          session=native.ref if native_mode else None, resume=choice)
     except execution.Inadmissible as exc:
         raise BudgetExhausted(_budget_message(exc.refusal, role, state["iteration"]), exc.refusal,
                               provider=step.provider) from exc
@@ -1133,7 +1162,8 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
                continuation=continuing.made + 1, of=execution.AUTOMATIC_CONTINUATIONS, turn_limit=item.turn_limit,
                timeout_seconds=item.timeout_seconds, step_turn_limit=step.call.turn_limit,
                step_timeout_seconds=step.call.timeout_seconds, remaining=continuing.remaining(before),
-               **({"brief": brief} if brief else {}), **({"resumed": True} if resumed else {}))
+               **({"brief": brief} if brief else {}), **({"resumed": True} if resumed else {}),
+               **({"resume": {**native.event(), "selected": str(mode), "reason": choice.reason}} if choice else {}))
     _event(state, "attempt_started", attempt=item.attempt_id, ordinal=item.ordinal, folder=_folder_of(item),
            turn_limit=item.turn_limit, timeout_seconds=item.timeout_seconds,
            **({"purpose": "test_draft"} if item.draft is not None else {}),
@@ -1141,6 +1171,20 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
     _save(path, state)  # STARTING: before its folder exists and before anything is started
     began = time.monotonic()
     current = {"record": record}
+
+    def keep_session(exc: BaseException | None, observation) -> str | None:
+        """The reference of the session the call reported, once its ID is in its launch record; None when not kept."""
+        seen = observation.session if observation is not None else None
+        if not capture or native_mode or not current.get("ended") or seen is None or seen.id is None \
+                or not (exc is None or isinstance(exc, AgentFailure)) or not sessions.durable(item.provider, settings):
+            return None
+        entry = sessions.stored(task_id=state["id"], attempt_id=item.attempt_id, provider=item.provider, role=item.role,
+                                session_id=seen.id, capability=_capability(adapter, item.provider))
+        try:
+            _mark(current["folder"], item, reconciliation.ENDED, observation.launch, session=entry)
+        except OSError:
+            return None  # not kept, so no native resume can follow this call; the call itself is not affected
+        return entry["ref"]
 
     def close(exc: BaseException | None, observation=None, *, termination=None, outcome=None) -> None:
         latest = current["record"]
@@ -1157,9 +1201,14 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
             usage = {"tokens": execution.Usage.reported(execution.Unit.TOKENS,
                                                         observation.tokens if observation is not None else None)}
         after = _fingerprint_or_none(workspace) if exc is None or isinstance(exc, AgentFailure) else None
+        try:
+            session = keep_session(exc, observation)
+        except (ValueError, OSError):
+            session = None
         ended = latest.step.last.end(found, ended_at=_instant(item.started_at),
                                      elapsed_seconds=math.ceil(max(0.0, time.monotonic() - began)), termination=ending,
-                                     failure_kind=kind if outcome is None else None, workspace_after=after, **usage)
+                                     failure_kind=kind if outcome is None else None, workspace_after=after,
+                                     session=session, **usage)
         current["record"] = latest.update(ended)
         state[execution.KEY] = current["record"].to_dict()
         launch = observation.launch if observation is not None else None
@@ -1177,6 +1226,7 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
             # no process of it was created (`launching` is written before one is). Without an adapter that reports its
             # process there is no record, and nothing is ever taken as not started from its absence.
             _mark(folder, item, reconciliation.PREPARED)
+        current["folder"] = folder
     except (OSError, runfiles.UnsafeFolder) as exc:
         # Nothing was started. An existing folder is never written into, whatever made it.
         close(exc, termination=execution.Termination.NOT_STARTED, outcome=execution.AttemptOutcome.ENVIRONMENT_BLOCKED)
@@ -1205,15 +1255,20 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
     def finished() -> None:
         # Before its process file is removed: whether its whole tree was confirmed ended (`process.Launch._finished`).
         _mark(folder, item, reconciliation.ENDED, observation.launch)
+        current["ended"] = True  # only now may a session be added to the record: the call is over
 
-    observation = providers.Observation(on_start=running, on_launch=launching, on_end=finished) if metered else None
+    observation = providers.Observation(on_start=running, on_launch=launching, on_end=finished,
+                                        capture=capture or native_mode) if metered else None
     # The call's limits, given as agent settings: `agents.command` builds the command, as for every call. They are the
     # step's frozen limits, or a continuation's smaller ones (Step 07): never more, and nothing else of the settings.
     call = {**settings, "timeout_seconds": item.timeout_seconds,
             **({"max_turns": item.turn_limit} if item.turn_limit is not None else {})}
     try:
         reply = _invoke(adapter, path, state, role, prompt, workspace, folder, call, observation=observation,
-                        attempt=item.attempt_id, step=DRAFT_STEP if item.draft is not None else None)
+                        attempt=item.attempt_id, step=DRAFT_STEP if item.draft is not None else None,
+                        resume=resume if native_mode else None)
+        if native_mode:
+            _confirm_resumed(observation, resume, item, continuing.trigger)
         accepted = accept(reply) if accept is not None else None  # an answer its role cannot use is not COMPLETED
     except BaseException as exc:
         try:
@@ -1224,6 +1279,99 @@ def _attempt(adapter, path: Path, state: dict, role: str, prompt: str, workspace
     close(None, observation)
     _save(path, state)
     return reply, folder, accepted
+
+
+# --- native session resume (Phase 2.5, Step 10) ----------------------------------------------
+#
+# Only for a task whose bound policy asks for it (`continuation.native_resume: "probe_then_use"`), and only for a
+# continuation `_continued` was already going to make: native resume never adds a call, it only changes how an allowed
+# continuation is made. `sessions.select` decides; the checkpoint resume is made whenever it says no.
+
+def _native_requested(record: execution.ExecutionRecord | None) -> str:
+    """The native resume the task's bound policy asks for; "off" without a bound policy. Reads the record only."""
+    if record is None or record.policy is None:
+        return "off"
+    return execution.ExecutionSettings.parse(record.policy).native_resume
+
+
+def _captures(record: execution.ExecutionRecord | None, provider: str, live: bool) -> bool:
+    """Whether the calls of this task keep the session they report: only where a native resume could ever follow."""
+    return _native_requested(record) == sessions.REQUESTED and (not live or provider in sessions.VALIDATED_PROVIDERS)
+
+
+def _capability(adapter, provider: str) -> sessions.Capability:
+    """What the run's adapter knows of the installed CLI (`resume_capability`); unknown when it cannot say."""
+    if not getattr(adapter, "resumable", False):
+        return sessions.unknown(provider, "the adapter cannot resume")
+    try:
+        found = adapter.resume_capability(provider)
+    except Exception:  # noqa: BLE001 - a probe that fails shows nothing: unknown, never supported
+        return sessions.unknown(provider, "the CLI could not be asked")
+    return found if isinstance(found, sessions.Capability) and found.provider == provider else sessions.unknown(provider)
+
+
+def _native(adapter, path: Path, state: dict, record: execution.ExecutionRecord, role: str, settings: dict,
+            live: bool) -> tuple:
+    """How the continuation about to start is made: (`sessions.Selection` or None, `sessions.Resume` or None).
+
+    (None, None) when the task did not ask for native resume: the
+    continuation is a checkpoint resume and nothing about it changes. Reads
+    the record, the launch record of the call followed and, only when every
+    earlier condition holds, the installed CLI's help. The command is built
+    once here without starting anything, so that settings the resume form
+    cannot carry choose the checkpoint resume before any process exists.
+    """
+    requested = _native_requested(record)
+    if requested == "off":
+        return None, None
+    trigger, provider = record.step.last_call, record.step.provider
+    entry, problem = None, None
+    if trigger.session is not None:
+        try:
+            found = reconciliation.read_marker(path / runfiles.RUNS / _folder_of(trigger))
+            if found is None or found.get("attempt") != trigger.attempt_id:
+                problem = "launch record missing or of another attempt"
+            else:
+                entry = found.get("session")
+        except (reconciliation.Unreadable, OSError, ValueError):
+            problem = "launch record unreadable"
+    frozen = (state.get("agent_runs") or {}).get(agents.step_key(state, role)) or {}
+    digest = frozen.get("digest") if isinstance(frozen.get("digest"), str) and execution.DIGEST.fullmatch(frozen["digest"]) \
+        else None
+    streaming = streams.enabled() and settings.get("live_activity") is not False
+    selection, resume = sessions.select(
+        requested=requested, provider=provider, role=role, live=live, resumable=getattr(adapter, "resumable", False),
+        settings=settings, live_output=streaming, trigger_session=trigger.session,
+        trigger_digest=trigger.settings_digest, current_digest=digest, entry=entry, entry_problem=problem,
+        capability=lambda: _capability(adapter, provider), task_id=state["id"], trigger_attempt=trigger.attempt_id)
+    if resume is not None:
+        try:
+            agents.resume_command(provider, role, settings, session_id=resume.session_id, capability=resume.capability,
+                                  workspace=Path("worktree"), live=streaming, schema="review-schema",
+                                  last_message="last-message.txt")
+        except ValueError:
+            return sessions.unavailable(selection, sessions.Unavailable.OPTIONS_UNSUPPORTED), None
+    return selection, resume
+
+
+RESUME_UNCONFIRMED = {"missing": "reported no session", "malformed": "reported a session in a form PatchRondo does not "
+                      "read", "contradictory": "reported more than one session", "other": "reported another session"}
+
+
+def _confirm_resumed(observation, resume: sessions.Resume, item: execution.AttemptRecord, trigger: str) -> None:
+    """Raise `resume_unconfirmed` unless the resumed call reported, in its own output, the session it was asked to resume.
+
+    The words name no session. Without that confirmation the call may have
+    been a new conversation, which is never taken for the resumed one.
+    """
+    seen = observation.session if observation is not None else None
+    if seen is not None and seen.id == resume.session_id:
+        return
+    problem = "missing" if seen is None else seen.problem or "other"
+    raise AgentFailure(f"The {item.role}'s call {item.attempt_id} was started to resume the session of attempt {trigger}, "
+                       f"and its CLI {RESUME_UNCONFIRMED[problem]}. Its answer was not used: it may have been a new "
+                       "conversation. Nothing else was started; a Resume starts a new call of this step if its budgets "
+                       "admit one.", "resume_unconfirmed", provider=item.provider)
 
 
 # --- automatic continuation of a step (Phase 2.5, Steps 07-08) ------------------------------
@@ -1430,7 +1578,7 @@ def _continued(adapter, path: Path, state: dict, role: str, workspace: Path, run
     if resumed is None:
         try:
             return _attempt(adapter, path, state, role, prompt_of(""), workspace, run_dir, settings, record, accept,
-                            held=held)
+                            held=held, live=live)
         except AgentFailure as exc:
             if record is None or exc.kind not in kinds:
                 raise
@@ -1443,10 +1591,15 @@ def _continued(adapter, path: Path, state: dict, role: str, workspace: Path, run
             again = False
         ready()
         held = {}
+        current = _execution(state)
+        # Step 10: a native resume of the call followed, when the task asked for it and every condition holds; the
+        # checkpoint resume otherwise. Decided before the call, never after a failure of it.
+        native, resume = _native(adapter, path, state, current, role, settings, live)
         try:
             return _attempt(adapter, path, state, role, prompt_of(text), workspace, run_dir, settings,
-                            _execution(state), accept, continuing=decided,
-                            brief=hashlib.sha256(text.encode("utf-8")).hexdigest(), held=held, resumed=again)
+                            current, accept, continuing=decided,
+                            brief=hashlib.sha256(text.encode("utf-8")).hexdigest(), held=held, resumed=again,
+                            native=native, resume=resume, live=live)
         except AgentFailure as exc:
             if exc.kind not in kinds:
                 raise

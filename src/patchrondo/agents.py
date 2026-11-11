@@ -600,6 +600,79 @@ def command(provider: str, role: str, values: dict, *, workspace: Path, live: bo
     return argv + custom + ["-"]
 
 
+# Native resume (Phase 2.5, Step 10). Options that pick a session other than the exact one named, or make a new one:
+# never in a resume command, whatever asked for them (`ARGS_BLOCKED` keeps them out of custom arguments too).
+NEVER_ON_RESUME = {"claude": frozenset({"--continue", "-c", "--fork-session", "--session-id", "--from-pr", "--teleport"}),
+                   "codex": frozenset({"--last", "--all"})}
+# Options of the step's Codex command that take a value, as `command` writes them after `exec`.
+_CODEX_VALUED = frozenset({"--sandbox", "--cd", "--output-last-message", "--output-schema", "--model", "--profile", "-c",
+                           "--add-dir"})
+
+
+def resume_command(provider: str, role: str, values: dict, *, session_id: str, capability, workspace: Path, live: bool,
+                   turns: int = 12, schema: str = "", last_message: Path | str = "") -> list[str]:
+    """The argument array of a native resume of one step's session: the step's command, in the resume form.
+
+    Only the engine asks for it, with a session `sessions.select` read from
+    the call it follows and a capability read from the installed binary's
+    help (`sessions.Capability`). It is `command` with the same settings, so
+    the model, the tools, the permissions, the sandbox, the limits and the
+    answer checks are those of the step; only the session is added. Raises
+    ValueError, and nothing is started, when the ID is not a UUID, the
+    capability is not verified for this provider, an option of the step is
+    not one the resume form lists, the session is ephemeral, or the
+    reviewer would not be read-only. Never `--continue`, `--last`, a fork or
+    a new session ID: the one session named, or no resume.
+
+    Claude Code: `--resume <id>` beside the options of the same print-mode
+    command (`claude --help` of 2.1.295 and 2.1.302 lists them all but
+    `--max-turns`, which its CLI reference documents). Codex: `codex exec
+    resume [OPTIONS] [SESSION_ID] [PROMPT]`, whose own options are fewer
+    than those of `codex exec` (`codex exec resume --help` of 0.161.0 and
+    0.160.1 lists no `--sandbox`, so no Codex step can be resumed by them).
+    """
+    from .sessions import SESSION_ID, Status  # noqa: PLC0415 - one direction: sessions imports nothing of PatchRondo
+    if provider not in PROVIDERS or role not in ROLES:
+        raise ValueError("Invalid provider or role")
+    if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
+        raise ValueError("A session is resumed by its exact ID, a UUID")
+    if getattr(capability, "provider", None) != provider or capability.status is not Status.VERIFIED:
+        raise ValueError("The installed CLI's capability to resume a session is not verified")
+    base = command(provider, role, values, workspace=workspace, live=live, turns=turns, schema=schema,
+                   last_message=last_message)
+    if provider == "claude":
+        used = {arg for arg in base[1:] if arg.startswith("--")}
+        missing = used - capability.resume_options - DOCUMENTED["claude"]
+        if missing:
+            raise ValueError(f"The resume form does not list options of this step: {', '.join(sorted(missing))}")
+        argv = base[:2] + ["--resume", session_id] + base[2:]
+        if role == "reviewer" and argv[argv.index("--tools") + 1] != ",".join(DEFAULT_TOOLS["reviewer"]):
+            raise ValueError("The reviewer is resumed with its reading tools only")
+    else:
+        if role == "developer" and values.get("extra_args"):
+            raise ValueError("Custom arguments were checked for a new call, not for the resume form")
+        head = base[:base.index("exec") + 1]
+        body, options = base[len(head):-1], []
+        index = 0
+        while index < len(body):
+            flag = body[index]
+            takes = flag in _CODEX_VALUED
+            if flag == "--ephemeral":
+                raise ValueError("An ephemeral session is not kept, so it cannot be resumed")
+            if flag != "--cd":  # the call runs in the task's worktree (its working directory), as the session did
+                if ("--config" if flag == "-c" else flag) not in capability.resume_options:
+                    raise ValueError(f"The resume form does not list the option {flag} of this step")
+                options += body[index:index + 2] if takes else [flag]
+            index += 2 if takes else 1
+        argv = head + ["resume", *options, session_id, "-"]
+        sandbox = argv[argv.index("--sandbox") + 1] if "--sandbox" in argv else None
+        if sandbox is None or (role == "reviewer" and sandbox != "read-only"):
+            raise ValueError("A resumed call keeps the sandbox of its step, read-only for the reviewer")
+    if argv.count(session_id) != 1 or NEVER_ON_RESUME[provider] & set(argv):
+        raise ValueError("A resume names one session, never the latest or a new one")
+    return argv
+
+
 def verification(provider: str, model: str, effort: str | None, *, folder: Path, last_message: Path) -> list[str]:
     """The smallest call that shows whether a login can use a model: no tools, nothing written, one short answer.
 

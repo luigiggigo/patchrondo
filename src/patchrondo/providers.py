@@ -8,8 +8,9 @@ import os
 from pathlib import Path
 import json
 import re
+import shutil
 
-from . import acceptance, agents, streams
+from . import acceptance, agents, sessions, streams
 from .process import KILL_REFUSED, Launch, Result, execute, short_log, stop_refused, with_refusal
 from .storage import atomic_text
 
@@ -75,9 +76,11 @@ def simulated() -> bool:
 
 
 # The questions a provider CLI may be asked besides the sandbox self-check, each an exact command:
-# its help and, for Codex, its model catalog. None of them takes a prompt.
+# its help and, for Codex, its model catalog. None of them takes a prompt. Since Phase 2.5 Step 10 also the version
+# of each CLI and the help of Codex's resume form (`sessions.PROBE_COMMANDS`): none of them creates a session.
 PROBES = (("claude", "--help"), ("codex", "--help"), ("codex", "exec", "--help"), ("codex", "debug", "models"),
-          ("codex", "debug", "models", "--bundled"))
+          ("codex", "debug", "models", "--bundled"), ("claude", "--version"), ("codex", "--version"),
+          ("codex", "exec", "resume", "--help"))
 
 
 def probe(argv: list[str], cwd: Path, *, timeout: int, on_stdout=None) -> Result:
@@ -282,10 +285,14 @@ class Observation:
     report it. Neither is read from what the agent wrote.
     """
 
-    def __init__(self, on_start=None, *, on_launch=None, on_end=None):
+    def __init__(self, on_start=None, *, on_launch=None, on_end=None, capture: bool = False):
         self.launch = Launch(on_start, on_launch=on_launch, on_end=on_end)
         self.turns: int | None = None
         self.tokens: int | None = None
+        # Step 10: the session the call reported (`sessions.captured`), read only when `capture` asks for it: from the
+        # typed fields of the CLI's own structured output, never from what the agent wrote.
+        self.capture = capture
+        self.session: sessions.Captured | None = None
 
 
 def supervision() -> bool:
@@ -311,15 +318,51 @@ class OfficialCLI:
     journals = True  # `invoke` accepts the journal of the attempt and records the CLI's activity in it
     configurable = True  # `invoke` accepts the agent settings of the step and starts the CLI with them
     metered = True  # `invoke` accepts an `Observation` and fills it while the CLI runs
+    resumable = True  # Step 10: `invoke` accepts a `sessions.Resume` and `resume_capability` reads the installed CLI
 
     def __init__(self, timeout: int = 600, claude_turns: int = 12, clock=None):
         self.timeout = timeout
         self.claude_turns = claude_turns
         # Reference instant for relative waits such as "retry after 120 seconds".
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self._capabilities: dict[str, sessions.Capability] = {}
+
+    def resume_capability(self, provider: str) -> sessions.Capability:
+        """What the installed CLI of `provider` shows about native resume, read once per adapter. Never a model call.
+
+        Only `--version` and `--help` of the binary are asked
+        (`sessions.PROBE_COMMANDS`, through `probe`): nothing takes a prompt or
+        creates a session. While provider commands are simulated nothing is
+        asked and the capability is unknown; tests give their own.
+        """
+        if provider not in sessions.PROVIDERS:
+            raise ValueError("Invalid provider")
+        if provider in self._capabilities:
+            return self._capabilities[provider]
+        if simulated():
+            return sessions.unknown(provider, "provider commands are simulated")
+        texts, executable = {}, None
+        for name, argv in sessions.PROBE_COMMANDS[provider].items():
+            try:
+                result = probe(list(argv), Path.cwd(), timeout=30)
+            except (OSError, RuntimeError, ValueError):
+                return sessions.unknown(provider, "the CLI could not be asked")
+            if result.timed_out or result.returncode != 0:
+                return sessions.unknown(provider, "the CLI did not answer")
+            texts[name] = result.stdout
+        found = shutil.which(provider)
+        if found:
+            try:
+                info = os.stat(found)
+                executable = sessions.executable_digest(os.path.realpath(found), info.st_size, info.st_mtime_ns)
+            except OSError:
+                executable = None
+        self._capabilities[provider] = sessions.capability_of(provider, texts, executable=executable)
+        return self._capabilities[provider]
 
     def invoke(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path,
-               journal=None, settings: dict | None = None, observation: Observation | None = None) -> AgentReply:
+               journal=None, settings: dict | None = None, observation: Observation | None = None,
+               resume: sessions.Resume | None = None) -> AgentReply:
         """Run one step with the provider's CLI and return its final answer.
 
         The CLI is asked to print its activity while it works; what it prints
@@ -334,9 +377,17 @@ class OfficialCLI:
 
         `observation` (`Observation`) learns the process and the usage the
         CLI reported; without it the CLI is started exactly as before.
+
+        `resume` (Step 10), given only by the engine after `sessions.select`:
+        the step's command in the installed CLI's resume form
+        (`agents.resume_command`), for the session it names. A resume the
+        CLI refuses is a failure of that call: it is never started again
+        without the streaming options, or as a new session.
         """
         if provider not in {"claude", "codex"} or role not in {"developer", "reviewer"}:
             raise ValueError("Invalid provider or role")
+        if resume is not None and (not isinstance(resume, sessions.Resume) or (resume.provider, resume.role) != (provider, role)):
+            raise ValueError("A session is resumed only by the provider and the role that made it")
         settings = settings or {}
         emit = journal.emit if journal is not None else _noted
         if not streams.enabled() or settings.get("live_activity") is False:
@@ -344,11 +395,15 @@ class OfficialCLI:
             emit("status", status="notice", code="stream_off",
                  text=f"Live activity is switched off {switch}: this step shows its result when it ends.")
             return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=False,
-                              observation=observation)
+                              observation=observation, resume=resume)
         try:
             return self._step(provider, role, prompt, workspace, run_dir, emit, settings, live=True,
-                              observation=observation)
+                              observation=observation, resume=resume)
         except _StreamRefused as refusal:
+            if resume is not None:
+                # One process per resume: a refusal is the call's failure, and nothing is started in its place.
+                raise AgentFailure(f"The {provider} CLI did not accept the options of a resumed call ({refusal}). "
+                                   "Nothing else was started.", "unsupported_option", provider=provider) from None
             emit("status", status="notice", code="stream_unsupported",
                  text=f"This {provider} CLI did not accept the options for live activity ({refusal}). "
                       "The step runs without them and shows its result when it ends.")
@@ -388,7 +443,8 @@ class OfficialCLI:
         return {"ok": True, "kind": None, "message": short_log(text.strip(), 200)}
 
     def _step(self, provider: str, role: str, prompt: str, workspace: Path, run_dir: Path, emit,
-              settings: dict | None = None, *, live: bool, observation: Observation | None = None) -> AgentReply:
+              settings: dict | None = None, *, live: bool, observation: Observation | None = None,
+              resume: sessions.Resume | None = None) -> AgentReply:
         settings = settings or {}
         timeout = settings.get("timeout_seconds") or self.timeout
         turns = settings.get("max_turns") or self.claude_turns
@@ -409,11 +465,22 @@ class OfficialCLI:
             if role == "reviewer":
                 atomic_text(run_dir / "review.schema.json", json.dumps(schema, indent=2))
         # The settings decide the model and the options of the call; the command itself is built in one place.
-        argv = agents.command(provider, role, settings, workspace=workspace, live=live, turns=self.claude_turns,
-                              schema=schema_text, last_message=out)
+        if resume is None:
+            argv = agents.command(provider, role, settings, workspace=workspace, live=live, turns=self.claude_turns,
+                                  schema=schema_text, last_message=out)
+        else:
+            try:
+                argv = agents.resume_command(provider, role, settings, session_id=resume.session_id,
+                                             capability=resume.capability, workspace=workspace, live=live,
+                                             turns=self.claude_turns, schema=schema_text, last_message=out)
+            except ValueError as exc:
+                raise AgentFailure(f"The {role}'s session cannot be resumed with this step's settings: {exc}. Nothing "
+                                   "was started.", "configuration", provider=provider) from None
         if settings:
             # The command this step was started with, for the Logs tab: credentials masked, long values shortened.
-            atomic_text(run_dir / f"{role}.command.txt", agents.preview(argv)["line"] + "\n")
+            # A resumed session is named by its mask: the Logs tab shows this file, and a detailed bundle may carry it.
+            shown = argv if resume is None else [sessions.MASK if arg == resume.session_id else arg for arg in argv]
+            atomic_text(run_dir / f"{role}.command.txt", agents.preview(shown)["line"] + "\n")
         stream = streams.open_stream(provider, role, workspace, emit) if live else None
         try:
             result = execute(argv, workspace, stdin=prompt, timeout=timeout,
@@ -433,9 +500,13 @@ class OfficialCLI:
                 observation.turns = _claude_turns(stream.result if stream is not None else result.stdout)
             elif stream is not None:
                 observation.tokens = stream.tokens
+            if observation.capture:
+                observation.session = sessions.captured(stream.sessions if stream is not None
+                                                        else sessions.from_output(provider, result.stdout))
         # With a stream the log is its transcript: bounded like the captured output, without internal reasoning.
+        # A provider's session is masked in it (Step 10): the log is shown on the page and may go into a bundle.
         observed = stream is not None and stream.fed
-        stdout = stream.transcript.text() if observed else result.stdout
+        stdout = stream.transcript.text() if observed else sessions.mask(result.stdout)
         # These logs live outside the repository in a private directory.
         atomic_text(run_dir / f"{role}.stdout.log", short_log(stdout))
         refused = stop_refused(result)  # stopped, and the system refused its group the last signal

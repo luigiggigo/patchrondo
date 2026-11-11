@@ -18,6 +18,11 @@ limits no larger than the step's and no larger than the budgets have left
 (`ExecutionRecord.sized_call`); since Step 08 also whether a reviewer call
 whose answer could not be used as a review may be followed by one new,
 independent review of the same files. `core._continued` starts it, or not.
+Since Step 10 a task whose policy asks for native resume
+(`continuation.native_resume: "probe_then_use"`) records, on each of its
+continuations, how it was made (`ResumeChoice`): a native resume of the
+followed call's session (`NATIVE_RESUME`), or a checkpoint resume and why
+not natively. `sessions.select` decides; nothing here starts a call.
 
 Units of work, from the largest:
 
@@ -30,9 +35,11 @@ Units of work, from the largest:
                 PatchRondo, numbered in the task and never given twice; its `ordinal`
                 counts the attempts of its step (1, 2, …). Several attempts of one step
                 are not several iterations.
-    session     the provider's own conversation, when its CLI reports one: an opaque
-                reference that only the provider understands. It is never an ID of
-                PatchRondo, and nothing resumes it until a native resume is validated.
+    session     the provider's own conversation, when its CLI reports one. The record keeps
+                only an opaque reference to it (`sessions.reference`, `S-…`); the provider's
+                ID stays in the attempt's private launch record. Since Step 10 a task that
+                asks for it may resume it natively; only simulated providers do until the
+                end-of-phase validation with real providers (`sessions.VALIDATED_PROVIDERS`).
 
 The outcome of an attempt describes the CLI call only. Three things are kept
 apart. The CLI's own end is its termination (`EXITED`: it ended by itself).
@@ -192,7 +199,7 @@ EFFECTS_UNKNOWN = frozenset({Termination.RELEASED, Termination.RECONCILED})
 class ContinuationMode(StrEnum):
     NONE = "none"                            # a first call
     CHECKPOINT_RESUME = "checkpoint_resume"  # a new call with a brief of the work so far
-    NATIVE_RESUME = "native_resume"          # the provider's session resumed; not validated, not used
+    NATIVE_RESUME = "native_resume"          # Step 10: the followed call's session resumed by its CLI (`ResumeChoice`)
 
 
 class StepStatus(StrEnum):
@@ -236,6 +243,9 @@ OUTCOME_OF_KIND = {
     # Step 09: the CLI exited, processes it started were still running, and stopping them could not be confirmed.
     # Its answer is not used: what the call did is not known.
     "process_tree_unconfirmed": AttemptOutcome.UNKNOWN,
+    # Step 10: a native resume whose call did not report, in its own structured output, the session it was asked to
+    # resume. Its answer is not used: it may have been a new conversation presented as a resumed one.
+    "resume_unconfirmed": AttemptOutcome.UNSUPPORTED_RESUME,
 }
 # A kind a more precise error of the system narrows, never the reverse. `system_error` is what `core._failure` saves
 # for any OSError or RuntimeError; a PermissionError among them is the system refusing access (the CLI could not be
@@ -580,6 +590,65 @@ def attempt_id(number: int) -> str:
     return f"CX-{_int(number, 'attempt number', 1, ATTEMPT_LIMIT):04d}"
 
 
+CAPABILITY_STATUS = ("verified", "unverified", "unsupported", "unknown", "not_probed")  # `sessions.Status`
+RESUME_REASON = re.compile(r"[a-z][a-z_]{0,63}")                                       # `sessions.Unavailable`
+CLI_VERSION = re.compile(r"\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z.]{1,40})?")         # `sessions.VERSION`
+
+
+@dataclass(frozen=True)
+class ResumeChoice:
+    """How one continuation of a task that asked for native resume was made, as decided before its call (Step 10).
+
+    `selected` is the mode the call was started in: `NATIVE_RESUME` (the
+    session of the call it follows, resumed by the CLI) or
+    `CHECKPOINT_RESUME` (a new call with a brief), then with the `reason`
+    native resume was not used (`sessions.Unavailable`). `capability` is
+    what the installed CLI's help showed (`sessions.Status`), `cli_version`
+    its version, `durable` whether the step's frozen settings keep a session
+    (None when not asked). Never the session itself.
+    """
+    selected: ContinuationMode
+    capability: str
+    cli_version: str | None
+    durable: bool | None
+    reason: str | None
+
+    FIELDS = ("requested", "selected", "capability", "cli_version", "durable", "reason")
+
+    def __post_init__(self):
+        _set(self, "selected", _enum(ContinuationMode, self.selected, "selected continuation mode"))
+        if self.selected is ContinuationMode.NONE:
+            raise InvalidRecord("a resume choice is made for a continuation")
+        if type(self.capability) is not str or self.capability not in CAPABILITY_STATUS:
+            raise InvalidRecord(f"capability must be one of: {', '.join(CAPABILITY_STATUS)}")
+        _match(self.cli_version, CLI_VERSION, "CLI version", optional=True)
+        if self.durable is not None and type(self.durable) is not bool:
+            raise InvalidRecord("durable is true, false or unknown")
+        _match(self.reason, RESUME_REASON, "reason", optional=True)
+        native = self.selected is ContinuationMode.NATIVE_RESUME
+        if native == (self.reason is not None):
+            raise InvalidRecord("a native resume has no reason against it; a checkpoint resume has one")
+        if native and (self.capability != "verified" or self.durable is not True or self.cli_version is None):
+            raise InvalidRecord("a native resume is made on a verified CLI of a known version, of a session it kept")
+
+    @property
+    def fallback(self) -> bool:
+        """Whether native resume was asked for and the checkpoint resume was used instead."""
+        return self.selected is ContinuationMode.CHECKPOINT_RESUME
+
+    def to_dict(self) -> dict:
+        return {"requested": str(ContinuationMode.NATIVE_RESUME), "selected": str(self.selected),
+                "capability": self.capability, "cli_version": self.cli_version, "durable": self.durable,
+                "reason": self.reason}
+
+    @classmethod
+    def from_dict(cls, raw, name: str) -> "ResumeChoice":
+        raw = _fields(raw, name, cls.FIELDS, versioned=False)
+        if raw["requested"] != str(ContinuationMode.NATIVE_RESUME):
+            raise InvalidRecord(f"{name} is recorded only when native resume was asked for")
+        return cls(raw["selected"], raw["capability"], raw["cli_version"], raw["durable"], raw["reason"])
+
+
 @dataclass(frozen=True)
 class AttemptRecord:
     """One start of a provider CLI for one step, as PatchRondo observed it. Its outcome is the call's, nothing more."""
@@ -593,7 +662,9 @@ class AttemptRecord:
     turn_limit: int | None          # Claude's `--max-turns` of this call; None for Codex
     timeout_seconds: int
     continuation: ContinuationMode
-    session: str | None             # the provider's session, opaque and private; None when not reported
+    # The provider's session as an opaque reference (`sessions.reference`); None when not kept. A native resume names
+    # the session it resumed from its start; any other call, the session it reported, once it ended (Step 10).
+    session: str | None
     status: AttemptStatus
     started_at: str
     workspace_before: str | None    # `gitops.fingerprint` before the call; None when it could not be taken
@@ -608,12 +679,16 @@ class AttemptRecord:
     # Step 05.1: a request for tests made to the developer of this step (`core.draft_tests`), in the folder
     # `runs/iteration-NNN/<draft>` (`test-draft-KK`). None: a call of the step itself. Saved as schema 2.
     draft: str | None = None
+    # Step 10: how a continuation of a task that asked for native resume was made. None for every other call. Saved
+    # as schema 3; a record without it keeps the schema it had.
+    resume: ResumeChoice | None = None
 
     FIELDS = ("attempt_id", "task_id", "iteration", "phase", "role", "ordinal", "provider", "settings_digest",
               "turn_limit", "timeout_seconds", "continuation", "session", "status", "started_at", "workspace_before",
               "turns", "tokens", "outcome", "failure_kind", "ended_at", "elapsed_seconds", "workspace_after",
               "termination")
-    SHAPES = {1: FIELDS, 2: FIELDS + ("draft",)}  # schema 1 never names a request for tests
+    # Schema 1 never names a request for tests or a resume choice; a request for tests is never a continuation.
+    SHAPES = {1: FIELDS, 2: FIELDS + ("draft",), 3: FIELDS + ("resume",)}
 
     def __post_init__(self):
         attempt_number(self.attempt_id)
@@ -640,7 +715,17 @@ class AttemptRecord:
             raise InvalidRecord("a native resume names the session it resumed")
         if self.draft is not None and self.continuation is not ContinuationMode.NONE:
             raise InvalidRecord("a request for tests is never a continuation of its step")
+        if self.resume is not None:
+            if not isinstance(self.resume, ResumeChoice):
+                raise InvalidRecord("a resume choice is a record")
+            if self.resume.selected is not self.continuation:
+                raise InvalidRecord("a continuation is started in the mode its resume choice selected")
+        elif self.continuation is ContinuationMode.NATIVE_RESUME:
+            raise InvalidRecord("a native resume records the choice that made it")
         _set(self, "status", _enum(AttemptStatus, self.status, "attempt status"))
+        if self.session is not None and self.status is not AttemptStatus.ENDED \
+                and self.continuation is not ContinuationMode.NATIVE_RESUME:
+            raise InvalidRecord("a call's own session is known once it has ended")
         started = _instant(self.started_at, "start time")
         _match(self.workspace_before, FINGERPRINT, "fingerprint before the call", optional=True)
         for name, unit in (("turns", Unit.CLAUDE_TURNS), ("tokens", Unit.TOKENS)):
@@ -732,13 +817,16 @@ class AttemptRecord:
 
     def end(self, outcome: AttemptOutcome, *, ended_at: str, elapsed_seconds: int, termination: Termination,
             failure_kind: str | None = None, workspace_after: str | None = None, turns: Usage | None = None,
-            tokens: Usage | None = None) -> "AttemptRecord":
-        """The same attempt, ended. An attempt ends once."""
+            tokens: Usage | None = None, session: str | None = None) -> "AttemptRecord":
+        """The same attempt, ended. An attempt ends once. `session`: the reference of the session the call reported."""
         if self.ended:
             raise InvalidRecord("this attempt has already ended")
+        if session is not None and self.session is not None and session != self.session:
+            raise InvalidRecord("a resumed call keeps the session it resumed")
         return replace(self, status=AttemptStatus.ENDED, outcome=outcome, failure_kind=failure_kind, ended_at=ended_at,
                        elapsed_seconds=elapsed_seconds, workspace_after=workspace_after,
-                       turns=turns or self.turns, tokens=tokens or self.tokens, termination=termination)
+                       turns=turns or self.turns, tokens=tokens or self.tokens, termination=termination,
+                       session=self.session if session is None else session)
 
     def released(self, *, ended_at: str) -> "AttemptRecord":
         """The attempt after the user stated that its processes stopped. Only an uncertain attempt is released.
@@ -770,7 +858,8 @@ class AttemptRecord:
                         termination=termination)
 
     def to_dict(self) -> dict:
-        return {"version": 1 if self.draft is None else 2, "attempt_id": self.attempt_id, "task_id": self.task_id,
+        version = 2 if self.draft is not None else 3 if self.resume is not None else 1
+        return {"version": version, "attempt_id": self.attempt_id, "task_id": self.task_id,
                 "iteration": self.iteration,
                 "phase": str(self.phase), "role": self.role, "ordinal": self.ordinal, "provider": self.provider,
                 "settings_digest": self.settings_digest, "turn_limit": self.turn_limit,
@@ -781,13 +870,18 @@ class AttemptRecord:
                 "ended_at": self.ended_at, "elapsed_seconds": self.elapsed_seconds,
                 "workspace_after": self.workspace_after,
                 "termination": None if self.termination is None else str(self.termination),
-                **({} if self.draft is None else {"draft": self.draft})}
+                **({} if self.draft is None else {"draft": self.draft}),
+                **({} if self.resume is None else {"resume": self.resume.to_dict()})}
 
     @classmethod
     def from_dict(cls, raw, name: str = "attempt") -> "AttemptRecord":
         raw, version = _versioned(raw, name, cls.SHAPES)
         if version == 2 and raw["draft"] is None:
             raise InvalidRecord(f"{name} of schema 2 names the folder of its request for tests")
+        if version == 3:
+            if raw["resume"] is None:
+                raise InvalidRecord(f"{name} of schema 3 names the resume choice of its continuation")
+            raw = {**raw, "resume": ResumeChoice.from_dict(raw["resume"], f"{name} resume choice")}
         values = {key: raw[key] for key in cls.SHAPES[version] if key not in ("role", "turns", "tokens")}
         record = cls(**values, turns=Usage.from_dict(raw["turns"], f"{name} turns"),
                      tokens=Usage.from_dict(raw["tokens"], f"{name} tokens"))
@@ -919,8 +1013,7 @@ class StepExecution:
         a later run may carry the continuation out (`next_call`).
         """
         for item in reversed(self.attempts):
-            if not (item.continuation is ContinuationMode.CHECKPOINT_RESUME
-                    and item.termination is Termination.NOT_STARTED):
+            if not (item.continuation is not ContinuationMode.NONE and item.termination is Termination.NOT_STARTED):
                 return item
         return None
 
@@ -1072,7 +1165,8 @@ class ExecutionRecord:
     def new_attempt(self, *, started_at: str, settings_digest: str | None = None,
                     continuation: ContinuationMode = ContinuationMode.NONE, session: str | None = None,
                     workspace_before: str | None = None, draft: str | None = None,
-                    call: CallLimits | None = None) -> tuple["ExecutionRecord", AttemptRecord]:
+                    call: CallLimits | None = None,
+                    resume: ResumeChoice | None = None) -> tuple["ExecutionRecord", AttemptRecord]:
         """The record with a new `STARTING` attempt of the current step, charged in advance, and that attempt.
 
         The attempt is started with the step's frozen call limits. None is
@@ -1082,12 +1176,19 @@ class ExecutionRecord:
         developer: it is admitted and charged like any call of the step.
         `call` (Step 07) gives a continuation smaller limits than the step's,
         never larger (`sized_call`); it is admitted with those limits.
+        `resume` (Step 10): how a continuation of a task that asked for
+        native resume is made; a native resume names, as `session`, the
+        reference of the session it resumes, which must be the one its step's
+        last call kept. Admitted and charged as any continuation.
         """
         step = self.step
         if step is None:
             raise InvalidRecord("there is no current step")
         if step.uncertain is not None:
             raise InvalidRecord("the current step has an attempt that may still run")
+        if continuation is ContinuationMode.NATIVE_RESUME and (
+                step.last_call is None or session is None or step.last_call.session != session):
+            raise InvalidRecord("a native resume resumes the session its step's last call kept")
         if call is not None and continuation is ContinuationMode.NONE:
             raise InvalidRecord("only a continuation is started with other limits than its step's")
         refusal = self.admission(call)
@@ -1100,7 +1201,7 @@ class ExecutionRecord:
             step.provider, settings_digest, limits.turn_limit, limits.timeout_seconds, continuation, session,
             AttemptStatus.STARTING, started_at, workspace_before,
             Usage.unknown(Unit.CLAUDE_TURNS) if claude else Usage(Unit.CLAUDE_TURNS, Availability.NOT_APPLICABLE),
-            Usage.unknown(Unit.TOKENS), draft=draft)
+            Usage.unknown(Unit.TOKENS), draft=draft, resume=resume)
         record = replace(self, next_attempt=self.next_attempt + 1, budget=self.budget.charged(item.charges()),
                          step=replace(step, budget=step.budget.charged(item.charges()), attempts=step.attempts + (item,)))
         return record, item
@@ -1182,9 +1283,11 @@ class ExecutionRecord:
             raise InvalidRecord("an attempt that has ended is not changed")
         # A call keeps what it started with: its limits and settings are never changed afterwards.
         kept = ("task_id", "ordinal", "started_at", "settings_digest", "turn_limit", "timeout_seconds", "continuation",
-                "workspace_before", "draft")
+                "workspace_before", "draft", "resume")
         if any(getattr(item, name) != getattr(last, name) for name in kept):
             raise InvalidRecord("an update keeps the identity, limits and settings of its attempt")
+        if last.session is not None and item.session != last.session:
+            raise InvalidRecord("a resumed call keeps the session it resumed")
         before, after = last.charges(), item.charges()
         return replace(self, budget=self.budget.charged(after, withdrawn=before),
                        step=replace(step, budget=step.budget.charged(after, withdrawn=before),
@@ -1365,7 +1468,8 @@ def next_call(record: ExecutionRecord) -> NextCall:
         return NextCall(trigger, declined=Declined.ADAPTIVE_OFF)
     if not settings.checkpoint_resume:
         return NextCall(trigger, declined=Declined.CHECKPOINT_RESUME_OFF)
-    made = sum(1 for item in step.attempts if item.continuation is ContinuationMode.CHECKPOINT_RESUME
+    # A native resume (Step 10) is a continuation like a checkpoint resume: counted the same, never one more.
+    made = sum(1 for item in step.attempts if item.continuation is not ContinuationMode.NONE
                and item.termination is not Termination.NOT_STARTED)
     if last.draft is not None:
         return NextCall(trigger, declined=Declined.TEST_REQUEST, made=made)
@@ -1445,7 +1549,8 @@ def dumps(record) -> str:
 #         "phase": {"developer": {"claude_turns": 80, "provider_calls": 2, "seconds": 5400}, "reviewer": {...}},
 #         "task":  {"provider_calls": 60, "seconds": 162000}
 #       },
-#       "continuation": {"checkpoint_resume": true, "native_resume": "off"},   optional, these defaults
+#       "continuation": {"checkpoint_resume": true, "native_resume": "off"},   optional, these defaults;
+#                                             native_resume "probe_then_use" needs checkpoint_resume (Step 10)
 #       "no_progress_windows": 2              optional, 1-10, default 2
 #     }
 #
@@ -1487,7 +1592,10 @@ HARD_LIMITS = {("call", Unit.CLAUDE_TURNS): CALL_LIMIT, ("call", Unit.SECONDS): 
                ("phase", Unit.SECONDS): BUDGET_LIMIT,
                ("task", Unit.PROVIDER_CALLS): ATTEMPT_LIMIT, ("task", Unit.SECONDS): BUDGET_LIMIT}
 NO_PROGRESS_WINDOWS = (1, 10)
-NATIVE_RESUME = ("off",)  # no provider's own resume has been validated (audit I9, I10): "off" is the only value
+# "off", or "probe_then_use" (Step 10): resume the followed call's session where the installed CLI's help shows it can
+# be done safely (`sessions.select`), the checkpoint resume otherwise. A real CLI is never resumed natively until the
+# end-of-phase validation with real providers (`sessions.VALIDATED_PROVIDERS`); only simulated providers are.
+NATIVE_RESUME = ("off", "probe_then_use")
 # `core.DEFAULT_CONFIG["workflow"]`, which a test compares: the values `initialize` writes into every configuration.
 LEGACY_DEFAULTS = {"claude_max_turns": 12, "agent_timeout_seconds": 900}
 
@@ -1661,9 +1769,11 @@ class ExecutionSettings:
                                ("checkpoint_resume", "native_resume"))
         checkpoint = _flag(continuation.get("checkpoint_resume", True), "execution.continuation.checkpoint_resume")
         native = continuation.get("native_resume", "off")
-        if native not in NATIVE_RESUME or type(native) is not str:
-            raise InvalidSettings("execution.continuation.native_resume can only be \"off\": no provider's own session "
-                                  "resume has been validated")
+        if type(native) is not str or native not in NATIVE_RESUME:
+            raise InvalidSettings("execution.continuation.native_resume must be one of: \"off\", \"probe_then_use\"")
+        if native != "off" and not checkpoint:
+            raise InvalidSettings("execution.continuation.native_resume needs checkpoint_resume: true, the continuation "
+                                  "used whenever a session cannot be resumed natively")
         windows = _setting_int(section.get("no_progress_windows", 2), "execution.no_progress_windows",
                                *NO_PROGRESS_WINDOWS)
         return cls(enabled, profile, adaptive, limits, frozenset(explicit), checkpoint, native, windows)

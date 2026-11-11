@@ -2763,8 +2763,8 @@ Boundaries:
   `tests/test_attempts.py`, `LegacyTests`).
 - Profiles are not agent presets (model and effort) and not gate policies
   (`gate.POLICY` stays `standard`). The section has no field for a model,
-  a tool, a permission or a sandbox, and `native_resume` accepts only
-  `"off"`.
+  a tool, a permission or a sandbox. `native_resume` accepted only `"off"`
+  until Step 10 added `"probe_then_use"` (below).
 - No task override and no global level: the project's configuration alone.
   `workflow.claude_max_turns` stays outside `core.TASK_OVERRIDES`; a task's
   turn limit stays the agent setting `max_turns` at task level.
@@ -3545,3 +3545,139 @@ whole tree.
   and whose group goes on on POSIX, an unrelated process left alone, and
   whole runs of a scripted CLI). Job objects are checked on native Windows
   only, groups on POSIX only.
+
+### Native session resume (Step 10)
+
+November 10, 2026. An automatic continuation (Steps 07-08) may go on in the
+session of the call it follows, instead of a new call with a checkpoint
+brief, when the task asked for it and the installed CLI's own help shows
+that it can be done with the step's settings. It is off by default, it never
+adds a call, and no real CLI is resumed natively by this version: only
+simulated providers are, until the validation with real providers at the end
+of Phase 2.5 (`sessions.VALIDATED_PROVIDERS` is empty).
+
+**The request.** `execution.continuation.native_resume` is `"off"` (the
+default) or `"probe_then_use"`, which needs `checkpoint_resume: true`, the
+continuation made whenever a session cannot be resumed. It is read from the
+policy bound to the task (`core._native_requested`), so a schema-1 record or
+a project that changes its section later changes nothing for a running task.
+Without the request no session is kept, no capability is asked, no command,
+event or record changes, and records keep their schema.
+
+**What an installed CLI can do** (`sessions.Capability`). Read only from
+what the binary printed for `--version` and `--help` (`sessions.PROBE_COMMANDS`,
+asked through `providers.probe`, whose exact list gains `claude --version`,
+`codex --version` and `codex exec resume --help`; no prompt, no session),
+by `OfficialCLI.resume_capability`, once per adapter, and only when every
+earlier condition of the choice holds. While providers are simulated it is
+unknown; tests give their own from `tests/fixtures/cli`. Each capability is
+`supported` when the help shows it and `unknown` otherwise, never assumed:
+noninteractive calls, resume by an exact ID, sessions kept between
+processes, the step's restrictions and answer checks on the resume form, the
+prompt on stdin. Observed on November 10, 2026:
+
+| CLI, version (platform) | Resume by ID | Restrictions on resume | Answer checks on resume | Status |
+|---|---|---|---|---|
+| Claude Code 2.1.295 (native Windows), 2.1.302 (WSL2) | `-r, --resume [value]` | `--restricted`, `--permission-mode`, `--tools`, `--allowedTools`, `--disallowedTools` (options of the same command) | `--print`, `--output-format`, `--json-schema` | verified |
+| codex-cli 0.161.0 (native Windows), 0.160.1 (WSL2) | `codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]` | none: the resume form lists no `--sandbox`, `--cd`, `--add-dir` or `--profile` | `--json`, `--output-last-message`, `--output-schema` | unverified |
+
+"Verified" means the help lists what a resume needs, nothing more: whether a
+resumed print-mode call keeps those options and reports the same session has
+not been confirmed with a real call. `--max-turns` is not in Claude Code's
+help and is taken from its CLI reference (`agents.DOCUMENTED`), as for every
+call.
+
+**The session of a call** (`sessions.captured`). Only from the typed fields
+of the CLI's own structured output: Claude's `session_id` in its
+`system`/`init` and `result` lines (the headless documentation), or in the
+single result of `--output-format json`; Codex's `thread_id` in
+`thread.started` (`exec_events.rs` at rust-v0.160.1), which Codex prints
+only with `--json`. Never from an agent's text, a tool result or another
+line type. One lowercase UUID, reported the same everywhere, or none:
+missing, malformed (`--session-id` "must be a valid UUID"; `codex exec
+resume` takes a thread name for anything else) and contradictory values are
+not used. A session is kept only for a call of a task that asked for native
+resume, that was not a request for tests, whose settings keep sessions
+(`sessions.durable`: Claude unless `session_persistence` is off; Codex only
+with `ephemeral: false`, which PatchRondo never sets by itself), whose launch
+record reached `ended`, and only where it could ever be used (`core._captures`:
+never for a real CLI while `VALIDATED_PROVIDERS` is empty).
+
+**Where it is kept.** The ID goes into the call's launch record
+(`launch.json`, `reconciliation.marker(session=)`, written again at `ended`
+before the end is saved) with its provider, role, attempt, CLI version and
+executable digest: a private file of the run folder, beside the PIDs, never
+a log, a bundle entry or a history detail. The record keeps only an opaque
+reference (`AttemptRecord.session`, `S-` and 24 hex digits:
+`sessions.reference`, a SHA-256 of the task, attempt, provider, role and
+ID), so the state the page receives names no session. Transcripts, logs, the
+command shown in the Logs tab (`<role>.command.txt`) and failure messages
+mask `session_id` and `thread_id` (`sessions.mask`), for every task.
+
+**The choice** (`sessions.select`, called by `core._native` once
+`core._next_call` allowed the continuation, its brief included). The first
+reason that applies keeps the checkpoint resume (`sessions.Unavailable`):
+`not_validated` (a real CLI), `adapter_cannot_resume`, `not_durable`,
+`session_unconfirmable` (Codex without `--json`), `no_session`,
+`session_unreadable`, `session_mismatch` (the launch record's entry is not
+the one the reference names for that attempt, role and task),
+`capability_unknown`, `resume_unsupported`, `persistence_unknown`,
+`restrictions_unverified`, `output_unverified`, `cli_changed` (another
+version or executable than the one that made the session),
+`settings_changed` (other frozen settings), and `options_unsupported` (the
+command could not be built: `_native` builds it once without starting
+anything). Every condition of a continuation still holds first: the
+opt-in, the one-per-step bound (`AUTOMATIC_CONTINUATIONS`, which now counts
+native resumes too), the budgets and `sized_call`, the process tree (D4,
+`WINDOWS_REAL_CONTINUATION`), no released or reconciled call, the workspace
+of a review, the brief, the environment check. Quota, timeouts,
+interruptions and errors are never continued, natively or not.
+
+**The record.** A continuation of a task that asked for native resume keeps
+its choice (`execution.ResumeChoice`: requested, selected, capability
+status, CLI version, durable, reason), saved as attempt schema 3; a native
+resume (`ContinuationMode.NATIVE_RESUME`) names, as its session, the
+reference its step's last call kept (`ExecutionRecord.new_attempt` refuses
+any other), and is admitted and charged as any continuation. The
+`continuation_started` event gains `resume` (`requested`, `selected`,
+`reason`, `capability`: fixed words). `last_call` skips a native resume that
+never started, so a later run carries it out (`_due`, `_resumed`), with the
+same session.
+
+**The command** (`agents.resume_command`, given only a `sessions.Resume`
+that `select` built: never from settings or custom arguments, which still
+refuse `--resume`, `--continue`, `--fork-session` and `--session-id`). It is
+`agents.command` for the same settings with the session added, so model,
+tools, permissions, sandbox, limits and answer checks are the step's; for
+Claude `--resume <id>` after `-p`, every other option of the step being one
+the help lists or `--max-turns`. For Codex, `codex … exec resume [options]
+<id> -` with only options the resume form lists (`--cd` dropped: the call
+runs in the worktree), refused for an ephemeral session, custom arguments,
+or without `--sandbox` (read-only for the reviewer). Never `--continue`,
+`--last`, a fork or a second ID. `agents.command` itself is unchanged.
+
+**After the call.** The resumed call must report the same session in its own
+output (`core._confirm_resumed`); otherwise it fails with
+`resume_unconfirmed` (`AttemptOutcome.UNSUPPORTED_RESUME`), its answer is
+not used, and nothing else is started. A CLI that refuses the resume (an
+unknown session, an option) fails that call, and `OfficialCLI.invoke` does
+not start it again without the streaming options. A resumed reviewer's
+answer goes through `parse_review`, `settle_review`, findings and the gate
+like every review.
+
+**What is not shown.** No real CLI was resumed: that the resumed print-mode
+call of Claude Code applies its options again, reports the same session
+and keeps `--json-schema`, and how Codex's resume form treats the sandbox,
+are the end-of-phase validation with real providers, after which a decision
+of the project's owner may fill `VALIDATED_PROVIDERS`. A resumed session
+holds the earlier conversation, which the checkpoint brief would have
+summarized; what the provider keeps in it is the provider's.
+
+- Tests: `tests/test_sessions.py` (capabilities from the saved help of four
+  versions, capture, references, the choice and each of its reasons, the
+  command of each provider and role, the records, the adapter's refusal to
+  start a resume twice) and `tests/test_native_resume.py` (runs with an
+  emulated CLI that reports sessions: native continuation of the developer
+  and of a Claude reviewer, a lost run carried out with the same session, an
+  unconfirmed or failing resume, every fallback before launch, Codex
+  ephemeral and durable sessions, no request).

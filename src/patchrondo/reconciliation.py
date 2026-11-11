@@ -100,16 +100,25 @@ class Unreadable(ValueError):
     """A launch record that cannot be read or does not have the shape this version writes."""
 
 
-def marker(attempt_id: str, stage: str, at: str, launch=None) -> dict:
-    """The launch record of an attempt at `stage`; with a `process.Launch` once the process exists."""
+def marker(attempt_id: str, stage: str, at: str, launch=None, session: dict | None = None) -> dict:
+    """The launch record of an attempt at `stage`; with a `process.Launch` once the process exists.
+
+    `session` (Phase 2.5, Step 10): the session the call reported, as
+    `sessions.stored` gives it, written only once the call has ended. It is
+    private like the PIDs beside it and is read by `sessions.kept` only.
+    """
     if stage not in STAGES:
         raise ValueError(f"unknown launch stage {stage!r:.20}")
+    if session is not None and stage != ENDED:
+        raise ValueError("a call's session is kept once it has ended")
     record = {"version": VERSION, "attempt": attempt_id, "stage": stage, "at": at}
     if launch is not None and launch.pid is not None:
         record.update({key: value for key, value in launch.recorded().items()}, supervised=launch.supervised)
         if stage == ENDED:
             record.update(stopped=launch.stopped, kill_refused=launch.kill_refused, tree_ended=launch.tree_ended,
                           left_behind=launch.left_behind)
+    if session is not None:
+        record["session"] = session
     return record
 
 

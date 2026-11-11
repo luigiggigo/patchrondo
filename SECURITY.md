@@ -385,6 +385,25 @@ unusable answer is never taken for an approval and only a review that was
 read decides anything. A review that was read is never repeated whatever
 its verdict, and a reviewer call that changed the files is not followed.
 
+**Native session resume.** Off unless a task's bound policy sets
+`"native_resume": "probe_then_use"` (November 10, 2026), and no real Claude
+Code or Codex CLI is resumed natively by this version: only simulated
+providers are, until the validation with real providers at the end of Phase
+2.5. It never adds a call: it can only change how a continuation that every
+rule above already allows is made, and the checkpoint resume is made
+whenever any condition fails. A session is resumed only by its exact ID
+(never `--continue`, `--last`, a fork or a new ID), by the provider and role
+that made it, in the same task and step, with the same frozen settings and
+the same CLI version, through the same command builder, so the reviewer stays
+read-only. Session options stay refused as custom arguments. Only a session
+the CLI reported in its own structured output is kept; its ID stays in the
+call's private launch record, the task's state keeps an opaque digest, and
+logs, the command shown in the Logs tab and error messages mask it. A
+resumed call that does not report the same session is not used and nothing
+else is started. Codex runs `--ephemeral` by default, which PatchRondo never
+switches off, and the resume form of the observed Codex versions lists no
+`--sandbox`, so no Codex session is resumed.
+
 **What a result is worth.** Code under test can print anything and can write a report that says what it
 likes. The runner refuses a report that was there before the run, a report
 that contradicts the exit code or its own counts, and a run that changed the

@@ -76,6 +76,7 @@ export const ERRORS = {
   attempt_uncertain: { title: "An agent call may still be running", help: "A run stopped before it could record how an agent call ended, or the call was stopped while what it started may still run. No other call starts meanwhile. The message says what PatchRondo could and could not show. Resume once its processes have ended: PatchRondo checks again. Otherwise check that no process of it is left, then run the command the message gives (patchrondo release-attempt … --confirm-stopped) and resume. Releasing says nothing about what the call did." },
   attempt_reconciled: { title: "An agent call was found ended after its run was lost", help: "PatchRondo showed that the call and everything it started have ended, and recorded it as ended. How it ended was not recorded, so its outcome stays unknown: its charges stay, its files are kept and not used as an answer, and no automatic continuation follows it. Check the task's files, then resume to start a new call of the step if its budgets admit one." },
   process_tree_unconfirmed: { title: "An agent left processes running", help: "The CLI exited while processes it started were still running, and stopping them could not be confirmed. Its answer was not used. Check that none of them is left; the next Resume checks again and holds the task while one may still run." },
+  resume_unconfirmed: { title: "A resumed session was not confirmed", help: "The call was started to go on in the session of the call before it, and its CLI did not report that same session in its own output. Its answer was not used: it may have been a new conversation. Nothing else was started. Resume to start a new call of the step, if its budgets admit one." },
   budget_exhausted: { title: "A budget allows no further agent call", help: "The budget of this step or of the task, frozen when it started, cannot take the next call; the message names the limit and its unit. Nothing was started, nothing raised the budget, and the calls and evidence so far are kept. This version cannot amend a budget: create a follow-up task to go on." },
   execution_record_missing: { title: "The record of agent calls is missing", help: "This task made recorded agent calls, but its saved state no longer has their record, so it is not run as if it never had one: that would lift its budget. Nothing was started. Put back the task's state.json, or create a follow-up task." },
   execution_policy_missing: { title: "The execution policy of this task is not known", help: "This task is governed by Adaptive Execution until it ends, and it was recorded before tasks kept their own policy. The project's execution section is now off, so its next step has no limits to run with. Nothing was started. Turn the section back on for this project, or create a follow-up task." },
@@ -185,7 +186,7 @@ const PAUSE_REASONS = {
   attempt_uncertain: "an agent call may still be running", attempt_folder_exists: "the folder of an agent call already exists",
   attempt_reconciled: "an agent call was found ended after its run was lost", process_tree_unconfirmed: "an agent left processes running",
   attempt_limit_reached: "no more agent calls can be recorded", execution_unreadable: "the record of agent calls cannot be read",
-  budget_exhausted: "a budget allows no further agent call",
+  budget_exhausted: "a budget allows no further agent call", resume_unconfirmed: "a resumed session was not confirmed",
   execution_record_missing: "the record of agent calls is missing", execution_policy_missing: "the execution policy of the task is not known",
 };
 // How a recorded agent call ended (`execution.AttemptOutcome`), and whether what it started is known to have stopped.
@@ -194,6 +195,7 @@ const CALL_OUTCOMES = {
   TIMEOUT: ["timed out", "warn"], INTERRUPTED: ["interrupted", "warn"], PERMISSION_DENIED: ["access refused", "warn"],
   ENVIRONMENT_BLOCKED: ["not started", "warn"], INVALID_FINAL_OUTPUT: ["no usable answer", "warn"],
   PROVIDER_ERROR: ["the CLI failed", "warn"], UNKNOWN: ["ended in an unknown way", "neutral"],
+  UNSUPPORTED_RESUME: ["did not confirm the resumed session", "warn"],
 };
 const TERMINATIONS = {
   exited: null, stopped: "Stopped with everything it started", not_started: "No process was started",
@@ -280,8 +282,11 @@ export function describeEvent(event, task) {
                  ? `${rev} reviews again automatically: call ${event.attempt || ""} after ${event.after || "the previous call"}, whose answer could not be used`
                  : `${dev} continues the step automatically: call ${event.attempt || ""} after ${event.after || "the previous call"}`, tone: "accent", icon: "repeat",
                detail: [event.turn_limit ? `up to ${event.turn_limit} turns` : null, event.timeout_seconds ? `timeout ${event.timeout_seconds} s` : null,
-                        event.phase === "review" ? "a new, independent and read-only review; not a new iteration"
-                          : "with a brief of the work so far; not a new iteration"].filter(Boolean).join(" · ") };
+                        event.mode === "native_resume" ? "in the same session of its CLI, with the step's settings"
+                          : event.phase === "review" ? "a new, independent and read-only review" : "with a brief of the work so far",
+                        event.resume && event.resume.selected === "checkpoint_resume"
+                          ? `not resumed natively: ${humanize(event.resume.reason || "").toLowerCase()}` : null,
+                        "not a new iteration"].filter(Boolean).join(" · ") };
     case "continuation_declined":
       return { text: `Not continued automatically after call ${event.after || ""}`, tone: "neutral", icon: "pause",
                detail: NOT_CONTINUED[event.reason] || humanize(event.reason || "") || null };
