@@ -1625,6 +1625,44 @@ logs; no real CLI is resumed natively by this version.
   (`native:`), two patterns follow the changed code (522 in all). No real
   Claude Code or Codex session was created or resumed.
 
+### Adaptive Execution: progress signals, read only — November 11, 2026
+
+Phase 2.5, Adaptive Agent Execution (the user's Step 11), the first part of
+the roadmap's Progress & Stagnation Detection. Signals only: nothing reads
+them, and no run, pause, event, record or page changes.
+
+- **`progress.py`.** `observe` reads a task's saved state, its evidence
+  ledger and the fingerprint of its files into an `Observation` of typed
+  facts (records with their validity against those files, criteria judged
+  against the ledger, findings, the current step's attempts, event IDs);
+  it writes nothing, takes no lock, starts nothing and reads no agent text,
+  session, PID, path, time, turn or token count. `assess` compares two
+  observations of one task and one iteration (`WindowMismatch` otherwise)
+  and returns an `Assessment`: deterministic, with each fact's trust
+  (`VERIFIED`, `OBSERVED`, `REPORTED`, `UNKNOWN`), the signals it gives
+  (`VERIFIED_PROGRESS`, `OBSERVED_ACTIVITY`, `NO_VERIFIED_PROGRESS`,
+  `REGRESSION`, `UNKNOWN`, not exclusive), one classification, the records
+  that apply, the stale ones and why, and the workflow events of the window.
+  `Series` counts consecutive windows without verified progress, with the
+  files unchanged and with the same findings reported again; it decides
+  nothing.
+- **Snapshot.** A record proves something only when the ledger counts it,
+  it is `VALID` against the files and it names their fingerprint; without a
+  fingerprint nothing is verified and nothing regressed. A ledger that does
+  not continue the one the start read is compared not at all.
+- **Rules.** Verified progress: a criterion newly verified by a record of
+  the window, a check that failed and now passes, a first pass of a check,
+  a finding resolved by a positive record that counts. Regression: a check
+  or a criterion that a record showing a pass on the files at the start
+  made fail on the files now. Stale evidence, changed files, a first
+  failure, `error`/`blocked`/`timeout`, a request for changes and new or
+  repeated findings are never a regression; changed files, an answer
+  received, a validated review, repeated passes and an approval are never
+  verified progress; an unusable review is neither progress nor activity.
+- Tests: `tests/test_progress.py` (53); the importer list of
+  `tests/test_execution.py` names the new reader. 21 new mutation
+  protections (`progress:`, 543 in all).
+
 ### Documentation alignment — October 17, 2026
 
 - Group Phase 1 under 0.3.0 in development, preserving all dated entries,

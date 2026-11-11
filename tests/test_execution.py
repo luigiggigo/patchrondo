@@ -389,7 +389,9 @@ class LegacyTests(unittest.TestCase):
         it; only `_settle_attempts` writes, through `ExecutionRecord.reconcile`. Since Step 10 the choice of native
         resume reads the task's policy and the call followed (`_native_requested`, `_captures`, `_native`), and the
         confirmation of a resumed session reads its attempt (`_confirm_resumed`); the choice is written by `_attempt`
-        only."""
+        only. Since Step 11 `progress.py` loads the record to observe a task's attempts: loading, enums and the
+        patterns of IDs and fingerprints, nothing that makes, changes or releases an attempt
+        (`test_progress.StructureTests`)."""
         users = {}
         for source in sorted(SOURCES.glob("*.py")):
             if source.name == "execution.py":
@@ -403,8 +405,10 @@ class LegacyTests(unittest.TestCase):
                         (function.name, node.attr) for function in ast.walk(tree) if isinstance(function, ast.FunctionDef)
                         for node in ast.walk(function) if isinstance(node, ast.Attribute)
                         and isinstance(node.value, ast.Name) and node.value.id == "execution")
-        self.assertEqual(set(users), {"core.py", "continuation.py", "reconciliation.py"})
+        self.assertEqual(set(users), {"core.py", "continuation.py", "reconciliation.py", "progress.py"})
         self.assertLessEqual({name for _, name in users["reconciliation.py"]}, {"AttemptRecord", "AttemptStatus"})
+        self.assertLessEqual({name for _, name in users["progress.py"]},
+                             {"load", "InvalidRecord", "AttemptOutcome", "Phase", "Termination", "TASK_ID", "FINGERPRINT"})
         self.assertLessEqual({name for _, name in users["continuation.py"]},
                              {"load", "InvalidRecord", "ExecutionRecord", "AttemptRecord", "Phase", "AttemptOutcome",
                               "Termination", "Availability", "Unit", "DIGEST"})

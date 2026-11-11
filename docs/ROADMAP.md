@@ -36,11 +36,21 @@ every platform or that authenticated providers confirmed the new formats.
 
 ## 0.3.0 — Next phase: Progress & Stagnation Detection
 
-Planned, not implemented: detect progress and stagnation using Git changes,
-test results, persistent review findings and workflow events. A record that
-proves an individual finding resolved is also still missing. Existing RF and
-WE identities provide inputs; they do not constitute a progress detector.
+Planned: detect progress and stagnation using Git changes, test results,
+persistent review findings and workflow events. A record that proves an
+individual finding resolved is also still missing. Existing RF and WE
+identities provide inputs; they do not constitute a progress detector.
 No additional phase numbering, dates or delivery commitments are assigned here.
+
+Progress signals implemented on November 11, 2026, as Step 11 of the Phase
+2.5 Adaptive Agent Execution plan, whose PR 03 delivers this phase (decision
+D1 of the [audit](PHASE_2_5_AUDIT.md)): `progress.py` reads a task's
+fingerprint, ledger, criteria, findings and attempts and says, with its
+basis, whether a window established verified progress, observed activity,
+no verified progress, a regression or nothing reliable. Nothing reads the
+signals yet: stagnation detection and any decision taken from them are
+planned, not implemented. See
+[architecture section 20](ARCHITECTURE.md#progress-signals-step-11).
 
 ## Separate proposal — 0.35 Evidence Engine
 

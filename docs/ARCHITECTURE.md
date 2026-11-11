@@ -3681,3 +3681,104 @@ summarized; what the provider keeps in it is the provider's.
   and of a Claude reviewer, a lost run carried out with the same session, an
   unconfirmed or failing resume, every fallback before launch, Codex
   ephemeral and durable sessions, no request).
+
+### Progress signals (Step 11)
+
+November 11, 2026. `progress.py` says what an observation window of a task
+established, and how reliably, from records PatchRondo already keeps. It is
+the first part of the roadmap's Progress & Stagnation Detection (decision D1
+of the [audit](PHASE_2_5_AUDIT.md)): signals only. Nothing reads them yet;
+no stop, retry, continuation, approval or completion depends on them, and
+`no_progress_windows` is not applied. Step 12 decides what they change.
+
+**Two layers.** `observe(task_path, state, workspace, cfg=…, fingerprint=…)`
+reads the saved state, the evidence ledger and the fingerprint of the files
+(`gitops.fingerprint` with `gitops.READER`, or one the caller already took)
+and returns an `Observation`; it writes nothing, takes no lock and starts
+nothing. `assess(start, end)` compares two observations and returns an
+`Assessment`; it is pure, so the same two observations give the same
+assessment. There is no store of its own: no new record, event, key or file.
+
+**An observation** holds typed facts only: the `Boundary` (task, iteration,
+phase, fingerprint, attempt IDs given, the last attempt, ledger records read
+and the ledger's head hash), each ledger record (ID, own hash, kind, result,
+whether the chain trusts it and the ledger counts it, its validity and causes
+from `provenance.assess` against the files then, its check, the fingerprint
+it names, its criteria), each criterion as `acceptance.judged_now` judges it
+against the ledger, each finding's status, owner and the records it was
+reported in or rests on, the attempts of the current step (outcome, failure
+kind, termination, fingerprints before and after), and the IDs of workflow
+events. No agent text, session, PID, path, elapsed time, turn count or token
+count is read into it. Each source is `present`, `absent` (never on record:
+a task from before it), `unreadable` or, for the ledger, `partial`.
+
+**Window.** Two observations of one task and one iteration, the end not
+before the start (`WindowMismatch` otherwise): before and after a call, or
+from the start of an iteration to the end of its tests or its review. A
+window never mixes tasks or iterations. `Series` holds consecutive windows
+of one task and only counts: `streak` (the last windows without verified
+progress), `unchanged_files`, `repeated_findings`.
+
+**Applies.** A record proves something about a boundary's files only when
+the ledger counts it, its validity is `VALID` against those files, a
+fingerprint was taken, and, unless it depends on no files (a decision of the
+user, a check by the user recorded as independent), it names that very
+fingerprint. Without a fingerprint nothing applies. A ledger at the end that
+does not continue the one the start read (another ID or hash in its place, a
+record the start trusted that it no longer trusts: a restart, an edit, a
+ledger the state no longer anchors) is `LEDGER_DISCONTINUOUS`, and nothing in
+it is compared.
+
+**Facts** (`Change`, each with a fixed trust, `TRUST`, and at most one
+signal, `SIGNAL_OF`):
+
+| Signal | Facts | Rule |
+|---|---|---|
+| `VERIFIED_PROGRESS` | `CRITERION_VERIFIED`, `CHECK_FIXED`, `CHECK_ESTABLISHED`, `FINDING_RESOLVED` | A criterion not verified on the files at the start, verified on the files at the end by records that all apply, at least one of them new in the window; a check whose last result that applied at the start was `failed`, whose new result `passed`; a check with no pass on record before, whose new result `passed`; a finding that became `RESOLVED` resting on a record that counts, applies and is positive (`evidence.POSITIVE`: a review is not) |
+| `REGRESSION` | `CHECK_REGRESSED`, `CRITERION_REGRESSED` | A check whose last result that applied at the start `passed`, whose new result `failed`; a criterion verified at the start whose new record that applies `failed` it |
+| `OBSERVED_ACTIVITY` | `FILES_CHANGED`, `ANSWER_REPORTED`, `REVIEW_RECORDED` | The fingerprints differ, at the boundaries or before and after a call; a developer's call gave its answer (its handoff stays `REPORTED`); a review was validated and recorded |
+| `UNKNOWN` | `SNAPSHOT_UNKNOWN`, `SOURCE_UNREADABLE`, `LEDGER_DISCONTINUOUS`, `CHECK_CONTRADICTED`, `CHECK_NOT_CONCLUSIVE`, `ATTEMPT_EFFECTS_UNKNOWN` | No fingerprint at the end; a source unreadable (or the ledger partial) at either boundary; records that count on the same files passed and failed one check; `error`, `blocked` or `timeout`; a call that may still run, or was released or reconciled |
+| `NO_VERIFIED_PROGRESS` | every other fact explains it | Given whenever `VERIFIED_PROGRESS` is not; its basis is `UNKNOWN` when the end has no fingerprint or the ledger did not continue |
+
+Facts that give no signal say what did not change or what is known only in
+part: `FILES_UNCHANGED`, `VERIFICATION_NOT_RUN`, `CHECK_REPEATED` (passed
+before and again), `CHECK_REVERIFIED` (passed again after the earlier pass
+went stale: kept, not advanced), `CHECK_FAILING` (failed without a pass that
+applied at the start: never a regression), `EVIDENCE_INVALIDATED` (applied
+at the start, not at the end: never a regression), `CRITERION_KEPT`,
+`CRITERION_LAPSED`, `CRITERION_UNMET`, `REVIEW_UNUSABLE` (a reviewer's call
+whose answer could not be used: neither activity nor progress),
+`FINDING_NEW`, `FINDING_REPEATED`, `FINDING_AWAITING_VERIFICATION` (an
+approval left it out), `FINDING_RESOLUTION_CLAIMED` (`RESOLVED` with no
+record that verifies it: `REPORTED`), `CALL_ENDED`, `ATTEMPTS_NOT_ON_RECORD`
+(calls whose records left with their step). A criterion or finding source
+unreadable at the start is not compared at all.
+
+**Classification.** The first of `REGRESSION`, `VERIFIED_PROGRESS`,
+`UNKNOWN`, `OBSERVED_ACTIVITY`, `NO_VERIFIED_PROGRESS` that the window has;
+the signals themselves are not exclusive (a developer's call that changed
+files before any check is `OBSERVED_ACTIVITY` and `NO_VERIFIED_PROGRESS`).
+Each `Indication` names its basis (`VERIFIED`, `OBSERVED` or `UNKNOWN`, the
+labels of `continuation.Trust`), the facts that give it, the records,
+attempts and findings it rests on, and fixed words for its reliability
+(`RELIABILITY`). An `Assessment` also lists the records that apply at the
+end, the stale ones with their validity and causes, whether verification
+ran, whether the files changed (or that it is not known) and the workflow
+events of the window. `dump()` gives IDs, codes and fingerprints cut to 16
+characters.
+
+**What it is not.** No signal names stagnation: repeated activity without
+verification, repeated fingerprints and repeated findings are counted and
+never judged. A `CHANGES_REQUESTED` review is a workflow decision and new
+findings are observations, never a regression. An approval is not progress
+by itself and does not resolve a finding; the gate stays the one path to
+`done`. Elapsed time, turns, tokens, the size of an answer and a provider
+call that succeeded are not looked at.
+
+- Tests: `tests/test_progress.py` (the classification on observations
+  built as `provenance` judges records, each rule's failure path, windows
+  and series, determinism; the adapter on a task run to its approval and a
+  developer at its turn limit, observed from inside the run with the
+  emulated CLI, a legacy task with a ledger only, corrupt and missing
+  sources, unknown usage; nothing written, started or charged; nothing
+  imports the module). 21 mutation protections (`progress:`).
